@@ -34,6 +34,10 @@ def main(argv: list[str] | None = None, *, build_sandbox=_default_build_sandbox)
     run_p.add_argument("input", help="path to a PRD/requirement file")
     args = parser.parse_args(argv)
 
+    if not Path(args.input).is_file():
+        print(f"error: input file not found: {args.input}", file=sys.stderr)
+        return 2
+
     cfg = Config.load()
     run_id = _new_run_id()
     run_dir = cfg.runs_dir / run_id

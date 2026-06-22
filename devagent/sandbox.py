@@ -7,6 +7,7 @@ M2 will add an `allow_egress` param that swaps `--network none` for an out-of-sa
 proxy allowlist. M1 starts fully closed — stronger, and the no-op phase needs no net.
 """
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -17,10 +18,10 @@ HARDENED_FLAGS = [
     "--pids-limit", "256",
     "--memory", "2g",
     "--cpus", "2",
-    "--user", "1000:1000",
     "--read-only",
-    "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
-    "--network", "none",          # C3: closed by default
+    "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m",
+    "--network", "none",  # C3: closed by default
+    "--ipc", "none",
 ]
 
 
@@ -43,11 +44,13 @@ class Sandbox:
 
     def __enter__(self) -> "Sandbox":
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        # uid 1000 inside the container must be able to write the host-owned mount.
-        self.out_dir.chmod(0o777)
+        # Run as the host user so the bind mount is writable without a world-writable
+        # (0o777) dir; 0o700 suffices since container uid == host uid.
+        self.out_dir.chmod(0o700)
         argv = [
             "docker", "run", "-d", "--rm",
             *HARDENED_FLAGS,
+            "--user", f"{os.getuid()}:{os.getgid()}",
             "-v", f"{self.out_dir}:/out",
             self.image, "sleep", "infinity",
         ]
@@ -57,6 +60,7 @@ class Sandbox:
         self.cid = proc.stdout.strip()
         if self.ledger:
             # C2 auditability: record exactly how the box was provisioned.
+            # NOTE (M2): never put secrets in argv — they would persist here in plaintext.
             self.ledger.append({
                 "event": "sandbox_start",
                 "container": self.cid[:12],
@@ -71,10 +75,15 @@ class Sandbox:
             raise SandboxError("sandbox not started")
         if isinstance(cmd, str):
             cmd = ["sh", "-c", cmd]
-        proc = subprocess.run(
-            ["docker", "exec", self.cid, *cmd],
-            capture_output=True, text=True, timeout=self.exec_timeout,
-        )
+        try:
+            proc = subprocess.run(
+                ["docker", "exec", self.cid, *cmd],
+                capture_output=True, text=True, timeout=self.exec_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # Surface as a failed command (non-zero exit) so the gate fails cleanly and
+            # the orchestrator records a terminal status — never an uncaught crash.
+            return 124, "", f"command timed out after {self.exec_timeout}s"
         return proc.returncode, proc.stdout, proc.stderr
 
     def __exit__(self, *exc) -> None:
@@ -90,4 +99,6 @@ class Sandbox:
             ["docker", "inspect", "--format", "{{.Id}}", self.image],
             capture_output=True, text=True,
         )
+        if proc.returncode != 0:
+            return "unknown"  # provenance lookup failed — record it, don't fake a digest
         return proc.stdout.strip()

@@ -1,9 +1,14 @@
 """Append-only JSONL run state — the audit trail and (later) resume source.
-One object per line; a half-written trailing line is tolerated on read so a crash
-mid-append cannot corrupt the whole ledger."""
+One object per line. A half-written *trailing* line (crash mid-append) is tolerated on
+read; a malformed *interior* line is real corruption and is raised loudly rather than
+silently dropping an event a resume would depend on."""
 
 import json
 from pathlib import Path
+
+
+class LedgerCorruption(Exception):
+    pass
 
 
 class Ledger:
@@ -20,14 +25,13 @@ class Ledger:
     def events(self) -> list[dict]:
         if not self.path.exists():
             return []
+        lines = [ln for ln in self.path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         out = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        for i, line in enumerate(lines):
             try:
                 out.append(json.loads(line))
             except json.JSONDecodeError:
-                # tolerate a malformed (e.g. half-written) line; skip it
-                continue
+                if i == len(lines) - 1:
+                    break  # benign: a half-written trailing line from a crash mid-append
+                raise LedgerCorruption(f"corrupt ledger line {i + 1}: {line!r}")
         return out

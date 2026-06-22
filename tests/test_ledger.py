@@ -1,4 +1,6 @@
-from devagent.ledger import Ledger
+import pytest
+
+from devagent.ledger import Ledger, LedgerCorruption
 
 
 def test_append_and_read_in_order(tmp_path):
@@ -32,3 +34,15 @@ def test_tolerates_half_written_trailing_line(tmp_path):
 def test_missing_ledger_reads_empty(tmp_path):
     led = Ledger(tmp_path / "fresh")
     assert led.events() == []
+
+
+def test_corrupt_interior_line_raises_not_silently_dropped(tmp_path):
+    # A malformed line that is NOT the last one is real corruption — must be loud, since
+    # a resume would otherwise proceed on a ledger silently missing an event.
+    led = Ledger(tmp_path / "run1")
+    led.append({"event": "a"})
+    with led.path.open("a", encoding="utf-8") as f:
+        f.write("THIS-IS-NOT-JSON\n")  # corrupt MIDDLE line
+    led.append({"event": "c"})
+    with pytest.raises(LedgerCorruption):
+        led.events()
