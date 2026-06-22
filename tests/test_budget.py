@@ -1,0 +1,59 @@
+import pytest
+
+from devagent.budget import Budget, BudgetExceeded
+
+
+class FakeClock:
+    def __init__(self, now=0.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def make_budget(**kw):
+    defaults = dict(max_tokens=1000, max_seconds=60.0, max_retries=2, clock=FakeClock())
+    defaults.update(kw)
+    return Budget(**defaults)
+
+
+def test_under_ceilings_does_not_raise():
+    b = make_budget()
+    b.add_tokens(500)
+    b.spend_retry()
+    b.tick()  # no raise
+    assert b.remaining_tokens() == 500
+
+
+def test_token_ceiling_raises():
+    b = make_budget(max_tokens=100)
+    with pytest.raises(BudgetExceeded) as ei:
+        b.add_tokens(101)
+    assert ei.value.kind == "tokens"
+
+
+def test_retry_ceiling_raises():
+    b = make_budget(max_retries=1)
+    b.spend_retry()
+    with pytest.raises(BudgetExceeded) as ei:
+        b.spend_retry()
+    assert ei.value.kind == "retries"
+
+
+def test_wallclock_ceiling_raises():
+    clock = FakeClock(now=0.0)
+    b = make_budget(max_seconds=10.0, clock=clock)
+    clock.now = 5.0
+    b.tick()  # still under
+    clock.now = 11.0
+    with pytest.raises(BudgetExceeded) as ei:
+        b.tick()
+    assert ei.value.kind == "seconds"
+
+
+def test_budget_is_shared_accumulates_across_calls():
+    b = make_budget(max_tokens=300)
+    b.add_tokens(100)
+    b.add_tokens(100)
+    with pytest.raises(BudgetExceeded):
+        b.add_tokens(150)
