@@ -11,9 +11,11 @@ from pathlib import Path
 
 from .budget import Budget
 from .config import Config
+from .executor_sdk import SdkExecutor
 from .ledger import Ledger
 from .orchestrator import SUCCEEDED, Orchestrator
-from .phase_gates import BriefGate, PlanGate, SpecGate
+from .phase_gates import BriefGate, BuildGate, PlanGate, SpecGate
+from .phases.build import BuildPhase
 from .phases.intake import IntakePhase
 from .phases.plan import PlanPhase
 from .phases.spec import SpecPhase
@@ -29,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     run_p = sub.add_parser("run", help="run the pipeline on a PRD file")
     run_p.add_argument("input", help="path to a PRD/requirement file")
+    run_p.add_argument("--build", action="store_true",
+                       help="run the contained build phase (SdkExecutor; needs Docker + spends tokens)")
     args = parser.parse_args(argv)
 
     if not Path(args.input).is_file():
@@ -41,12 +45,21 @@ def main(argv: list[str] | None = None) -> int:
     ledger = Ledger(run_dir)
     ledger.append({"event": "input", "path": args.input})
 
+    phases = [IntakePhase(args.input), SpecPhase(), PlanPhase()]
+    gates = {"intake": BriefGate(), "spec": SpecGate(), "plan": PlanGate()}
+    if args.build:
+        # SdkExecutor self-contains its own disposable Docker container, so the
+        # orchestrator's NullSandbox still suffices for the host-side brain phases.
+        out_dir = run_dir / "out"
+        phases.append(BuildPhase(executor=SdkExecutor(), workdir=str(out_dir), run_id=run_id))
+        gates["build"] = BuildGate()
+
     orch = Orchestrator(
-        phases=[IntakePhase(args.input), SpecPhase(), PlanPhase()],
-        gates={"intake": BriefGate(), "spec": SpecGate(), "plan": PlanGate()},
+        phases=phases,
+        gates=gates,
         budget=Budget(cfg.max_tokens, cfg.max_seconds, cfg.max_retries),
         ledger=ledger,
-        sandbox=NullSandbox(),  # brain phases run on host; build phase (later) uses Sandbox
+        sandbox=NullSandbox(),  # brain phases run on host; SdkExecutor contains its own
     )
     status = orch.run()
 
@@ -59,6 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     plan = orch.artifacts.get("plan")
     if status == SUCCEEDED and plan is not None:
         print(f"  -> {len(plan.tasks)} tasks; artifacts in {run_dir}")
+    build = orch.artifacts.get("build")
+    if status == SUCCEEDED and build is not None:
+        print(f"  -> built app in {build.repo_path}")
     return 0 if status == SUCCEEDED else 1
 
 

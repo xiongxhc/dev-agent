@@ -4,7 +4,9 @@ and result.exit_code; pydantic already guarantees field types, so these assert t
 "ready for the next phase" semantic guarantees on top."""
 
 from dataclasses import dataclass
+from pathlib import Path
 
+from .executor import BuildResult
 from .gates import GateResult
 from .schema import Brief, Plan, Spec
 
@@ -95,4 +97,25 @@ class PlanGate:
                         f"file {f!r} owned by both task {seen[f]!r} and {t.id!r}",
                     )
                 seen[f] = t.id
+        return GateResult(True)
+
+
+@dataclass
+class BuildGate:
+    """Passes iff the build produced a bundle on disk (dist/index.html under repo_path).
+
+    Deterministic, and the executor's BuildResult.success CLAIM is deliberately ignored —
+    this re-checks the produced repo, so a lying or crashed executor is caught. (M2 next
+    increment upgrades this to a full `pnpm build` re-run + pinned-deps check.)"""
+
+    name: str = "build_produced_bundle"
+
+    def check(self, result) -> GateResult:
+        fail = _precheck(result, BuildResult)
+        if fail:
+            return fail
+        build: BuildResult = result.output_artifact
+        index = Path(build.repo_path) / "dist" / "index.html"
+        if not index.is_file():
+            return GateResult(False, f"no dist/index.html under {build.repo_path!r}")
         return GateResult(True)

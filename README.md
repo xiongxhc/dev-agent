@@ -6,8 +6,10 @@ drives bounded Claude calls (**LLM brain, deterministic hands**), with a determi
 gate between every phase.
 
 **Status: M2 in progress.** The shared harness + the `intake → spec → plan` brain
-pipeline are built and live-verified. The build Executor (which writes and builds the
-actual app) is the next increment.
+pipeline are built and live-verified, and the build Executor is now wired into the CLI
+as a gated `BuildPhase` — `devagent run --build <prd>` runs the whole
+`PRD → spec → plan → contained build` flow in one command. Next: upgrade the build gate
+to a full `pnpm build` re-run + add the Playwright verify phase and repair loop.
 
 ---
 
@@ -25,7 +27,7 @@ build on disjoint files. This is our **dev-time tool**. It is interactive-only a
 | Phase | Runtime tech | Status |
 |---|---|---|
 | **Brain** — intake / spec / plan (emit validated artifacts, no code execution) | **Anthropic Messages API** (`anthropic` pkg, forced tool-use → pydantic) | ✅ built |
-| **Build Executor** — writes files, runs the build, iterates (the A/B seam) | arm A: **Claude Agent SDK** · arm B: **Claude Managed Agents** | ⬜ next (A) / M4 (B) |
+| **Build Executor** — writes files, runs the build, iterates (the A/B seam) | arm A: **Claude Agent SDK** · arm B: **Claude Managed Agents** | ◐ arm A wired (A) / M4 (B) |
 
 So today the product uses **only the Messages API**. The **Agent SDK** and **Managed
 Agents** appear only behind the swappable `Executor` seam at the build step — that's
@@ -73,7 +75,9 @@ Design + research: `../docs/superpowers/specs/2026-06-22-dev-agent-research-synt
 | `executor.py` | the `Executor` Protocol + frozen `BuildRequest`/`BuildResult` seam | no |
 | `llm.py` | `generate_structured()` — Messages API forced tool-use → validated pydantic | **Messages API** |
 | `phases/intake|spec|plan.py` | the brain pipeline | **Messages API** |
-| `phase_gates.py` | `BriefGate`/`SpecGate`/`PlanGate` | no |
+| `phases/build.py` | `BuildPhase` — adapts an `Executor` into the phase pipeline; folds build tokens into the shared Budget | via Executor |
+| `executor_sdk.py` | `SdkExecutor` — contained Agent-SDK build arm (own disposable container) | **Agent SDK** |
+| `phase_gates.py` | `BriefGate`/`SpecGate`/`PlanGate`/`BuildGate` (re-checks the produced repo on disk; ignores the executor's `success` claim) | no |
 | `phases/noop.py` | M1 containment probe | no |
 
 ---
@@ -81,10 +85,16 @@ Design + research: `../docs/superpowers/specs/2026-06-22-dev-agent-research-synt
 ## Run
 
 ```bash
-python -m devagent.cli run examples/hello.md
+python -m devagent.cli run examples/hello.md            # brain only: intake -> spec -> plan
 # -> "run-<id> succeeded  -> N tasks; artifacts in runs/<id>"
 # writes runs/<id>/{intake,spec,plan}.json + an append-only ledger.jsonl
+
+python -m devagent.cli run --build examples/hello.md     # + contained build (needs Docker)
+# -> also runs SdkExecutor -> built app in runs/<id>/out/, gated by BuildGate
 ```
+
+`--build` is opt-in because it requires Docker (the M2 sandbox image) and spends build
+tokens. Without it, the default run stops after `plan` (still spends brain tokens).
 
 Brain phases spend tokens (Messages API). The key is read from `ANTHROPIC_API_KEY` — put
 it in a gitignored `dev-agent/.env` (`ANTHROPIC_API_KEY=...`) and `source` it, or export
@@ -111,8 +121,13 @@ skip when no Docker daemon is present (for CI).
   - ✅ M2 image (node + `claude` CLI + Agent SDK + pnpm); `SdkExecutor` **live-verified** —
     contained Agent SDK built + `pnpm build`-compiled a Vite+React+Tailwind app from a
     Spec+Plan in ~28s / ~$0.21
-  - ⬜ remaining: wire `SdkExecutor` as a `BuildPhase` into the CLI pipeline; deterministic
-    **build gate** (re-run `pnpm build` / pinned-deps check); **verify phase** (Playwright
+  - ✅ wired `SdkExecutor` as a gated `BuildPhase` into the CLI (`run --build`): full
+    `PRD → spec → plan → contained build` in one command; `BuildPhase` folds build tokens
+    into the shared Budget; `BuildGate` re-checks the produced repo on disk (`dist/index.html`)
+    and **does not trust** `BuildResult.success`. Unit-verified with a fake executor (no
+    Docker/tokens); one gated live `--build` run still pending operator go.
+  - ⬜ remaining: upgrade the **build gate** to a real `pnpm build` re-run / pinned-deps
+    check (current cut is a disk re-check only); **verify phase** (Playwright
     boot+route+selector); **repair loop** (cap 2–3); **egress allowlist** (api.anthropic.com
     + npm only — current cut uses full bridge network); fix token accounting (capture
     cumulative SDK usage, not just the final ResultMessage — `cost_usd` is already accurate)
