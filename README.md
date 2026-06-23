@@ -108,9 +108,14 @@ skip when no Docker daemon is present (for CI).
 - **M1** ✅ — skeleton + hardened disposable sandbox (proves containment, no tokens)
 - **M2** ◐ — shared pipeline + `SdkExecutor`
   - ✅ brain phases (intake → spec → plan), gated, live-verified
-  - ⬜ build Executor: M2 image (node + `claude` CLI + toolchain), `SdkExecutor` (Agent
-    SDK fan-out in the sandbox), build gate (pnpm build + lint + pinned deps), verify
-    phase (Playwright), repair loop (cap 2–3)
+  - ✅ M2 image (node + `claude` CLI + Agent SDK + pnpm); `SdkExecutor` **live-verified** —
+    contained Agent SDK built + `pnpm build`-compiled a Vite+React+Tailwind app from a
+    Spec+Plan in ~28s / ~$0.21
+  - ⬜ remaining: wire `SdkExecutor` as a `BuildPhase` into the CLI pipeline; deterministic
+    **build gate** (re-run `pnpm build` / pinned-deps check); **verify phase** (Playwright
+    boot+route+selector); **repair loop** (cap 2–3); **egress allowlist** (api.anthropic.com
+    + npm only — current cut uses full bridge network); fix token accounting (capture
+    cumulative SDK usage, not just the final ResultMessage — `cost_usd` is already accurate)
 - **M3** ⬜ — deploy → preview URL + run report
 - **M4** ⬜ — `ManagedExecutor` (Managed Agents) behind the same seam
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)
