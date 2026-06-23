@@ -130,7 +130,7 @@ class VerifyGate:
     the build command must have exited 0 and dist/index.html must exist afterwards. This
     is the trusted re-check that BuildResult.success is not."""
 
-    name: str = "rebuilds_from_source"
+    name: str = "rebuilds_and_passes_acceptance"
 
     def check(self, result) -> GateResult:
         fail = _precheck(result, VerifyReport)
@@ -141,4 +141,9 @@ class VerifyGate:
             return GateResult(False, f"rebuild from source failed (exit {rep.exit_code})")
         if not rep.dist_present:
             return GateResult(False, "rebuild produced no dist/index.html")
+        if not rep.checks:
+            return GateResult(False, "no acceptance checks ran")
+        failed = [f"{c.kind} {c.route}" for c in rep.checks if not c.ok]
+        if failed:
+            return GateResult(False, f"acceptance checks failed: {', '.join(failed)}")
         return GateResult(True)

@@ -1,6 +1,8 @@
-"""BuildVerifier — re-runs the build from source in a clean container. The docker run is
-mocked, so no container / no tokens. Mirrors test_executor_sdk.py's seam-test style."""
+"""BuildVerifier — rebuild-from-source + kind-dispatched acceptance, both in a clean
+container. The docker runs are mocked (no container / no tokens). A successful rebuild is
+followed by a second docker run for the acceptance runner; the fake dispatches on argv."""
 
+import json
 import subprocess
 
 from devagent import verifier as verifier_mod
@@ -18,49 +20,91 @@ class _Proc:
         self.stderr = stderr
 
 
-def test_verify_ok_when_build_exits_zero_and_dist_present(tmp_path, monkeypatch):
+def _is_acceptance(argv):
+    # Exact element match — the acceptance run has "/acceptance.py" as the python target.
+    # (Substring matching is fragile: pytest's tmp_path can contain the test name.)
+    return "/acceptance.py" in argv
+
+
+def test_verify_ok_when_build_green_and_acceptance_passes(tmp_path, monkeypatch):
     out = tmp_path / "out"
 
     def fake_run(argv, **kw):
+        if _is_acceptance(argv):
+            (out / ".devagent").mkdir(parents=True, exist_ok=True)
+            (out / ".devagent" / "acceptance.json").write_text(json.dumps(
+                {"checks": [{"kind": "route_status", "route": "/", "ok": True, "detail": "status 200"}],
+                 "all_pass": True}))
+            return _Proc(0)
         (out / "dist").mkdir(parents=True, exist_ok=True)
         (out / "dist" / "index.html").write_text("<html></html>")
-        return _Proc(returncode=0, stdout="built")
+        return _Proc(0, stdout="built")
 
     monkeypatch.setattr(verifier_mod.subprocess, "run", fake_run)
     rep = BuildVerifier().verify(_req(out))
-    assert rep.build_ok is True
-    assert rep.dist_present is True
-    assert rep.exit_code == 0
+    assert rep.build_ok and rep.dist_present
+    assert len(rep.checks) == 1 and rep.checks[0].ok
+    assert rep.ok is True
 
 
-def test_verify_fails_when_build_nonzero_exit(tmp_path, monkeypatch):
+def test_verify_fails_and_skips_acceptance_when_build_nonzero(tmp_path, monkeypatch):
     out = tmp_path / "out"
+    calls = []
 
     def fake_run(argv, **kw):
-        return _Proc(returncode=1, stderr="TS2304: Cannot find name 'foo'")
+        calls.append(argv)
+        return _Proc(1, stderr="TS2304: Cannot find name 'foo'")
 
     monkeypatch.setattr(verifier_mod.subprocess, "run", fake_run)
     rep = BuildVerifier().verify(_req(out))
-    assert rep.build_ok is False
-    assert rep.exit_code == 1
-    assert "TS2304" in rep.log_tail  # diagnostics preserved for the repair loop
+    assert rep.build_ok is False and rep.ok is False
+    assert "TS2304" in rep.log_tail
+    assert not any(_is_acceptance(a) for a in calls)  # acceptance never ran
 
 
-def test_verify_uses_frozen_lockfile_and_carries_no_secret(tmp_path, monkeypatch):
+def test_failed_acceptance_check_surfaces_for_repair(tmp_path, monkeypatch):
     out = tmp_path / "out"
-    captured = {}
 
     def fake_run(argv, **kw):
-        captured["argv"] = argv
-        return _Proc(returncode=0)
+        if _is_acceptance(argv):
+            (out / ".devagent").mkdir(parents=True, exist_ok=True)
+            (out / ".devagent" / "acceptance.json").write_text(json.dumps(
+                {"checks": [{"kind": "selector_present", "route": "/", "ok": False,
+                             "detail": "selector '#hero' missing"}], "all_pass": False}))
+            return _Proc(0)
+        (out / "dist").mkdir(parents=True, exist_ok=True)
+        (out / "dist" / "index.html").write_text("<html></html>")
+        return _Proc(0)
+
+    monkeypatch.setattr(verifier_mod.subprocess, "run", fake_run)
+    rep = BuildVerifier().verify(_req(out))
+    assert rep.build_ok and rep.dist_present     # the build itself is fine
+    assert rep.ok is False                        # but acceptance failed
+    assert "ACCEPTANCE FAILURES" in rep.log_tail and "#hero" in rep.log_tail
+
+
+def test_rebuild_uses_frozen_lockfile_and_carries_no_secret(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    argvs = []
+
+    def fake_run(argv, **kw):
+        argvs.append(argv)
+        if _is_acceptance(argv):
+            (out / ".devagent").mkdir(parents=True, exist_ok=True)
+            (out / ".devagent" / "acceptance.json").write_text('{"checks": [], "all_pass": false}')
+            return _Proc(0)
+        (out / "dist").mkdir(parents=True, exist_ok=True)
+        (out / "dist" / "index.html").write_text("<html></html>")
+        return _Proc(0)
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret-value")
     monkeypatch.setattr(verifier_mod.subprocess, "run", fake_run)
     BuildVerifier().verify(_req(out))
-    joined = " ".join(captured["argv"])
-    assert "--frozen-lockfile" in joined          # pinned-deps enforcement
-    assert "ANTHROPIC_API_KEY" not in captured["argv"]  # verify needs no API key at all
-    assert "sk-secret-value" not in joined
+    rebuild = next(a for a in argvs if not _is_acceptance(a))
+    assert "--frozen-lockfile" in " ".join(rebuild)         # pinned-deps enforcement
+    for argv in argvs:
+        assert "ANTHROPIC_API_KEY" not in argv               # verify needs no API key
+        assert "sk-secret-value" not in " ".join(argv)
 
 
 def test_verify_timeout_returns_failed_report(tmp_path, monkeypatch):

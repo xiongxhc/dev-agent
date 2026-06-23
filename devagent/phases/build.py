@@ -57,19 +57,19 @@ class BuildPhase:
         vreq = VerifyRequest(workdir=self.workdir, run_id=self.run_id)
         report = self.verifier.verify(vreq)
         repairs = 0
-        while not (report.build_ok and report.dist_present) and repairs < self.max_repairs:
+        while not report.ok and repairs < self.max_repairs:
             repairs += 1
             ctx.budget.spend_retry()  # shared retry ceiling (may raise BudgetExceeded)
             result = self._build(ctx, replace(req, repair_context=report.log_tail))
             report = self.verifier.verify(vreq)
 
-        ok = report.build_ok and report.dist_present
         meta = self._build_meta(result)
-        meta.update({"repairs": repairs, "verify_exit": report.exit_code, "build_ok": report.build_ok})
+        meta.update({"repairs": repairs, "verify_exit": report.exit_code,
+                     "build_ok": report.build_ok, "checks_pass": report.checks_pass})
         return PhaseResult(
             name=self.name,
-            exit_code=0 if ok else 1,
-            output=f"built {result.repo_path}" if ok else (report.error or "build failed verification"),
+            exit_code=0 if report.ok else 1,
+            output=f"built {result.repo_path}" if report.ok else (report.error or "failed verification"),
             meta=meta,
             output_artifact=report,
         )

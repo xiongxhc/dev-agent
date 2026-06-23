@@ -10,7 +10,7 @@ from devagent.ledger import Ledger
 from devagent.phases.base import PhaseContext
 from devagent.phases.build import BuildPhase
 from devagent.schema import AcceptanceCheck, Plan, Spec, Task
-from devagent.verifier import VerifyReport
+from devagent.verifier import CheckResult, VerifyReport
 
 
 def _ctx(tmp_path, budget=None):
@@ -44,7 +44,8 @@ class ScriptedVerifier:
         return rep
 
 
-_OK = VerifyReport(build_ok=True, dist_present=True, exit_code=0)
+_OK = VerifyReport(build_ok=True, dist_present=True, exit_code=0,
+                   checks=[CheckResult("route_status", "/", True, "status 200")])
 def _bad(tail="TS2304"):
     return VerifyReport(build_ok=False, dist_present=False, exit_code=1, log_tail=tail)
 

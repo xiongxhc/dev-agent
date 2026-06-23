@@ -48,7 +48,7 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
     from pathlib import Path
 
     from devagent.executor import BuildResult
-    from devagent.verifier import VerifyReport
+    from devagent.verifier import CheckResult, VerifyReport
 
     monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path))
     _patch_llm(monkeypatch)
@@ -67,8 +67,9 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
         def __init__(self, *a, **k):
             pass
 
-        def verify(self, req):  # the rebuild-from-source re-check (no Docker in the test)
-            return VerifyReport(build_ok=True, dist_present=True, exit_code=0)
+        def verify(self, req):  # rebuild-from-source + acceptance re-check (no Docker in the test)
+            return VerifyReport(build_ok=True, dist_present=True, exit_code=0,
+                                checks=[CheckResult("route_status", "/", True, "status 200")])
 
     monkeypatch.setattr("devagent.cli.SdkExecutor", FakeSdk)
     monkeypatch.setattr("devagent.cli.BuildVerifier", FakeVerifier)

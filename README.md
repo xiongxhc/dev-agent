@@ -77,7 +77,8 @@ Design + research: `../docs/superpowers/specs/2026-06-22-dev-agent-research-synt
 | `phases/intake|spec|plan.py` | the brain pipeline | **Messages API** |
 | `phases/build.py` | `BuildPhase` — adapts an `Executor` into the pipeline; folds build tokens into the shared Budget; owns the **repair loop** (build → verify → repair, cap 2) | via Executor |
 | `executor_sdk.py` | `SdkExecutor` — contained Agent-SDK build arm (own disposable container); a repair pass is fed the prior verify diagnostics | **Agent SDK** |
-| `verifier.py` | `BuildVerifier` — rebuild from source in a clean container (`--frozen-lockfile`); the trusted re-check (no API key) | no |
+| `verifier.py` | `BuildVerifier` — rebuild from source (`--frozen-lockfile`) **+ acceptance checks**; the trusted re-check (no API key) | no |
+| `acceptance_runner.py` | runs in-container: boots a static server on `dist/`, runs the spec's checks **kind-dispatched** (`route_status`=HTTP, `selector_present`=Playwright, lazy) | no |
 | `phase_gates.py` | `BriefGate`/`SpecGate`/`PlanGate`/`BuildGate`/`VerifyGate` (the build gates re-check the produced repo; they ignore the executor's `success` claim) | no |
 | `phases/noop.py` | M1 containment probe | no |
 
@@ -135,10 +136,17 @@ skip when no Docker daemon is present (for CI).
     the executor is re-invoked with the verify diagnostics (`VerifyReport.log_tail` → the
     runner's prompt), cap 2, each spending a shared-Budget retry. Needs no API key (runs no
     model). Unit-verified with fakes (mocked subprocess); live container run pending operator go.
-  - ⬜ remaining: extend verification to **boot + route + selector** acceptance checks
-    (Playwright — needs the M2 image to add Playwright); **egress allowlist** (api.anthropic.com
-    + npm only — current cut uses full bridge network); fix token accounting (capture cumulative
-    SDK usage, not just the final ResultMessage — `cost_usd` is already accurate)
+  - ✅ **acceptance checks** (`acceptance_runner.py`, **kind-dispatched**): after a green
+    rebuild, boots a static server on `dist/` and runs the spec's `acceptance_checks` —
+    `route_status` over plain HTTP (no browser; this is also the seam a backend API would
+    reuse), `selector_present` via Playwright/chromium (imported lazily, only when a selector
+    check exists). Failures fold into `VerifyReport.log_tail` so the repair loop can fix them;
+    `VerifyGate` now requires build-green **and** all checks pass. M2 image gains Playwright.
+    HTTP path unit-tested against a real local server; the Playwright path is docker/live-gated.
+  - ⬜ remaining: **egress allowlist** (api.anthropic.com + npm only — current cut uses full
+    bridge network); fix token accounting (capture cumulative SDK usage, not just the final
+    ResultMessage — `cost_usd` is already accurate). **Operator-gated:** rebuild the M2 image
+    (now includes Playwright) + one live `--build` run to verify the full loop end-to-end.
 - **M3** ⬜ — deploy → preview URL + run report
 - **M4** ⬜ — `ManagedExecutor` (Managed Agents) behind the same seam
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)
