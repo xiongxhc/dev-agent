@@ -1,8 +1,7 @@
-"""`devagent run <input>` — wire up config, sandbox, the no-op phase + its gate,
-budget, and ledger, then run the orchestrator and report the run id + status.
-
-A `build_sandbox` hook is injectable so tests can run the full wiring against a fake
-sandbox without Docker."""
+"""`devagent run <prd>` — the M2 brain pipeline: intake -> spec -> plan, each a bounded
+LLM call gated deterministically. Brain phases run on the host (NullSandbox); the build
+phase (next increment) uses the real Docker sandbox. Produced artifacts (Brief/Spec/Plan)
+are written to runs/<id>/ as JSON for inspection."""
 
 import argparse
 import sys
@@ -12,25 +11,23 @@ from pathlib import Path
 
 from .budget import Budget
 from .config import Config
-from .gates import ContainerExitZero
 from .ledger import Ledger
 from .orchestrator import SUCCEEDED, Orchestrator
-from .phases.noop import NoopPhase
-from .sandbox import Sandbox
+from .phase_gates import BriefGate, PlanGate, SpecGate
+from .phases.intake import IntakePhase
+from .phases.plan import PlanPhase
+from .phases.spec import SpecPhase
+from .sandbox import NullSandbox
 
 
 def _new_run_id() -> str:
     return f"run-{int(time.time())}-{uuid.uuid4().hex[:8]}"
 
 
-def _default_build_sandbox(run_dir: Path, cfg: Config, ledger: Ledger) -> Sandbox:
-    return Sandbox(run_dir=run_dir, image=cfg.image, ledger=ledger)
-
-
-def main(argv: list[str] | None = None, *, build_sandbox=_default_build_sandbox) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="devagent")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    run_p = sub.add_parser("run", help="run the pipeline on an input (PRD file)")
+    run_p = sub.add_parser("run", help="run the pipeline on a PRD file")
     run_p.add_argument("input", help="path to a PRD/requirement file")
     args = parser.parse_args(argv)
 
@@ -44,17 +41,24 @@ def main(argv: list[str] | None = None, *, build_sandbox=_default_build_sandbox)
     ledger = Ledger(run_dir)
     ledger.append({"event": "input", "path": args.input})
 
-    sandbox = build_sandbox(run_dir, cfg, ledger)
-    budget = Budget(cfg.max_tokens, cfg.max_seconds, cfg.max_retries)
     orch = Orchestrator(
-        phases=[NoopPhase()],
-        gates={"noop": ContainerExitZero()},
-        budget=budget,
+        phases=[IntakePhase(args.input), SpecPhase(), PlanPhase()],
+        gates={"intake": BriefGate(), "spec": SpecGate(), "plan": PlanGate()},
+        budget=Budget(cfg.max_tokens, cfg.max_seconds, cfg.max_retries),
         ledger=ledger,
-        sandbox=sandbox,
+        sandbox=NullSandbox(),  # brain phases run on host; build phase (later) uses Sandbox
     )
     status = orch.run()
+
+    # Persist the validated artifacts produced so far for inspection.
+    for name, artifact in orch.artifacts.items():
+        if hasattr(artifact, "model_dump_json"):
+            (run_dir / f"{name}.json").write_text(artifact.model_dump_json(indent=2))
+
     print(f"{run_id} {status}")
+    plan = orch.artifacts.get("plan")
+    if status == SUCCEEDED and plan is not None:
+        print(f"  -> {len(plan.tasks)} tasks; artifacts in {run_dir}")
     return 0 if status == SUCCEEDED else 1
 
 

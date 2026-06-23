@@ -14,6 +14,7 @@ devagent = "devagent.cli:main"
 [tool.pytest.ini_options]
 markers = [
     "docker: requires a running Docker daemon (containment + e2e tests)",
+    "live: spends real API tokens; runs only with DEVAGENT_RUN_LIVE=1",
 ]
 
 [tool.setuptools.packages.find]

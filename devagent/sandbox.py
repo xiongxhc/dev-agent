@@ -29,6 +29,21 @@ class SandboxError(RuntimeError):
     pass
 
 
+class NullSandbox:
+    """No-op sandbox for host-only phases (the brain phases — intake/spec/plan — call the
+    LLM and emit artifacts; they never execute code). The build phase uses the real
+    Sandbox. .run() raises so a host-only phase that wrongly tries to exec is caught."""
+
+    def __enter__(self) -> "NullSandbox":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        return None
+
+    def run(self, cmd):
+        raise SandboxError("NullSandbox cannot run commands — this phase must not use the sandbox")
+
+
 class Sandbox:
     """Context manager. Enter -> a detached --rm container; .run() execs inside it;
     exit -> the container is force-removed (proves disposability)."""

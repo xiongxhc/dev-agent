@@ -29,10 +29,12 @@ class Orchestrator:
     sandbox: SandboxCtx
 
     def run(self) -> str:
+        self.artifacts: dict = {}  # exposed to the caller (cli persists Brief/Spec/Plan)
         self.ledger.append({"event": "run_start", "phases": [p.name for p in self.phases]})
         try:
             with self.sandbox as sb:
                 ctx = PhaseContext(sandbox=sb, budget=self.budget, ledger=self.ledger)
+                self.artifacts = ctx.artifacts  # same ref — accumulates as phases run
                 for phase in self.phases:
                     self.budget.tick()  # pre-phase wall-clock/retry/token guard
                     result = phase.run(ctx)
