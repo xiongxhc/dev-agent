@@ -9,6 +9,7 @@ from pathlib import Path
 from .executor import BuildResult
 from .gates import GateResult
 from .schema import Brief, Plan, Spec
+from .verifier import VerifyReport
 
 
 def _precheck(result, expected_type) -> GateResult | None:
@@ -118,4 +119,26 @@ class BuildGate:
         index = Path(build.repo_path) / "dist" / "index.html"
         if not index.is_file():
             return GateResult(False, f"no dist/index.html under {build.repo_path!r}")
+        return GateResult(True)
+
+
+@dataclass
+class VerifyGate:
+    """Passes iff the deterministic rebuild-from-source succeeded AND produced the bundle.
+
+    Reads the VerifyReport (rm -rf dist && pnpm install --frozen-lockfile && pnpm build):
+    the build command must have exited 0 and dist/index.html must exist afterwards. This
+    is the trusted re-check that BuildResult.success is not."""
+
+    name: str = "rebuilds_from_source"
+
+    def check(self, result) -> GateResult:
+        fail = _precheck(result, VerifyReport)
+        if fail:
+            return fail
+        rep: VerifyReport = result.output_artifact
+        if not rep.build_ok:
+            return GateResult(False, f"rebuild from source failed (exit {rep.exit_code})")
+        if not rep.dist_present:
+            return GateResult(False, "rebuild produced no dist/index.html")
         return GateResult(True)

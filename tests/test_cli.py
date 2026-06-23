@@ -45,7 +45,10 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
     writes the bundle, so the whole PRD->spec->plan->build flow runs without Docker/tokens."""
     import json
 
+    from pathlib import Path
+
     from devagent.executor import BuildResult
+    from devagent.verifier import VerifyReport
 
     monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path))
     _patch_llm(monkeypatch)
@@ -55,12 +58,20 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
             pass
 
         def build(self, req):
-            dist = __import__("pathlib").Path(req.workdir) / "dist"
+            dist = Path(req.workdir) / "dist"
             dist.mkdir(parents=True, exist_ok=True)
             (dist / "index.html").write_text("<html></html>")
             return BuildResult(repo_path=req.workdir, success=True, tokens_in=10, tokens_out=5)
 
+    class FakeVerifier:
+        def __init__(self, *a, **k):
+            pass
+
+        def verify(self, req):  # the rebuild-from-source re-check (no Docker in the test)
+            return VerifyReport(build_ok=True, dist_present=True, exit_code=0)
+
     monkeypatch.setattr("devagent.cli.SdkExecutor", FakeSdk)
+    monkeypatch.setattr("devagent.cli.BuildVerifier", FakeVerifier)
 
     rc = cli.main(["run", "--build", "examples/hello.md"])
     assert rc == 0
@@ -69,7 +80,8 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
 
     rd = next(iter(tmp_path.glob("run-*")))
     events = [json.loads(line) for line in (rd / "ledger.jsonl").read_text().splitlines()]
-    assert any(e["event"] == "phase" and e["phase"] == "build" for e in events)
-    build_gate = next(e for e in events if e["event"] == "gate" and e["phase"] == "build")
-    assert build_gate["ok"] is True
+    phases_run = [e["phase"] for e in events if e["event"] == "phase"]
+    assert "build" in phases_run and "verify" in phases_run
+    gates_ok = {e["phase"]: e["ok"] for e in events if e["event"] == "gate"}
+    assert gates_ok["build"] is True and gates_ok["verify"] is True
     assert (rd / "out" / "dist" / "index.html").is_file()

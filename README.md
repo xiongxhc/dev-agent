@@ -77,7 +77,8 @@ Design + research: `../docs/superpowers/specs/2026-06-22-dev-agent-research-synt
 | `phases/intake|spec|plan.py` | the brain pipeline | **Messages API** |
 | `phases/build.py` | `BuildPhase` — adapts an `Executor` into the phase pipeline; folds build tokens into the shared Budget | via Executor |
 | `executor_sdk.py` | `SdkExecutor` — contained Agent-SDK build arm (own disposable container) | **Agent SDK** |
-| `phase_gates.py` | `BriefGate`/`SpecGate`/`PlanGate`/`BuildGate` (re-checks the produced repo on disk; ignores the executor's `success` claim) | no |
+| `phases/verify.py` `verifier.py` | `VerifyPhase` + `BuildVerifier` — rebuild from source in a clean container (`--frozen-lockfile`); the trusted re-check (no API key) | no |
+| `phase_gates.py` | `BriefGate`/`SpecGate`/`PlanGate`/`BuildGate`/`VerifyGate` (the build gates re-check the produced repo; they ignore the executor's `success` claim) | no |
 | `phases/noop.py` | M1 containment probe | no |
 
 ---
@@ -90,7 +91,8 @@ python -m devagent.cli run examples/hello.md            # brain only: intake -> 
 # writes runs/<id>/{intake,spec,plan}.json + an append-only ledger.jsonl
 
 python -m devagent.cli run --build examples/hello.md     # + contained build (needs Docker)
-# -> also runs SdkExecutor -> built app in runs/<id>/out/, gated by BuildGate
+# -> SdkExecutor builds -> BuildGate -> VerifyPhase rebuilds from source -> VerifyGate
+# -> built app in runs/<id>/out/
 ```
 
 `--build` is opt-in because it requires Docker (the M2 sandbox image) and spends build
@@ -126,11 +128,16 @@ skip when no Docker daemon is present (for CI).
     into the shared Budget; `BuildGate` re-checks the produced repo on disk (`dist/index.html`)
     and **does not trust** `BuildResult.success`. Unit-verified with a fake executor (no
     Docker/tokens); one gated live `--build` run still pending operator go.
-  - ⬜ remaining: upgrade the **build gate** to a real `pnpm build` re-run / pinned-deps
-    check (current cut is a disk re-check only); **verify phase** (Playwright
-    boot+route+selector); **repair loop** (cap 2–3); **egress allowlist** (api.anthropic.com
-    + npm only — current cut uses full bridge network); fix token accounting (capture
-    cumulative SDK usage, not just the final ResultMessage — `cost_usd` is already accurate)
+  - ✅ **deterministic build re-verification** (`VerifyPhase` + `VerifyGate`): rebuilds the
+    executor's output FROM SOURCE in a clean container (`rm -rf dist && pnpm install
+    --frozen-lockfile && pnpm build`) — `--frozen-lockfile` is the pinned-deps check; the
+    `rm -rf dist` ensures a real build produced the bundle. Needs no API key (runs no model).
+    Unit-verified with a fake verifier (mocked subprocess); live container run pending operator go.
+  - ⬜ remaining: extend `VerifyPhase` to **boot + route + selector** acceptance checks
+    (Playwright — needs the M2 image to add Playwright); **repair loop** (cap 2–3, fed the
+    `VerifyReport.log_tail` diagnostics); **egress allowlist** (api.anthropic.com + npm only
+    — current cut uses full bridge network); fix token accounting (capture cumulative SDK
+    usage, not just the final ResultMessage — `cost_usd` is already accurate)
 - **M3** ⬜ — deploy → preview URL + run report
 - **M4** ⬜ — `ManagedExecutor` (Managed Agents) behind the same seam
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)

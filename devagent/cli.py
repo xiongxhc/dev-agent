@@ -14,12 +14,14 @@ from .config import Config
 from .executor_sdk import SdkExecutor
 from .ledger import Ledger
 from .orchestrator import SUCCEEDED, Orchestrator
-from .phase_gates import BriefGate, BuildGate, PlanGate, SpecGate
+from .phase_gates import BriefGate, BuildGate, PlanGate, SpecGate, VerifyGate
 from .phases.build import BuildPhase
 from .phases.intake import IntakePhase
 from .phases.plan import PlanPhase
 from .phases.spec import SpecPhase
+from .phases.verify import VerifyPhase
 from .sandbox import NullSandbox
+from .verifier import BuildVerifier
 
 
 def _new_run_id() -> str:
@@ -53,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = run_dir / "out"
         phases.append(BuildPhase(executor=SdkExecutor(), workdir=str(out_dir), run_id=run_id))
         gates["build"] = BuildGate()
+        # Re-verify the executor's output by rebuilding from source (don't trust its claim).
+        phases.append(VerifyPhase(verifier=BuildVerifier(), workdir=str(out_dir), run_id=run_id))
+        gates["verify"] = VerifyGate()
 
     orch = Orchestrator(
         phases=phases,
