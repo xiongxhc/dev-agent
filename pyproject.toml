@@ -3,7 +3,7 @@ name = "devagent"
 version = "0.1.0"
 description = "Headless autonomous web-app builder (M1: skeleton + sandbox)"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.6"]
+dependencies = ["pydantic>=2.6", "anthropic>=0.69"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
