@@ -1,49 +1,116 @@
 # dev-agent
 
-Headless autonomous web-app builder. **Status: Milestone 1 — skeleton + sandbox.**
+A headless, autonomous **web-app builder**: give it a PRD (or, later, a reference URL),
+and it produces a built, deployed web app — unattended. A deterministic Python harness
+drives bounded Claude calls (**LLM brain, deterministic hands**), with a deterministic
+gate between every phase.
 
-A deterministic Python harness drives bounded Claude phases (LLM brain, deterministic
-hands). M1 builds the harness skeleton and the disposable, hardened container sandbox —
-and proves containment — **before any token is spent** (the only phase so far is a
-no-op shell command). See the design + research under
-`../docs/superpowers/specs/2026-06-22-dev-agent-research-synthesis.md`.
+**Status: M2 in progress.** The shared harness + the `intake → spec → plan` brain
+pipeline are built and live-verified. The build Executor (which writes and builds the
+actual app) is the next increment.
+
+---
+
+## Two layers — don't conflate them
+
+There are two completely separate "which Claude tech" questions here:
+
+### 1. What we use to *develop* dev-agent → **Claude Code Agent Teams**
+The repo's code is built and reviewed by spawning **managed teammates** (the experimental
+Agent Teams feature) — parallel Claude Code sessions that review, fix, research, and
+build on disjoint files. This is our **dev-time tool**. It is interactive-only and is
+**not part of the product**.
+
+### 2. What dev-agent *runs on* at runtime → depends on the phase
+| Phase | Runtime tech | Status |
+|---|---|---|
+| **Brain** — intake / spec / plan (emit validated artifacts, no code execution) | **Anthropic Messages API** (`anthropic` pkg, forced tool-use → pydantic) | ✅ built |
+| **Build Executor** — writes files, runs the build, iterates (the A/B seam) | arm A: **Claude Agent SDK** · arm B: **Claude Managed Agents** | ⬜ next (A) / M4 (B) |
+
+So today the product uses **only the Messages API**. The **Agent SDK** and **Managed
+Agents** appear only behind the swappable `Executor` seam at the build step — that's
+where the planned A/B test lives. Neither is wired yet.
+
+> Why the brain uses neither: intake/spec/plan are **shared** across both A/B arms and
+> only emit artifacts — the Messages API is the simplest correct tool. The
+> Agent-SDK-vs-Managed-Agents choice only matters where code is actually executed: the
+> build Executor.
+
+---
+
+## Architecture
+
+```
+PRD/URL ─▶ intake ─▶ spec ─▶ plan ─▶ [ Executor ] ─▶ verify ─▶ deploy ─▶ report
+           └──────── shared, gated ────────┘   │      └────── shared ──────┘
+                                    ┌───────────┴───────────┐
+                              SdkExecutor              ManagedExecutor
+                          (Agent SDK, your              (Managed Agents,
+                           Docker sandbox)              hosted/self-hosted)
+   a deterministic gate (schema-valid? build 0? routes 200?) sits after every phase
+```
+
+- **Deterministic harness** (`orchestrator.py`) owns sequencing, gates, budgets, and
+  stop conditions — control flow is code, never the model.
+- **Executor seam** (`executor.py`) is the one swappable component; everything else is
+  shared, which is what makes the A/B fair. `BuildResult.success` is the executor's
+  claim and is **not trusted** — gates re-check the produced repo.
+- **Hardened sandbox** (`sandbox.py`) — disposable `docker run --rm`, network-closed by
+  default, all caps dropped, read-only rootfs, non-root, `out/` the only writable mount.
+  Brain phases use a `NullSandbox` (host-side, no container).
+
+Design + research: `../docs/superpowers/specs/2026-06-22-dev-agent-research-synthesis.md`.
+
+---
+
+## What's built (by module)
+
+| Module | Job | Uses Claude? |
+|---|---|---|
+| `orchestrator.py` `budget.py` `ledger.py` `gates.py` | harness: phase loop, hard ceilings, audit ledger, deterministic gates | no |
+| `sandbox.py` | hardened disposable Docker sandbox (+ `NullSandbox`) | no |
+| `schema.py` | pydantic `Brief`/`Spec`/`Plan` (Spec checks are machine-checkable; Plan ownership is disjoint) | no |
+| `executor.py` | the `Executor` Protocol + frozen `BuildRequest`/`BuildResult` seam | no |
+| `llm.py` | `generate_structured()` — Messages API forced tool-use → validated pydantic | **Messages API** |
+| `phases/intake|spec|plan.py` | the brain pipeline | **Messages API** |
+| `phase_gates.py` | `BriefGate`/`SpecGate`/`PlanGate` | no |
+| `phases/noop.py` | M1 containment probe | no |
+
+---
 
 ## Run
 
 ```bash
 python -m devagent.cli run examples/hello.md
-# -> "run-<ts>-<id> succeeded"   (provisions a --rm container, runs the no-op phase,
-#    gate passes, records the run to runs/<id>/ledger.jsonl, destroys the container)
+# -> "run-<id> succeeded  -> N tasks; artifacts in runs/<id>"
+# writes runs/<id>/{intake,spec,plan}.json + an append-only ledger.jsonl
 ```
 
-Requires a running Docker daemon. Config via env: `DEVAGENT_IMAGE`, `DEVAGENT_RUNS_DIR`,
-`DEVAGENT_MAX_TOKENS`, `DEVAGENT_MAX_SECONDS`, `DEVAGENT_MAX_RETRIES`.
+Brain phases spend tokens (Messages API). The key is read from `ANTHROPIC_API_KEY` — put
+it in a gitignored `dev-agent/.env` (`ANTHROPIC_API_KEY=...`) and `source` it, or export
+it. Billing is **pay-per-token** — the Agent SDK / Managed Agents both require an API key
+(Pro/Max subscription auth is not permitted for programmatic/headless use).
 
 ## Test
 
 ```bash
-.venv/bin/python -m pytest -q            # unit suite (no Docker)
-.venv/bin/python -m pytest -q -m docker  # containment + e2e (needs Docker)
+.venv/bin/python -m pytest -q                       # unit suite (no Docker, no tokens)
+.venv/bin/python -m pytest -q -m docker             # containment + sandbox (needs Docker)
+DEVAGENT_RUN_LIVE=1 .venv/bin/python -m pytest -q -m live   # live pipeline (spends tokens)
 ```
+`DEVAGENT_REQUIRE_DOCKER=1` makes the containment suite **fail** rather than silently
+skip when no Docker daemon is present (for CI).
 
-## Sandbox model (M1)
+---
 
-Each run gets a disposable `docker run --rm` container, **network-closed by default**
-(`--network none`) and hardened per Anthropic's secure-deployment guidance:
-`--cap-drop ALL`, `--security-opt no-new-privileges`, `--read-only`, non-root `--user`,
-pid/mem/cpu limits. The run's `out/` directory is the **only** writable host mount. The
-exact `docker run` argv + image digest are recorded to the ledger for auditability.
+## Milestones
 
-## M2 TODOs (carried from research)
-
-- Real `intake`/`spec`/`plan`/`build`/`verify` phases on the Claude Agent SDK
-  (`SdkExecutor`) — `permission_mode="dontAsk"` + explicit `allowed_tools` (NOT
-  `bypassPermissions`; subagents inherit it and can't override).
-- Relax `--network none` to an **out-of-sandbox proxy allowlist** (registries +
-  api.anthropic.com + deploy target).
-- Credential **proxy-injection** — the brain never sees deploy/API tokens.
-- Build subagents must NOT include `Agent`/`Task` in their tools (prevents nested-spawn
-  recursion); parent must include `Agent` to fan out.
-- Real build toolchain in the sandbox image (Node/pnpm, Playwright).
-- A second `ManagedExecutor` (Claude Managed Agents) behind the same `Executor` seam,
-  then the eval corpus + A/B run.
+- **M1** ✅ — skeleton + hardened disposable sandbox (proves containment, no tokens)
+- **M2** ◐ — shared pipeline + `SdkExecutor`
+  - ✅ brain phases (intake → spec → plan), gated, live-verified
+  - ⬜ build Executor: M2 image (node + `claude` CLI + toolchain), `SdkExecutor` (Agent
+    SDK fan-out in the sandbox), build gate (pnpm build + lint + pinned deps), verify
+    phase (Playwright), repair loop (cap 2–3)
+- **M3** ⬜ — deploy → preview URL + run report
+- **M4** ⬜ — `ManagedExecutor` (Managed Agents) behind the same seam
+- **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)
