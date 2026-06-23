@@ -76,12 +76,12 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
     rc = cli.main(["run", "--build", "examples/hello.md"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "succeeded" in out
+    assert "succeeded" in out and "built + verified" in out
 
     rd = next(iter(tmp_path.glob("run-*")))
     events = [json.loads(line) for line in (rd / "ledger.jsonl").read_text().splitlines()]
     phases_run = [e["phase"] for e in events if e["event"] == "phase"]
-    assert "build" in phases_run and "verify" in phases_run
+    assert "build" in phases_run  # build phase now owns verify+repair internally
     gates_ok = {e["phase"]: e["ok"] for e in events if e["event"] == "gate"}
-    assert gates_ok["build"] is True and gates_ok["verify"] is True
+    assert gates_ok["build"] is True  # gated by VerifyGate (rebuild-from-source)
     assert (rd / "out" / "dist" / "index.html").is_file()

@@ -36,6 +36,12 @@ class SdkExecutor:
         dev.mkdir(parents=True, exist_ok=True)
         (dev / "spec.json").write_text(req.spec.model_dump_json())
         (dev / "plan.json").write_text(req.plan.model_dump_json())
+        repair = dev / "repair.txt"
+        if req.repair_context:
+            # A repair pass: hand the runner the prior verify diagnostics to fix.
+            repair.write_text(req.repair_context)
+        elif repair.exists():
+            repair.unlink()  # stale diagnostics from a prior pass must not leak in
 
         argv = [
             "docker", "run", "--rm",

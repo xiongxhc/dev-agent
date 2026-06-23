@@ -36,6 +36,17 @@ succeeds and a dist/ directory is produced.
 - Keep it minimal and idiomatic. Stop once `pnpm build` passes.
 """
 
+REPAIR_PREFIX = """\
+This is a REPAIR pass. A previous attempt was rebuilt from source and FAILED with the \
+diagnostics below. The existing files are already in /out — fix the specific failures, \
+do not start over. Keep the lockfile valid (`pnpm install --frozen-lockfile` must pass).
+
+BUILD FAILURE DIAGNOSTICS:
+{diagnostics}
+
+---
+"""
+
 
 async def run(max_turns: int) -> None:
     spec = json.loads((DEV / "spec.json").read_text())
@@ -52,6 +63,9 @@ async def run(max_turns: int) -> None:
         spec=json.dumps(spec, indent=2),
         plan=json.dumps(plan, indent=2),
     )
+    repair_file = DEV / "repair.txt"
+    if repair_file.exists():
+        prompt = REPAIR_PREFIX.format(diagnostics=repair_file.read_text()[:4000]) + prompt
     tin = tout = 0
     cost = None
     messages = 0

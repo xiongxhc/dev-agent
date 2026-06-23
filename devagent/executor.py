@@ -22,6 +22,7 @@ class BuildRequest:
     workdir: str        # host-visible out/ dir the built repo must land in
     run_id: str
     budget: Any = None  # shared Budget instance (token/wall-clock/retry ceilings)
+    repair_context: str | None = None  # verify diagnostics for a repair pass (None = fresh build)
 
 
 @dataclass

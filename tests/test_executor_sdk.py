@@ -58,6 +58,37 @@ def test_failure_when_no_dist_produced(tmp_path, monkeypatch):
     assert "dist" in (res.error or "")
 
 
+def test_repair_context_written_for_the_runner(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+
+    def fake_run(argv, **kw):
+        (out / ".devagent").mkdir(parents=True, exist_ok=True)
+        (out / ".devagent" / "result.json").write_text("{}")
+        return _Proc()
+
+    monkeypatch.setattr(executor_sdk.subprocess, "run", fake_run)
+    req = _req(out)
+    import dataclasses
+    req = dataclasses.replace(req, repair_context="error TS2304: Cannot find name 'Foo'")
+    SdkExecutor().build(req)
+    repair = out / ".devagent" / "repair.txt"
+    assert repair.is_file()
+    assert "TS2304" in repair.read_text()
+
+
+def test_no_repair_file_on_a_fresh_build(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+
+    def fake_run(argv, **kw):
+        (out / ".devagent").mkdir(parents=True, exist_ok=True)
+        (out / ".devagent" / "result.json").write_text("{}")
+        return _Proc()
+
+    monkeypatch.setattr(executor_sdk.subprocess, "run", fake_run)
+    SdkExecutor().build(_req(out))  # repair_context is None
+    assert not (out / ".devagent" / "repair.txt").exists()
+
+
 def test_key_passed_by_name_never_in_argv(tmp_path, monkeypatch):
     out = tmp_path / "out"
     captured = {}

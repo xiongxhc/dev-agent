@@ -14,12 +14,11 @@ from .config import Config
 from .executor_sdk import SdkExecutor
 from .ledger import Ledger
 from .orchestrator import SUCCEEDED, Orchestrator
-from .phase_gates import BriefGate, BuildGate, PlanGate, SpecGate, VerifyGate
+from .phase_gates import BriefGate, PlanGate, SpecGate, VerifyGate
 from .phases.build import BuildPhase
 from .phases.intake import IntakePhase
 from .phases.plan import PlanPhase
 from .phases.spec import SpecPhase
-from .phases.verify import VerifyPhase
 from .sandbox import NullSandbox
 from .verifier import BuildVerifier
 
@@ -53,11 +52,11 @@ def main(argv: list[str] | None = None) -> int:
         # SdkExecutor self-contains its own disposable Docker container, so the
         # orchestrator's NullSandbox still suffices for the host-side brain phases.
         out_dir = run_dir / "out"
-        phases.append(BuildPhase(executor=SdkExecutor(), workdir=str(out_dir), run_id=run_id))
-        gates["build"] = BuildGate()
-        # Re-verify the executor's output by rebuilding from source (don't trust its claim).
-        phases.append(VerifyPhase(verifier=BuildVerifier(), workdir=str(out_dir), run_id=run_id))
-        gates["verify"] = VerifyGate()
+        # BuildPhase owns the repair loop: build -> rebuild-from-source verify -> repair
+        # (cap 2), then emits the VerifyReport. VerifyGate is the trusted final check.
+        phases.append(BuildPhase(executor=SdkExecutor(), workdir=str(out_dir), run_id=run_id,
+                                 verifier=BuildVerifier(), max_repairs=2))
+        gates["build"] = VerifyGate()
 
     orch = Orchestrator(
         phases=phases,
@@ -77,9 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     plan = orch.artifacts.get("plan")
     if status == SUCCEEDED and plan is not None:
         print(f"  -> {len(plan.tasks)} tasks; artifacts in {run_dir}")
-    build = orch.artifacts.get("build")
-    if status == SUCCEEDED and build is not None:
-        print(f"  -> built app in {build.repo_path}")
+    if status == SUCCEEDED and args.build:
+        print(f"  -> built + verified app in {run_dir / 'out'}")
     return 0 if status == SUCCEEDED else 1
 
 
