@@ -5,11 +5,12 @@ and it produces a built, deployed web app — unattended. A deterministic Python
 drives bounded Claude calls (**LLM brain, deterministic hands**), with a deterministic
 gate between every phase.
 
-**Status: M2 in progress.** The shared harness + the `intake → spec → plan` brain
-pipeline are built and live-verified, and the build Executor is now wired into the CLI
-as a gated `BuildPhase` — `devagent run --build <prd>` runs the whole
-`PRD → spec → plan → contained build` flow in one command. Next: upgrade the build gate
-to a full `pnpm build` re-run + add the Playwright verify phase and repair loop.
+**Status: M2 nearly complete — the full loop is live-verified.** `devagent run --build <prd>`
+runs `PRD → intake → spec → plan → build → rebuild-from-source verify → acceptance → repair`
+in one command, gated at every phase. A live run built a Vite+React+Tailwind app and passed
+both a `route_status` and a real-chromium `selector_present` check (~$0.24, ~36s, 0 repairs).
+Only the **egress allowlist** remains for M2 (the build/verify containers still use the full
+bridge network).
 
 ---
 
@@ -143,10 +144,14 @@ skip when no Docker daemon is present (for CI).
     check exists). Failures fold into `VerifyReport.log_tail` so the repair loop can fix them;
     `VerifyGate` now requires build-green **and** all checks pass. M2 image gains Playwright.
     HTTP path unit-tested against a real local server; the Playwright path is docker/live-gated.
-  - ⬜ remaining: **egress allowlist** (api.anthropic.com + npm only — current cut uses full
-    bridge network); fix token accounting (capture cumulative SDK usage, not just the final
-    ResultMessage — `cost_usd` is already accurate). **Operator-gated:** rebuild the M2 image
-    (now includes Playwright) + one live `--build` run to verify the full loop end-to-end.
+  - ✅ **token accounting fixed** + **full loop live-verified**: `sdk_runner` now reads the
+    terminal `ResultMessage`'s CUMULATIVE `usage` (input + cache-create + cache-read; the old
+    code dropped cache tokens — ~7× under-count) and persists the raw breakdown. Probed the
+    real SDK usage shape live; pure helper unit-tested against it. M2 image rebuilt with
+    Playwright; a live `--build` run went green end-to-end.
+  - ⬜ remaining (the last M2 item): **egress allowlist** — restrict the build/verify
+    containers to api.anthropic.com + the npm registry (they currently use the full bridge
+    network). Needs a design choice (out-of-sandbox proxy vs docker network rules).
 - **M3** ⬜ — deploy → preview URL + run report
 - **M4** ⬜ — `ManagedExecutor` (Managed Agents) behind the same seam
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)

@@ -11,8 +11,8 @@ import json
 import traceback
 from pathlib import Path
 
-import anyio
-from claude_agent_sdk import ClaudeAgentOptions, query
+# claude_agent_sdk + anyio are imported lazily inside run()/__main__ so this module — and
+# its pure token-accounting helper — import on the host (which lacks the SDK) for unit tests.
 
 OUT = Path("/out")
 DEV = OUT / ".devagent"
@@ -48,7 +48,21 @@ BUILD FAILURE DIAGNOSTICS:
 """
 
 
+def input_output_tokens(usage) -> tuple[int, int]:
+    """(input, output) totals from a cumulative SDK usage dict. Input INCLUDES cache
+    create + read tokens — for the trivial probe these dominated (15k cache-read vs 2k
+    fresh input), so dropping them under-counts by ~7x and is the bug this fixes."""
+    if not isinstance(usage, dict):
+        return 0, 0
+    tin = ((usage.get("input_tokens") or 0)
+           + (usage.get("cache_creation_input_tokens") or 0)
+           + (usage.get("cache_read_input_tokens") or 0))
+    return tin, (usage.get("output_tokens") or 0)
+
+
 async def run(max_turns: int) -> None:
+    from claude_agent_sdk import ClaudeAgentOptions, query
+
     spec = json.loads((DEV / "spec.json").read_text())
     plan = json.loads((DEV / "plan.json").read_text())
     opts = ClaudeAgentOptions(
@@ -66,23 +80,22 @@ async def run(max_turns: int) -> None:
     repair_file = DEV / "repair.txt"
     if repair_file.exists():
         prompt = REPAIR_PREFIX.format(diagnostics=repair_file.read_text()[:4000]) + prompt
-    tin = tout = 0
+    result_usage = None  # the terminal ResultMessage carries CUMULATIVE usage for the run
     cost = None
     messages = 0
     err = None
     try:
         async for msg in query(prompt=prompt, options=opts):
             messages += 1
-            usage = getattr(msg, "usage", None)
-            if isinstance(usage, dict):
-                tin = usage.get("input_tokens") or tin
-                tout = usage.get("output_tokens") or tout
-            c = getattr(msg, "total_cost_usd", None)
-            if c is not None:
-                cost = c
+            if getattr(msg, "total_cost_usd", None) is not None:
+                # ResultMessage: cumulative cost + usage (the per-turn AssistantMessage
+                # usages are NOT summed — the ResultMessage already totals them).
+                cost = msg.total_cost_usd
+                result_usage = getattr(msg, "usage", None)
     except Exception:
         err = traceback.format_exc()[-1500:]
 
+    tin, tout = input_output_tokens(result_usage)
     DEV.mkdir(parents=True, exist_ok=True)
     (DEV / "result.json").write_text(json.dumps({
         "ok_stream": err is None,
@@ -90,11 +103,14 @@ async def run(max_turns: int) -> None:
         "tokens_in": tin,
         "tokens_out": tout,
         "cost_usd": cost,
+        "usage": result_usage,  # raw cumulative breakdown (cache create/read) for transparency
         "error": err,
     }))
 
 
 if __name__ == "__main__":
+    import anyio
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-turns", type=int, default=40)
     args = ap.parse_args()
