@@ -10,10 +10,13 @@ re-runs the build FROM SOURCE in a clean disposable container:
 - `--frozen-lockfile` → the lockfile must exist and match package.json (the pinned-deps
   check); an unpinned or drifted dep tree fails here.
 
-Verify needs NO API key (it runs no model), so — unlike SdkExecutor — nothing secret is
-passed to the container. It DOES need npm-registry egress for `pnpm install`; like
-SdkExecutor's build, that currently uses the default bridge network (egress allowlist is
-the same shared TODO). Reuses the existing M2 image (node + pnpm); no Playwright yet.
+After a green rebuild it runs the kind-dispatched acceptance checks (acceptance_runner.py:
+route_status over HTTP, selector_present via Playwright) and folds the results into the
+VerifyReport. Verify needs NO API key (it runs no model), so — unlike SdkExecutor — nothing
+secret is passed to the container. It DOES need npm-registry egress for `pnpm install`; when
+an egress network is provided (the default for `--build`) the rebuild + acceptance run on the
+`--internal` allowlist network behind the proxy (see egress.py), else the default bridge.
+Reuses the M2 image (node + pnpm + Playwright/chromium).
 """
 
 import json
