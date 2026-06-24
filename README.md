@@ -66,7 +66,7 @@ PRD/URL ─▶ intake ─▶ spec ─▶ plan ─▶ [ Executor ] ─▶ verify 
   default, all caps dropped, read-only rootfs, non-root, `out/` the only writable mount.
   Brain phases use a `NullSandbox` (host-side, no container).
 
-Design + research: `../docs/superpowers/specs/2026-06-22-dev-agent-research-synthesis.md`.
+Design + research: `../docs/planning/specs/2026-06-22-dev-agent-research-synthesis.md`.
 
 ---
 
@@ -207,15 +207,30 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
     acceptance runner (SdkExecutor did; this didn't) — fixed + regression-tested. Note: the repair
     loop re-ran the managed build twice on that (spurious) failure, so a managed run is pricier
     than the sdk arm — capping/skipping repairs for the managed arm is worth considering.
-  - ⬜ remaining: capture managed token/cost (session-hr) into `BuildResult` for the M5 comparison.
-- **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)
-- **M6** ⬜ — **Multi-target builds (full-stack).** Generalize beyond the single
-  Vite+React+Tailwind frontend so one project can produce a **frontend + backend service + CLI
-  that work together**. Requires generalizing `Spec.stack`, the build prompt/executor, the
-  **verify** step (per-target build + boot + wait-for-port, not just `pnpm build`), and the
-  **acceptance** kinds (the dispatch seam is ready — add `command_exit`/`stdout_matches` for the
-  CLI and `api_json` for the backend; `route_status` already covers an HTTP API). Both A/B arms
-  inherit it.
+  - ⬜ remaining: capture managed token/cost (session-hr) into `BuildResult` for the A/B cost
+    comparison — **done as M5 prep** (small, self-contained; needed only for the cost comparison).
+- **Execution order (decided 2026-06-24): M6 → M5 → M7.** M5's A/B was reordered to run *after*
+  M6 so the eval measures the **real full-stack workload** (frontend + backend + CLI), not a
+  toy frontend-only corpus — its whole job is to pick the executor arm, and that choice is only
+  as good as the workload it's measured on. The executor seam makes M6 mostly shared across both
+  arms, so "build on both then decide" costs little, and it avoids paying twice for the test.
+- **M6** ⬜ *(next)* — **Flexible scope-first builder.** Invert the pipeline: a new **Scope
+  phase** turns *any* request (PRD / "copy X" / "an MCP for Y" / a URL) into a confirmed,
+  flexible `ProjectScope` — deliverable type(s), stack, and repo-or-not are **request-driven,
+  not a fixed shape** (backend-only, MCP, frontend-only, plugin, skill, full clone, any
+  language, with/without a repo). Ambiguity triggers an up-front **clarification loop** over
+  Feishu before the unattended build. Everything downstream **dispatches on the scope** via an
+  open, extensible **recipe registry**, with the **toolchain provisioned per project** (no
+  fixed image). First slice ships two recipes — `node-vite-react` (frontend) + `node-express`
+  (backend) — proven by **one live fullstack build** (frontend + backend that talk). Both A/B
+  arms inherit it. Brownfield/Java, CLI/MCP/skill recipes, reference-clone, git-binding, and
+  the M4 managed-cost leftover move to **M7 / later**. Design:
+  [`../docs/planning/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md`](../docs/planning/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md).
+- **M5** ⬜ *(after M6)* — **eval corpus + the A/B test** (the two empirical unknowns: quality,
+  cost), run on the **full-stack** corpus M6 enables. Lean first cut: ~5 fixtures (easy→hard),
+  N=2/arm, deterministic acceptance + blinded per-criterion LLM judge, dual cost normalization
+  (model-token vs all-in incl. session-hr). PRD-only; reference-URL clones + SSIM deferred
+  (URL intake doesn't exist yet).
 - **M7** ⬜ — **Git destination binding + per-trigger confirmation (Feishu-driven).** Every run
   **binds to a target git repo *before* execution**, confirmed with the operator **every time a
   new dev-agent project is triggered** (comms over **Feishu**):
