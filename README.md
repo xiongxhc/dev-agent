@@ -11,7 +11,9 @@ acceptance → repair` in one command, gated at every phase, with the build/veri
 confined to an **egress allowlist** (api.anthropic.com + npm only). A live run built a
 Vite+React+Tailwind app entirely through the proxy and passed both a `route_status` and a
 real-chromium `selector_present` check (~$0.15, 0 repairs). It then **deploys** the app to a
-local preview URL and writes an HTML **run report**. Next: M4 (the Managed-Agents A/B arm).
+local preview URL and writes an HTML **run report**. **Both A/B build arms are now live-verified**
+(`SdkExecutor` + `ManagedExecutor`, select with `DEVAGENT_EXECUTOR`); next is **M5** — the eval
+corpus + the quality-vs-cost A/B.
 
 ---
 
@@ -31,9 +33,10 @@ build on disjoint files. This is our **dev-time tool**. It is interactive-only a
 | **Brain** — intake / spec / plan (emit validated artifacts, no code execution) | **Anthropic Messages API** (`anthropic` pkg, forced tool-use → pydantic) | ✅ built |
 | **Build Executor** — writes files, runs the build, iterates (the A/B seam) | arm A: **Claude Agent SDK** · arm B: **Claude Managed Agents** | ✅ A built+live · ◐ B built + live-verified (`DEVAGENT_EXECUTOR`) |
 
-So today the product uses **only the Messages API**. The **Agent SDK** and **Managed
-Agents** appear only behind the swappable `Executor` seam at the build step — that's
-where the planned A/B test lives. Neither is wired yet.
+The brain always uses **only the Messages API**. The **Agent SDK** and **Managed Agents**
+appear only behind the swappable `Executor` seam at the build step — that's where the A/B
+test lives. **Both arms are now wired and live-verified** (pick one with `DEVAGENT_EXECUTOR=
+sdk|managed`); the comparison itself (**M5**) is what remains.
 
 > Why the brain uses neither: intake/spec/plan are **shared** across both A/B arms and
 > only emit artifacts — the Messages API is the simplest correct tool. The
