@@ -4,8 +4,9 @@ Spec+Plan, writing to the host-mounted /out. Returns a BuildResult.
 
 The API key is passed by NAME (`-e ANTHROPIC_API_KEY`) so the value flows via the host
 process env, never into the `docker run` argv (which the ledger records) — per the M1
-security review. Egress hardening (allowlist api.anthropic.com + npm only) is a TODO;
-the current cut uses the default bridge network.
+security review. When an egress network is provided (the default for `--build`), the
+container runs on the `--internal` allowlist network behind the proxy (see egress.py);
+otherwise it uses the default bridge.
 """
 
 import json
