@@ -209,3 +209,22 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
     than the sdk arm — capping/skipping repairs for the managed arm is worth considering.
   - ⬜ remaining: capture managed token/cost (session-hr) into `BuildResult` for the M5 comparison.
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)
+- **M6** ⬜ — **Multi-target builds (full-stack).** Generalize beyond the single
+  Vite+React+Tailwind frontend so one project can produce a **frontend + backend service + CLI
+  that work together**. Requires generalizing `Spec.stack`, the build prompt/executor, the
+  **verify** step (per-target build + boot + wait-for-port, not just `pnpm build`), and the
+  **acceptance** kinds (the dispatch seam is ready — add `command_exit`/`stdout_matches` for the
+  CLI and `api_json` for the backend; `route_status` already covers an HTTP API). Both A/B arms
+  inherit it.
+- **M7** ⬜ — **Git destination binding + per-trigger confirmation (Feishu-driven).** Every run
+  **binds to a target git repo *before* execution**, confirmed with the operator **every time a
+  new dev-agent project is triggered** (comms over **Feishu**):
+  - **Where code lives:** dev-agent *itself* lives in the operator's **GitHub** (this repo). The
+    **output** destination *depends* — **default Acme GitLab** — and is confirmed per trigger.
+  - **The per-trigger question (always asked):** commit the built output to a **separate repo**,
+    **no commit needed**, or **somewhere specific** (ask where).
+  - **Repo resolution:** ask whether the target repo **already exists**; if **not, create it**
+    (ask where). **New project → monorepo**; **existing project → multi-repo allowed**.
+  - Ships a `GitLabDeployer` (GitLab API / `glab` + git push, optional MR) behind the deploy seam
+    + a **path-scoped `.gitlab-ci.yml` generator** (reuses this repo's per-dir `changes:`-gated
+    monorepo-CI pattern). Per-target CI templates depend on M6.
