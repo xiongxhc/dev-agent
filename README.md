@@ -178,5 +178,15 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
 - **M3** ✅ — deploy → preview URL (local SPA preview container) + HTML run report. Verified
   end-to-end (served a real build, gate got 200, report generated). Cloud static-host deploy
   is a later pluggable adapter.
-- **M4** ⬜ — `ManagedExecutor` (Managed Agents) behind the same seam
+- **M4** ⬜ — `ManagedExecutor` (Managed Agents) behind the same seam.
+  - **DE-RISKED (2026-06-24):** Claude Managed Agents is GA-beta (launched 2026-04-08) — a
+    hosted agent runtime via `/v1/agents` + `/v1/environments` + `/v1/sessions`, beta header
+    `managed-agents-2026-04-01`, enabled by default, billed at token rates + **$0.08/session-hr**.
+    The installed `anthropic` 0.111.0 SDK supports it: `beta.{agents,environments,sessions,files}`.
+    Flow for the arm: create an agent (build prompt + `agent_toolset_20260401`) → cloud
+    environment → session → stream `user.message`(Spec+Plan) to `session.status_idle` →
+    `sessions.resources.list/retrieve` to pull the built app out of the **managed cloud sandbox**
+    into `workdir/out` → delete session. Key A/B fact: arm B builds in **Anthropic's** sandbox
+    (not our Docker), then the **shared** verify/acceptance re-checks the pulled output — the
+    seam stays fair. No code/tokens spent yet; building + live-verifying is the next step.
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)
