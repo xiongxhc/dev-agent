@@ -10,7 +10,8 @@ gate between every phase.
 acceptance → repair` in one command, gated at every phase, with the build/verify containers
 confined to an **egress allowlist** (api.anthropic.com + npm only). A live run built a
 Vite+React+Tailwind app entirely through the proxy and passed both a `route_status` and a
-real-chromium `selector_present` check (~$0.15, 0 repairs). Next: M3 (deploy → preview URL).
+real-chromium `selector_present` check (~$0.15, 0 repairs). It then **deploys** the app to a
+local preview URL and writes an HTML **run report**. Next: M4 (the Managed-Agents A/B arm).
 
 ---
 
@@ -81,6 +82,8 @@ Design + research: `../docs/superpowers/specs/2026-06-22-dev-agent-research-synt
 | `verifier.py` | `BuildVerifier` — rebuild from source (`--frozen-lockfile`) **+ acceptance checks**; the trusted re-check (no API key) | no |
 | `acceptance_runner.py` | runs in-container: boots a static server on `dist/`, runs the spec's checks **kind-dispatched** (`route_status`=HTTP, `selector_present`=Playwright, lazy) | no |
 | `egress.py` `egress_proxy.py` | egress allowlist: an `--internal` network + a tiny CONNECT proxy (in the M2 image, no extra dependency) so build/verify reach only api.anthropic.com + npm | no |
+| `deploy.py` `phases/deploy.py` `preview_server.py` | M3 deploy: a detached container serves `dist/` (SPA fallback) on a host port → preview URL; `DeployGate` proves it answers 200 | no |
+| `report.py` | M3 run report: a self-contained `report.html` (phases, gates, tokens, cost, acceptance, preview URL) from the ledger | no |
 | `phase_gates.py` | `BriefGate`/`SpecGate`/`PlanGate`/`BuildGate`/`VerifyGate` (the build gates re-check the produced repo; they ignore the executor's `success` claim) | no |
 | `phases/noop.py` | M1 containment probe | no |
 
@@ -94,7 +97,8 @@ python -m devagent.cli run examples/hello.md            # brain only: intake -> 
 # writes runs/<id>/{intake,spec,plan}.json + an append-only ledger.jsonl
 
 python -m devagent.cli run --build examples/hello.md     # + contained build (needs Docker)
-# -> SdkExecutor builds -> BuildGate -> VerifyPhase rebuilds from source -> VerifyGate
+# -> SdkExecutor builds -> rebuild-from-source verify + acceptance -> repair (cap 2)
+# -> deploy to a local preview URL -> writes runs/<id>/report.html
 # -> built app in runs/<id>/out/
 ```
 
@@ -171,6 +175,8 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
     docker-marked regression test.
 - **M2 done.** Full loop live-verified end-to-end (build + rebuild-from-source + acceptance
   incl. Playwright + repair + egress + correct token accounting). Image: `sandbox/build.sh`.
-- **M3** ⬜ — deploy → preview URL + run report
+- **M3** ✅ — deploy → preview URL (local SPA preview container) + HTML run report. Verified
+  end-to-end (served a real build, gate got 200, report generated). Cloud static-host deploy
+  is a later pluggable adapter.
 - **M4** ⬜ — `ManagedExecutor` (Managed Agents) behind the same seam
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)

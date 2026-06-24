@@ -47,7 +47,10 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
 
     from pathlib import Path
 
+    from devagent.deploy import DeployResult
     from devagent.executor import BuildResult
+    from devagent.gates import GateResult
+    from devagent.phases.base import PhaseResult
     from devagent.verifier import CheckResult, VerifyReport
 
     monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path))
@@ -72,18 +75,38 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
             return VerifyReport(build_ok=True, dist_present=True, exit_code=0,
                                 checks=[CheckResult("route_status", "/", True, "status 200")])
 
+    class FakeDeployPhase:  # no real preview container in the unit test
+        name = "deploy"
+
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, ctx):
+            art = DeployResult(url="http://localhost:9999", container="x")
+            return PhaseResult("deploy", 0, output=art.url, meta={"url": art.url}, output_artifact=art)
+
+    class FakeDeployGate:
+        name = "preview_responds"
+
+        def check(self, result):
+            return GateResult(True)
+
     monkeypatch.setattr("devagent.cli.SdkExecutor", FakeSdk)
     monkeypatch.setattr("devagent.cli.BuildVerifier", FakeVerifier)
+    monkeypatch.setattr("devagent.cli.DeployPhase", FakeDeployPhase)
+    monkeypatch.setattr("devagent.cli.DeployGate", FakeDeployGate)
 
     rc = cli.main(["run", "--build", "examples/hello.md"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "succeeded" in out and "built + verified" in out
+    assert "preview: http://localhost:9999" in out and "report:" in out
 
     rd = next(iter(tmp_path.glob("run-*")))
     events = [json.loads(line) for line in (rd / "ledger.jsonl").read_text().splitlines()]
     phases_run = [e["phase"] for e in events if e["event"] == "phase"]
-    assert "build" in phases_run  # build phase now owns verify+repair internally
+    assert "build" in phases_run and "deploy" in phases_run
     gates_ok = {e["phase"]: e["ok"] for e in events if e["event"] == "gate"}
-    assert gates_ok["build"] is True  # gated by VerifyGate (rebuild-from-source)
+    assert gates_ok["build"] is True and gates_ok["deploy"] is True
     assert (rd / "out" / "dist" / "index.html").is_file()
+    assert (rd / "report.html").is_file()  # run report always written

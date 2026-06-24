@@ -4,6 +4,7 @@ phase (next increment) uses the real Docker sandbox. Produced artifacts (Brief/S
 are written to runs/<id>/ as JSON for inspection."""
 
 import argparse
+import json
 import sys
 import time
 import uuid
@@ -12,14 +13,17 @@ from pathlib import Path
 from . import egress
 from .budget import Budget
 from .config import Config
+from .deploy import DeployGate
 from .executor_sdk import SdkExecutor
 from .ledger import Ledger
 from .orchestrator import SUCCEEDED, Orchestrator
 from .phase_gates import BriefGate, PlanGate, SpecGate, VerifyGate
 from .phases.build import BuildPhase
+from .phases.deploy import DeployPhase
 from .phases.intake import IntakePhase
 from .phases.plan import PlanPhase
 from .phases.spec import SpecPhase
+from .report import write_report
 from .sandbox import NullSandbox
 from .verifier import BuildVerifier
 
@@ -65,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
             workdir=str(out_dir), run_id=run_id,
             verifier=BuildVerifier(network=network, proxy_url=proxy), max_repairs=2))
         gates["build"] = VerifyGate()
+        # Deploy the built app to a local preview server -> URL (gated on it actually answering).
+        phases.append(DeployPhase(workdir=str(out_dir)))
+        gates["deploy"] = DeployGate()
 
     orch = Orchestrator(
         phases=phases,
@@ -80,12 +87,23 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(artifact, "model_dump_json"):
             (run_dir / f"{name}.json").write_text(artifact.model_dump_json(indent=2))
 
+    # Always write a run report (even on failure — it reads the full ledger trail).
+    deploy_art = orch.artifacts.get("deploy")
+    preview_url = deploy_art.url if deploy_art is not None else None
+    acc_path = run_dir / "out" / ".devagent" / "acceptance.json"
+    acceptance = json.loads(acc_path.read_text()).get("checks") if acc_path.is_file() else None
+    report_path = write_report(run_dir, ledger.events(), run_id,
+                               preview_url=preview_url, acceptance=acceptance)
+
     print(f"{run_id} {status}")
     plan = orch.artifacts.get("plan")
     if status == SUCCEEDED and plan is not None:
         print(f"  -> {len(plan.tasks)} tasks; artifacts in {run_dir}")
     if status == SUCCEEDED and args.build:
         print(f"  -> built + verified app in {run_dir / 'out'}")
+    if preview_url:
+        print(f"  -> preview: {preview_url}")
+    print(f"  -> report: {report_path}")
     return 0 if status == SUCCEEDED else 1
 
 
