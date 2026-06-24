@@ -117,6 +117,19 @@ skip when no Docker daemon is present (for CI).
 
 ---
 
+## Deploy
+
+The product runtime is the `devagent-sandbox:m2` image; the harness is just Python + a
+Docker daemon + `ANTHROPIC_API_KEY`, so the whole loop runs anywhere Docker does. Containers
+are disposable (`docker run --rm`) — nothing persists between runs except the built app under
+`runs/<id>/out/`.
+
+- **Build locally (this machine):** `sandbox/build.sh` → a native-arch image in your docker.
+- **Build for deploy:** `REGISTRY=ghcr.io/<you>/devagent-sandbox sandbox/build.sh multiarch`
+  → a `linux/amd64 + linux/arm64` image pushed to the registry. This Mac is **arm64**; most
+  servers are **amd64**, so an arm64-only image silently won't run there — multi-arch is
+  required (and, per a Docker limitation, can only output to a registry, so this mode pushes).
+
 ## Milestones
 
 - **M1** ✅ — skeleton + hardened disposable sandbox (proves containment, no tokens)
