@@ -16,6 +16,7 @@ from .config import Config
 from .deploy import DeployGate
 from .executor_sdk import SdkExecutor
 from .ledger import Ledger
+from .managed_executor import ManagedExecutor
 from .orchestrator import SUCCEEDED, Orchestrator
 from .phase_gates import BriefGate, PlanGate, SpecGate, VerifyGate
 from .phases.build import BuildPhase
@@ -57,16 +58,23 @@ def main(argv: list[str] | None = None) -> int:
         # SdkExecutor self-contains its own disposable Docker container, so the
         # orchestrator's NullSandbox still suffices for the host-side brain phases.
         out_dir = run_dir / "out"
-        # Egress allowlist: build/verify containers reach only api.anthropic.com + npm.
+        # Egress allowlist for OUR containers (verify always; the sdk build too). The managed
+        # arm builds on Anthropic's cloud sandbox, so it doesn't use our network — but verify
+        # still re-checks the pulled output in our egress-contained container.
         network = proxy = None
         if cfg.egress:
             network, proxy = egress.ensure()
             ledger.append({"event": "egress", "network": network, "proxy": proxy})
+        # The A/B seam: pick the build arm. Everything downstream (verify/acceptance/repair) is shared.
+        ledger.append({"event": "executor", "kind": cfg.executor})
+        if cfg.executor == "managed":
+            executor = ManagedExecutor()
+        else:
+            executor = SdkExecutor(network=network, proxy_url=proxy)
         # BuildPhase owns the repair loop: build -> rebuild-from-source verify -> repair
         # (cap 2), then emits the VerifyReport. VerifyGate is the trusted final check.
         phases.append(BuildPhase(
-            executor=SdkExecutor(network=network, proxy_url=proxy),
-            workdir=str(out_dir), run_id=run_id,
+            executor=executor, workdir=str(out_dir), run_id=run_id,
             verifier=BuildVerifier(network=network, proxy_url=proxy), max_repairs=2))
         gates["build"] = VerifyGate()
         # Deploy the built app to a local preview server -> URL (gated on it actually answering).

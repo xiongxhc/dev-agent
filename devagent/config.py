@@ -14,6 +14,7 @@ class Config:
     max_seconds: float = 1800.0
     max_retries: int = 3
     egress: bool = True  # route --build containers through the egress allowlist (DEVAGENT_EGRESS=0 to disable)
+    executor: str = "sdk"  # the A/B build arm: "sdk" (Agent SDK, our Docker) | "managed" (Managed Agents)
 
     @classmethod
     def load(cls, env: dict | None = None) -> "Config":
@@ -25,4 +26,5 @@ class Config:
             max_seconds=float(env.get("DEVAGENT_MAX_SECONDS", cls.max_seconds)),
             max_retries=int(env.get("DEVAGENT_MAX_RETRIES", cls.max_retries)),
             egress=env.get("DEVAGENT_EGRESS", "1").lower() not in ("0", "false", "no"),
+            executor=env.get("DEVAGENT_EXECUTOR", cls.executor).lower(),
         )

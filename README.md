@@ -29,7 +29,7 @@ build on disjoint files. This is our **dev-time tool**. It is interactive-only a
 | Phase | Runtime tech | Status |
 |---|---|---|
 | **Brain** — intake / spec / plan (emit validated artifacts, no code execution) | **Anthropic Messages API** (`anthropic` pkg, forced tool-use → pydantic) | ✅ built |
-| **Build Executor** — writes files, runs the build, iterates (the A/B seam) | arm A: **Claude Agent SDK** · arm B: **Claude Managed Agents** | ◐ arm A wired (A) / M4 (B) |
+| **Build Executor** — writes files, runs the build, iterates (the A/B seam) | arm A: **Claude Agent SDK** · arm B: **Claude Managed Agents** | ✅ A built+live · ◐ B built, live pending (`DEVAGENT_EXECUTOR`) |
 
 So today the product uses **only the Messages API**. The **Agent SDK** and **Managed
 Agents** appear only behind the swappable `Executor` seam at the build step — that's
@@ -78,7 +78,8 @@ Design + research: `../docs/superpowers/specs/2026-06-22-dev-agent-research-synt
 | `llm.py` | `generate_structured()` — Messages API forced tool-use → validated pydantic | **Messages API** |
 | `phases/intake|spec|plan.py` | the brain pipeline | **Messages API** |
 | `phases/build.py` | `BuildPhase` — adapts an `Executor` into the pipeline; folds build tokens into the shared Budget; owns the **repair loop** (build → verify → repair, cap 2) | via Executor |
-| `executor_sdk.py` | `SdkExecutor` — contained Agent-SDK build arm (own disposable container); a repair pass is fed the prior verify diagnostics | **Agent SDK** |
+| `executor_sdk.py` | `SdkExecutor` — arm A: contained Agent-SDK build (own disposable container); a repair pass is fed the prior verify diagnostics | **Agent SDK** |
+| `managed_executor.py` | `ManagedExecutor` — arm B: builds on **Claude Managed Agents** (hosted cloud sandbox), tars the result to `/mnt/session/outputs/`, pulls it back via the Files API | **Managed Agents** |
 | `verifier.py` | `BuildVerifier` — rebuild from source (`--frozen-lockfile`) **+ acceptance checks**; the trusted re-check (no API key) | no |
 | `acceptance_runner.py` | runs in-container: boots a static server on `dist/`, runs the spec's checks **kind-dispatched** (`route_status`=HTTP, `selector_present`=Playwright, lazy) | no |
 | `egress.py` `egress_proxy.py` | egress allowlist: an `--internal` network + a tiny CONNECT proxy (in the M2 image, no extra dependency) so build/verify reach only api.anthropic.com + npm | no |
@@ -100,6 +101,10 @@ python -m devagent.cli run --build examples/hello.md     # + contained build (ne
 # -> SdkExecutor builds -> rebuild-from-source verify + acceptance -> repair (cap 2)
 # -> deploy to a local preview URL -> writes runs/<id>/report.html
 # -> built app in runs/<id>/out/
+
+DEVAGENT_EXECUTOR=managed python -m devagent.cli run --build examples/hello.md
+# -> the A/B arm B: builds on Claude Managed Agents (hosted cloud sandbox), pulls the
+#    result back, then the SAME shared verify/acceptance/deploy/report runs locally.
 ```
 
 `--build` is opt-in because it requires Docker (the M2 sandbox image) and spends build
@@ -178,21 +183,20 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
 - **M3** ✅ — deploy → preview URL (local SPA preview container) + HTML run report. Verified
   end-to-end (served a real build, gate got 200, report generated). Cloud static-host deploy
   is a later pluggable adapter.
-- **M4** ⬜ — `ManagedExecutor` (Managed Agents) behind the same seam.
-  - **DE-RISKED (2026-06-24):** Claude Managed Agents is GA-beta (launched 2026-04-08) — a
-    hosted agent runtime via `/v1/agents` + `/v1/environments` + `/v1/sessions`, beta header
-    `managed-agents-2026-04-01`, enabled by default, billed at token rates + **$0.08/session-hr**.
-    The installed `anthropic` 0.111.0 SDK supports it: `beta.{agents,environments,sessions,files}`.
-    Flow for the arm: create an agent (build prompt + `agent_toolset_20260401`) → cloud
-    environment → session → stream `user.message`(Spec+Plan) to `session.status_idle` → pull
-    the built app out of the **managed cloud sandbox** via `files.list(scope_id=session.id,
-    betas=["managed-agents-2026-04-01"])` + `files.download(id)` → write to `workdir/out` →
-    delete session. **Output-dir gotcha (verified live):** the agent MUST write under
-    `/mnt/session/outputs/` — files written anywhere else in the sandbox are ephemeral and never
-    surface in `files.list`. Key A/B fact: arm B builds in **Anthropic's** sandbox (not our
-    Docker); the **shared** verify/acceptance then re-checks the pulled output — the seam stays
-    fair. **Residual to nail when building:** in 5 live probes the API/agent/streaming all worked
-    but a trivial `/mnt/session/outputs/hello.txt` didn't appear in `files.list` despite the exact
-    cookbook recipe — likely the agent not reliably persisting there (idles in ~12 events) or a
-    list-timing nuance; needs an agent-side `ls`-verify + a list retry/backoff, not blind probes.
+- **M4** ◐ — `ManagedExecutor` (Managed Agents, arm B) behind the same Executor seam.
+  - ✅ **built + unit-verified** (`managed_executor.py`): builds the app on **Claude Managed
+    Agents** (a hosted cloud sandbox via `beta.{agents,environments,sessions,files}`, beta
+    `managed-agents-2026-04-01`, billed token rates + $0.08/session-hr) instead of our Docker.
+    Flow: create agent (`agent_toolset_20260401`) → cloud env → session → stream the Spec+Plan
+    to `session.status_idle` → the agent **tars the project to `/mnt/session/outputs/app.tar.gz`**
+    → pull it via `files.list(scope_id=session)` + `files.download` → extract to `workdir/out`
+    → delete session. The **shared** verify/acceptance/repair then re-checks the pulled output in
+    our egress-contained Docker — so the A/B stays fair. Select the arm with `DEVAGENT_EXECUTOR=
+    managed` (default `sdk`).
+  - **De-risk resolved (2026-06-24, 6 live probes):** outputs MUST go under `/mnt/session/outputs/`
+    (elsewhere is ephemeral) AND via **bash** (the model's `write` tool didn't reliably target it).
+    A diagnostic where the agent `ls`-verified proved the round-trip: file landed, `files.list`
+    surfaced it immediately, download matched. Hence the tarball-via-bash design.
+  - ⬜ remaining: one live `--build` with `DEVAGENT_EXECUTOR=managed`; capture managed token/cost
+    (session-hr) into `BuildResult` for the M5 cost comparison.
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)
