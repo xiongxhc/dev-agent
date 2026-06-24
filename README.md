@@ -184,9 +184,15 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
     `managed-agents-2026-04-01`, enabled by default, billed at token rates + **$0.08/session-hr**.
     The installed `anthropic` 0.111.0 SDK supports it: `beta.{agents,environments,sessions,files}`.
     Flow for the arm: create an agent (build prompt + `agent_toolset_20260401`) → cloud
-    environment → session → stream `user.message`(Spec+Plan) to `session.status_idle` →
-    `sessions.resources.list/retrieve` to pull the built app out of the **managed cloud sandbox**
-    into `workdir/out` → delete session. Key A/B fact: arm B builds in **Anthropic's** sandbox
-    (not our Docker), then the **shared** verify/acceptance re-checks the pulled output — the
-    seam stays fair. No code/tokens spent yet; building + live-verifying is the next step.
+    environment → session → stream `user.message`(Spec+Plan) to `session.status_idle` → pull
+    the built app out of the **managed cloud sandbox** via `files.list(scope_id=session.id,
+    betas=["managed-agents-2026-04-01"])` + `files.download(id)` → write to `workdir/out` →
+    delete session. **Output-dir gotcha (verified live):** the agent MUST write under
+    `/mnt/session/outputs/` — files written anywhere else in the sandbox are ephemeral and never
+    surface in `files.list`. Key A/B fact: arm B builds in **Anthropic's** sandbox (not our
+    Docker); the **shared** verify/acceptance then re-checks the pulled output — the seam stays
+    fair. **Residual to nail when building:** in 5 live probes the API/agent/streaming all worked
+    but a trivial `/mnt/session/outputs/hello.txt` didn't appear in `files.list` despite the exact
+    cookbook recipe — likely the agent not reliably persisting there (idles in ~12 events) or a
+    list-timing nuance; needs an agent-side `ls`-verify + a list retry/backoff, not blind probes.
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)
