@@ -14,6 +14,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import egress
 from .executor import BuildRequest, BuildResult
 
 RUNNER = Path(__file__).parent / "sdk_runner.py"
@@ -23,12 +24,15 @@ DEFAULT_IMAGE = os.getenv("DEVAGENT_M2_IMAGE", "devagent-sandbox:m2")
 class SdkExecutor:
     def __init__(self, image: str = DEFAULT_IMAGE, runner: Path = RUNNER,
                  max_turns: int = 40, timeout: int = 1200,
-                 api_key_env: str = "ANTHROPIC_API_KEY"):
+                 api_key_env: str = "ANTHROPIC_API_KEY",
+                 network: str | None = None, proxy_url: str | None = None):
         self.image = image
         self.runner = Path(runner)
         self.max_turns = max_turns
         self.timeout = timeout
         self.api_key_env = api_key_env
+        self.network = network        # egress-allowlist network (None = default bridge)
+        self.proxy_url = proxy_url
 
     def build(self, req: BuildRequest) -> BuildResult:
         out = Path(req.workdir).resolve()
@@ -45,6 +49,7 @@ class SdkExecutor:
 
         argv = [
             "docker", "run", "--rm",
+            *egress.docker_flags(self.network, self.proxy_url),  # [] when egress disabled
             "-e", self.api_key_env,        # value via env, NOT argv (no secret in argv)
             "-e", "HOME=/home/node",
             "--user", "1000:1000",

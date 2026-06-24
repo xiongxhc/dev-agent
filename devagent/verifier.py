@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import egress
+
 DEFAULT_IMAGE = os.getenv("DEVAGENT_M2_IMAGE", "devagent-sandbox:m2")
 ACCEPTANCE_RUNNER = Path(__file__).parent / "acceptance_runner.py"
 # rm the prior bundle so only a real build can make it reappear; --frozen-lockfile pins deps.
@@ -64,14 +66,18 @@ class VerifyReport:
 
 
 class BuildVerifier:
-    def __init__(self, image: str = DEFAULT_IMAGE, timeout: int = 600):
+    def __init__(self, image: str = DEFAULT_IMAGE, timeout: int = 600,
+                 network: str | None = None, proxy_url: str | None = None):
         self.image = image
         self.timeout = timeout
+        self.network = network        # egress-allowlist network (None = default bridge)
+        self.proxy_url = proxy_url
 
     def verify(self, req: VerifyRequest) -> VerifyReport:
         out = Path(req.workdir).resolve()
         argv = [
             "docker", "run", "--rm",
+            *egress.docker_flags(self.network, self.proxy_url),
             "-e", "HOME=/home/node",
             "--user", "1000:1000",
             "-v", f"{out}:/out",
@@ -107,6 +113,9 @@ class BuildVerifier:
     def _acceptance(self, out: Path) -> list[CheckResult]:
         argv = [
             "docker", "run", "--rm",
+            # Acceptance is localhost-only, but run it behind the same allowlist anyway —
+            # a built app that phones home during the checks must not reach the internet.
+            *egress.docker_flags(self.network, self.proxy_url),
             "-e", "HOME=/home/node",
             "--user", "1000:1000",
             "-v", f"{out}:/out",

@@ -5,12 +5,12 @@ and it produces a built, deployed web app — unattended. A deterministic Python
 drives bounded Claude calls (**LLM brain, deterministic hands**), with a deterministic
 gate between every phase.
 
-**Status: M2 nearly complete — the full loop is live-verified.** `devagent run --build <prd>`
-runs `PRD → intake → spec → plan → build → rebuild-from-source verify → acceptance → repair`
-in one command, gated at every phase. A live run built a Vite+React+Tailwind app and passed
-both a `route_status` and a real-chromium `selector_present` check (~$0.24, ~36s, 0 repairs).
-Only the **egress allowlist** remains for M2 (the build/verify containers still use the full
-bridge network).
+**Status: M2 complete — the full loop is live-verified, egress-contained.** `devagent run
+--build <prd>` runs `PRD → intake → spec → plan → build → rebuild-from-source verify →
+acceptance → repair` in one command, gated at every phase, with the build/verify containers
+confined to an **egress allowlist** (api.anthropic.com + npm only). A live run built a
+Vite+React+Tailwind app entirely through the proxy and passed both a `route_status` and a
+real-chromium `selector_present` check (~$0.15, 0 repairs). Next: M3 (deploy → preview URL).
 
 ---
 
@@ -80,6 +80,7 @@ Design + research: `../docs/superpowers/specs/2026-06-22-dev-agent-research-synt
 | `executor_sdk.py` | `SdkExecutor` — contained Agent-SDK build arm (own disposable container); a repair pass is fed the prior verify diagnostics | **Agent SDK** |
 | `verifier.py` | `BuildVerifier` — rebuild from source (`--frozen-lockfile`) **+ acceptance checks**; the trusted re-check (no API key) | no |
 | `acceptance_runner.py` | runs in-container: boots a static server on `dist/`, runs the spec's checks **kind-dispatched** (`route_status`=HTTP, `selector_present`=Playwright, lazy) | no |
+| `egress.py` `egress_proxy.py` | egress allowlist: an `--internal` network + a tiny CONNECT proxy (in the M2 image, no extra dependency) so build/verify reach only api.anthropic.com + npm | no |
 | `phase_gates.py` | `BriefGate`/`SpecGate`/`PlanGate`/`BuildGate`/`VerifyGate` (the build gates re-check the produced repo; they ignore the executor's `success` claim) | no |
 | `phases/noop.py` | M1 containment probe | no |
 
@@ -133,7 +134,7 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
 ## Milestones
 
 - **M1** ✅ — skeleton + hardened disposable sandbox (proves containment, no tokens)
-- **M2** ◐ — shared pipeline + `SdkExecutor`
+- **M2** ✅ — shared pipeline + `SdkExecutor` + verify/acceptance/repair + egress
   - ✅ brain phases (intake → spec → plan), gated, live-verified
   - ✅ M2 image (node + `claude` CLI + Agent SDK + pnpm); `SdkExecutor` **live-verified** —
     contained Agent SDK built + `pnpm build`-compiled a Vite+React+Tailwind app from a
@@ -162,9 +163,14 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
     code dropped cache tokens — ~7× under-count) and persists the raw breakdown. Probed the
     real SDK usage shape live; pure helper unit-tested against it. M2 image rebuilt with
     Playwright; a live `--build` run went green end-to-end.
-  - ⬜ remaining (the last M2 item): **egress allowlist** — restrict the build/verify
-    containers to api.anthropic.com + the npm registry (they currently use the full bridge
-    network). Needs a design choice (out-of-sandbox proxy vs docker network rules).
+  - ✅ **egress allowlist** (`egress.py` + `egress_proxy.py`): build/verify containers run on
+    an `--internal` Docker network (no direct route out) behind a tiny CONNECT proxy that runs
+    in the M2 image (python3 only — no extra image to pull) and permits only api.anthropic.com
+    + the npm registry. On by default (`DEVAGENT_EGRESS=0` to disable). Live-verified: a real
+    `--build` ran end-to-end through the proxy; allow/deny/no-direct-egress codified as a
+    docker-marked regression test.
+- **M2 done.** Full loop live-verified end-to-end (build + rebuild-from-source + acceptance
+  incl. Playwright + repair + egress + correct token accounting). Image: `sandbox/build.sh`.
 - **M3** ⬜ — deploy → preview URL + run report
 - **M4** ⬜ — `ManagedExecutor` (Managed Agents) behind the same seam
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)

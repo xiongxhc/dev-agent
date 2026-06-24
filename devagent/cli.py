@@ -9,6 +9,7 @@ import time
 import uuid
 from pathlib import Path
 
+from . import egress
 from .budget import Budget
 from .config import Config
 from .executor_sdk import SdkExecutor
@@ -52,10 +53,17 @@ def main(argv: list[str] | None = None) -> int:
         # SdkExecutor self-contains its own disposable Docker container, so the
         # orchestrator's NullSandbox still suffices for the host-side brain phases.
         out_dir = run_dir / "out"
+        # Egress allowlist: build/verify containers reach only api.anthropic.com + npm.
+        network = proxy = None
+        if cfg.egress:
+            network, proxy = egress.ensure()
+            ledger.append({"event": "egress", "network": network, "proxy": proxy})
         # BuildPhase owns the repair loop: build -> rebuild-from-source verify -> repair
         # (cap 2), then emits the VerifyReport. VerifyGate is the trusted final check.
-        phases.append(BuildPhase(executor=SdkExecutor(), workdir=str(out_dir), run_id=run_id,
-                                 verifier=BuildVerifier(), max_repairs=2))
+        phases.append(BuildPhase(
+            executor=SdkExecutor(network=network, proxy_url=proxy),
+            workdir=str(out_dir), run_id=run_id,
+            verifier=BuildVerifier(network=network, proxy_url=proxy), max_repairs=2))
         gates["build"] = VerifyGate()
 
     orch = Orchestrator(

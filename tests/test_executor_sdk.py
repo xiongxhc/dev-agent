@@ -89,6 +89,38 @@ def test_no_repair_file_on_a_fresh_build(tmp_path, monkeypatch):
     assert not (out / ".devagent" / "repair.txt").exists()
 
 
+def test_egress_network_and_proxy_in_argv_when_configured(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    captured = {}
+
+    def fake_run(argv, **kw):
+        captured["argv"] = argv
+        (out / ".devagent").mkdir(parents=True, exist_ok=True)
+        (out / ".devagent" / "result.json").write_text("{}")
+        return _Proc()
+
+    monkeypatch.setattr(executor_sdk.subprocess, "run", fake_run)
+    SdkExecutor(network="devagent-egress", proxy_url="http://devagent-proxy:3128").build(_req(out))
+    argv = captured["argv"]
+    assert "--network" in argv and "devagent-egress" in argv
+    assert any(a == "HTTPS_PROXY=http://devagent-proxy:3128" for a in argv)
+
+
+def test_no_network_flag_when_egress_disabled(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    captured = {}
+
+    def fake_run(argv, **kw):
+        captured["argv"] = argv
+        (out / ".devagent").mkdir(parents=True, exist_ok=True)
+        (out / ".devagent" / "result.json").write_text("{}")
+        return _Proc()
+
+    monkeypatch.setattr(executor_sdk.subprocess, "run", fake_run)
+    SdkExecutor().build(_req(out))  # no network configured
+    assert "--network" not in captured["argv"]
+
+
 def test_key_passed_by_name_never_in_argv(tmp_path, monkeypatch):
     out = tmp_path / "out"
     captured = {}

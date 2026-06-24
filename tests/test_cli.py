@@ -51,6 +51,7 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
     from devagent.verifier import CheckResult, VerifyReport
 
     monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path))
+    monkeypatch.setenv("DEVAGENT_EGRESS", "0")  # fakes, no real docker network/proxy
     _patch_llm(monkeypatch)
 
     class FakeSdk:
