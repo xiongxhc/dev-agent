@@ -29,7 +29,7 @@ build on disjoint files. This is our **dev-time tool**. It is interactive-only a
 | Phase | Runtime tech | Status |
 |---|---|---|
 | **Brain** — intake / spec / plan (emit validated artifacts, no code execution) | **Anthropic Messages API** (`anthropic` pkg, forced tool-use → pydantic) | ✅ built |
-| **Build Executor** — writes files, runs the build, iterates (the A/B seam) | arm A: **Claude Agent SDK** · arm B: **Claude Managed Agents** | ✅ A built+live · ◐ B built, live pending (`DEVAGENT_EXECUTOR`) |
+| **Build Executor** — writes files, runs the build, iterates (the A/B seam) | arm A: **Claude Agent SDK** · arm B: **Claude Managed Agents** | ✅ A built+live · ◐ B built + live-verified (`DEVAGENT_EXECUTOR`) |
 
 So today the product uses **only the Messages API**. The **Agent SDK** and **Managed
 Agents** appear only behind the swappable `Executor` seam at the build step — that's
@@ -197,6 +197,12 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
     (elsewhere is ephemeral) AND via **bash** (the model's `write` tool didn't reliably target it).
     A diagnostic where the agent `ls`-verified proved the round-trip: file landed, `files.list`
     surfaced it immediately, download matched. Hence the tarball-via-bash design.
-  - ⬜ remaining: one live `--build` with `DEVAGENT_EXECUTOR=managed`; capture managed token/cost
-    (session-hr) into `BuildResult` for the M5 cost comparison.
+  - ✅ **live-verified (2026-06-24):** a real `DEVAGENT_EXECUTOR=managed --build` built a
+    Vite+React+Tailwind app on Managed Agents, tarred it, we pulled + extracted it, the shared
+    rebuild-from-source passed, and acceptance passed (`route_status /` 200 + `selector_present h1`).
+    First run surfaced one bug — the arm must write `out/.devagent/spec.json` for the shared
+    acceptance runner (SdkExecutor did; this didn't) — fixed + regression-tested. Note: the repair
+    loop re-ran the managed build twice on that (spurious) failure, so a managed run is pricier
+    than the sdk arm — capping/skipping repairs for the managed arm is worth considering.
+  - ⬜ remaining: capture managed token/cost (session-hr) into `BuildResult` for the M5 comparison.
 - **M5** ⬜ — eval corpus + the A/B test (the two empirical unknowns: quality, cost)

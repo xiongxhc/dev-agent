@@ -67,6 +67,13 @@ class ManagedExecutor:
     def build(self, req: BuildRequest) -> BuildResult:
         out = Path(req.workdir).resolve()
         out.mkdir(parents=True, exist_ok=True)
+        # The SHARED acceptance runner reads out/.devagent/spec.json for the checks; SdkExecutor
+        # writes it as part of its container setup, so the managed arm must too (else acceptance
+        # crashes on a missing spec and the run fails even though the app is fine).
+        dev = out / ".devagent"
+        dev.mkdir(parents=True, exist_ok=True)
+        (dev / "spec.json").write_text(req.spec.model_dump_json())
+        (dev / "plan.json").write_text(req.plan.model_dump_json())
         client = self._get_client()
         t0 = time.monotonic()
         session = None

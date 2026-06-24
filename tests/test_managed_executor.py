@@ -140,6 +140,17 @@ def test_failure_when_tarball_has_no_dist(tmp_path):
     assert "dist" in (res.error or "")
 
 
+def test_writes_spec_and_plan_for_shared_acceptance(tmp_path):
+    # The shared acceptance runner reads out/.devagent/spec.json; the managed arm must drop it
+    # too (SdkExecutor does). Regression for the first live run's acceptance crash.
+    out = tmp_path / "out"
+    _exec(FakeClient(_tar({"dist/index.html": "<html></html>"}))).build(_req(out))
+    assert (out / ".devagent" / "spec.json").is_file()
+    assert (out / ".devagent" / "plan.json").is_file()
+    import json
+    assert json.loads((out / ".devagent" / "spec.json").read_text())["title"] == "Hello"
+
+
 def test_session_is_always_deleted(tmp_path):
     fake = FakeClient(_tar({"dist/index.html": "<html></html>"}))
     _exec(fake).build(_req(tmp_path / "out"))
