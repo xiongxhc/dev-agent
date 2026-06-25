@@ -9,9 +9,11 @@ URL via /config.json. DeployResult.urls maps each target name to its URL; .url i
 frontend's URL (or first URL if no frontend) as the primary entry point."""
 
 import json
+import sys
 from pathlib import Path
 
 from .. import deploy
+from .. import recipes as recipes_mod
 from .base import PhaseContext, PhaseResult
 
 
@@ -43,6 +45,7 @@ class DeployPhase:
         frontends = [t for t in targets if t.type == "frontend"]
 
         urls: dict[str, str] = {}
+        health_paths: dict[str, str] = {}
         failed: list[str] = []
 
         # Start backends first; collect URLs so the frontend can be wired to them
@@ -50,6 +53,8 @@ class DeployPhase:
             url = self.start_target(self.workdir, target)
             if url:
                 urls[target.name] = url
+                recipe = recipes_mod.get(target.stack)
+                health_paths[target.name] = recipe.boot.health_path if recipe.boot else "/"
             else:
                 failed.append(target.name)
 
@@ -62,9 +67,16 @@ class DeployPhase:
                     (dist_dir / "config.json").write_text(
                         json.dumps({"apiBase": backend_url}), encoding="utf-8"
                     )
+                else:
+                    print(
+                        f"warning: frontend {target.name} has no dist/ — "
+                        "skipping config.json (apiBase wiring lost)",
+                        file=sys.stderr,
+                    )
             url = self.start_target(self.workdir, target)
             if url:
                 urls[target.name] = url
+                health_paths[target.name] = "/"
             else:
                 failed.append(target.name)
 
@@ -75,7 +87,7 @@ class DeployPhase:
                 primary_url = urls[t.name]
                 break
 
-        result = deploy.DeployResult(url=primary_url, urls=urls)
+        result = deploy.DeployResult(url=primary_url, urls=urls, health_paths=health_paths)
         all_ok = not failed and bool(urls)
         output = primary_url if all_ok else f"deploy failed for: {', '.join(failed)}"
         return PhaseResult(

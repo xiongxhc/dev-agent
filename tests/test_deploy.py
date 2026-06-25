@@ -139,6 +139,25 @@ def test_deploy_starts_each_target(monkeypatch):
     ])
     ctx = PhaseContext(sandbox=None, budget=None, ledger=None, artifacts={"scope": scope})
     res = DeployPhase(workdir="/out", start_target=fake_start).run(ctx)
-    assert set(started) == {"api", "web"}
+    # Backend must start before frontend — assert list, not set
+    assert started == ["api", "web"]
     assert res.exit_code == 0
     assert "web" in res.output_artifact.urls and "api" in res.output_artifact.urls
+
+
+def test_deploy_gate_fails_when_one_target_is_dead(tmp_path):
+    """Gate must fail if ANY target is unreachable (even if the primary URL is live)."""
+    # Spin up a real HTTP server for the "live" target
+    (tmp_path / "index.html").write_text("<html><body>hi</body></html>")
+    httpd, live_url = _serve(tmp_path)
+    dead_url = "http://127.0.0.1:1"   # nothing listening here
+    try:
+        art = DeployResult(
+            url=live_url,
+            urls={"web": live_url, "api": dead_url},
+            health_paths={"web": "/", "api": "/health"},
+        )
+        res = PhaseResult("deploy", 0, output_artifact=art)
+        assert DeployGate().check(res).ok is False
+    finally:
+        httpd.shutdown()

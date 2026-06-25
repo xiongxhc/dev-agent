@@ -34,6 +34,7 @@ class DeployResult:
     container: str | None = None
     error: str | None = None
     urls: dict[str, str] = field(default_factory=dict)
+    health_paths: dict[str, str] = field(default_factory=dict)
 
 
 def _free_port() -> int:
@@ -121,10 +122,24 @@ def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE) -> str | None
         return f"http://127.0.0.1:{host_port}"
 
 
+def _probe(full_url: str, timeout: float = 10.0) -> bool:
+    """Poll *full_url* until it returns HTTP 200 or the timeout expires."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(full_url, timeout=2) as resp:
+                if resp.status == 200:
+                    return True
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(0.2)
+    return False
+
+
 @dataclass
 class DeployGate:
-    """Passes iff the preview URL answers HTTP 200. A freshly-started container needs a
-    moment to bind, so this polls for up to ~10s before failing."""
+    """Passes iff every started target answers HTTP 200. A freshly-started container needs a
+    moment to bind, so each probe polls for up to ~10s before failing."""
 
     name: str = "preview_responds"
 
@@ -136,15 +151,17 @@ class DeployGate:
             return GateResult(False, f"{result.name} produced no output_artifact")
         if not art.url:
             return GateResult(False, "deploy produced no url")
-        deadline = time.monotonic() + 10
-        last = ""
-        while time.monotonic() < deadline:
-            try:
-                with urllib.request.urlopen(art.url, timeout=2) as resp:
-                    if resp.status == 200:
-                        return GateResult(True)
-                    last = f"status {resp.status}"
-            except (urllib.error.URLError, OSError) as e:
-                last = str(e)
-            time.sleep(0.2)
-        return GateResult(False, f"preview did not return 200: {last}")
+
+        # Multi-target path: probe EACH target; gate passes iff ALL answer 200.
+        if art.urls:
+            for name, url in art.urls.items():
+                health_path = art.health_paths.get(name, "/")
+                full_url = url.rstrip("/") + health_path
+                if not _probe(full_url):
+                    return GateResult(False, f"target '{name}' did not return 200 at {full_url}")
+            return GateResult(True)
+
+        # Legacy single-target path (backward-compat): probe art.url directly.
+        if not _probe(art.url):
+            return GateResult(False, f"preview did not return 200: {art.url}")
+        return GateResult(True)
