@@ -1,5 +1,6 @@
 import pytest
 from devagent import recipes
+from devagent.recipes.base import Recipe, ServiceSpec, Toolchain
 
 
 def test_registry_has_the_two_m6_recipes():
@@ -28,3 +29,28 @@ def test_backend_recipe_boots_and_checks_api():
     assert r.boot.health_path == "/health"
     assert "api_json" in r.supported_checks
     assert r.toolchain.image == "devagent-sandbox:m2"
+
+
+def test_servicespec_is_frozen_and_carries_run_info():
+    s = ServiceSpec(
+        image="postgres:16-alpine", port=5432,
+        env=(("POSTGRES_USER", "devagent"),),
+        volume_path="/var/lib/postgresql/data",
+        ready_cmd=("pg_isready", "-U", "devagent"),
+        conn_url_template="postgresql://devagent:devagent@{host}:{port}/app",
+    )
+    assert s.port == 5432 and s.ready_timeout_s == 60.0
+    with pytest.raises(Exception):       # frozen — no mutation
+        s.port = 1
+
+
+def test_recipe_defaults_to_build_kind_and_allows_service():
+    build = Recipe(name="x", type="frontend", toolchain=Toolchain(image="img"),
+                   scaffold_hint="h", build_cmd="b", artifact_glob="dist/x", boot=None)
+    assert build.kind == "build" and build.service is None
+    svc = Recipe(name="pg", type="datastore", toolchain=Toolchain(image="img"),
+                 kind="service",
+                 service=ServiceSpec(image="postgres:16-alpine", port=5432, env=(),
+                                     volume_path="/v", ready_cmd=("true",),
+                                     conn_url_template="postgresql://{host}:{port}/app"))
+    assert svc.kind == "service" and svc.boot is None and svc.build_cmd == ""
