@@ -1,6 +1,6 @@
 """The Executor seam + a FakeExecutor proving the contract (no SDK needed)."""
 
-from devagent.executor import BuildRequest, BuildResult, Executor
+from devagent.executor import BuildRequest, BuildResult, Executor, enrich_scope
 from devagent.schema import AcceptanceCheck, ArtifactSpec, Plan, ProjectScope, Task
 
 
@@ -39,3 +39,17 @@ def test_build_request_is_frozen(tmp_path):
         assert False, "BuildRequest must be frozen"
     except dataclasses.FrozenInstanceError:
         pass
+
+
+def test_enrich_scope_tags_kind_and_handles_service_targets():
+    scope = ProjectScope(title="t", targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api",
+                     detail={"datastore": "db", "conn_env": "DATABASE_URL"},
+                     acceptance_checks=[]),
+        ArtifactSpec(type="datastore", stack="postgres", name="db", acceptance_checks=[]),
+    ])
+    enriched = enrich_scope(scope)
+    by_name = {t["name"]: t for t in enriched["targets"]}
+    assert by_name["api"]["kind"] == "build"
+    assert by_name["db"]["kind"] == "service"
+    assert by_name["db"]["_boot"] is None        # service has no boot

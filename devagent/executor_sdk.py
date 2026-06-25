@@ -74,6 +74,7 @@ class SdkExecutor:
         built = all(
             list((out / t.name).glob(recipes.get(t.stack).artifact_glob))
             for t in req.scope.targets
+            if recipes.get(t.stack).kind == "build"
         )
         return BuildResult(
             repo_path=str(out),

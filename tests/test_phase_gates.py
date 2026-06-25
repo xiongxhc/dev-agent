@@ -1,6 +1,7 @@
-from devagent.phase_gates import PlanGate
+from devagent.phase_gates import PlanGate, BuildGate
 from devagent.phases.base import PhaseResult
 from devagent.schema import ArtifactSpec, Plan, ProjectScope, Task
+from devagent.executor import BuildResult
 
 
 def _result(artifact, exit_code=0):
@@ -61,3 +62,21 @@ def test_plan_gate_fails_on_wrong_artifact_type():
     ])
     gr = PlanGate().check(_result(wrong))
     assert gr.ok is False
+
+
+# --- BuildGate ---
+
+
+def test_build_gate_skips_service_targets(tmp_path):
+    import json
+
+    repo = tmp_path / "out"
+    (repo / ".devagent").mkdir(parents=True)
+    (repo / ".devagent" / "scope.json").write_text(json.dumps({"targets": [
+        {"name": "api", "stack": "node-express", "kind": "build", "artifact_glob": "dist/server.js"},
+        {"name": "db", "stack": "postgres", "kind": "service", "artifact_glob": ""},
+    ]}))
+    (repo / "api" / "dist").mkdir(parents=True)
+    (repo / "api" / "dist" / "server.js").write_text("x")   # only the build target has an artifact
+    res = PhaseResult("build", 0, output_artifact=BuildResult(repo_path=str(repo), success=True))
+    assert BuildGate().check(res).ok is True                # db is skipped, not failed

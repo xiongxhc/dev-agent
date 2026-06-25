@@ -58,6 +58,7 @@ def enrich_scope(scope) -> dict:
             "name": t.name, "type": t.type, "stack": t.stack,
             "detail": t.detail,
             "acceptance_checks": [c.model_dump() for c in t.acceptance_checks],
+            "kind": r.kind,
             "_scaffold_hint": r.scaffold_hint,
             "build_cmd": r.build_cmd,
             "artifact_glob": r.artifact_glob,

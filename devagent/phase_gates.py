@@ -86,6 +86,8 @@ class BuildGate:
         if scope_file.is_file():
             scope = json.loads(scope_file.read_text())
             for t in scope.get("targets", []):
+                if t.get("kind") == "service":
+                    continue                       # datastores have no buildable artifact
                 target_dir = repo / t["name"]
                 matches = list(target_dir.glob(t["artifact_glob"]))
                 if not matches:
