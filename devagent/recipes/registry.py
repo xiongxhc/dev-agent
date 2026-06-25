@@ -36,7 +36,7 @@ REGISTRY: dict[str, Recipe] = {
         scaffold_hint=_BACKEND_HINT,
         build_cmd="pnpm install --frozen-lockfile && pnpm build",
         artifact_glob="dist/server.js",
-        boot=BootSpec(cmd=["node", "dist/server.js"], port=3000, health_path="/health"),
+        boot=BootSpec(cmd=("node", "dist/server.js"), port=3000, health_path="/health"),
         supported_checks=("api_json", "route_status"),
     ),
 }

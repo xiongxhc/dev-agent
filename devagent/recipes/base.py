@@ -4,7 +4,7 @@ scaffold it, build it from source, prove the build is real, boot it for acceptan
 which sandbox toolchain it needs. The Scope phase SELECTS a recipe by name (== ArtifactSpec
 .stack); it never lets the model invent a toolchain."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,7 @@ class Toolchain:
 class BootSpec:
     """How to start a service for acceptance (None on a Recipe means 'static, no boot')."""
 
-    cmd: list[str]                               # e.g. ["node", "dist/server.js"]
+    cmd: tuple[str, ...]                          # e.g. ("node", "dist/server.js")
     port: int                                    # the port the service listens on
     health_path: str = "/health"                 # poll this for readiness
     ready_timeout_s: float = 30.0
@@ -32,4 +32,4 @@ class Recipe:
     build_cmd: str                               # run in the target dir
     artifact_glob: str                           # proof of a real build, relative to target dir
     boot: BootSpec | None
-    supported_checks: tuple[str, ...] = field(default_factory=tuple)
+    supported_checks: tuple[str, ...] = ()
