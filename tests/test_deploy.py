@@ -127,7 +127,7 @@ def test_deploy_gate_fails_on_empty_url():
 def test_deploy_starts_each_target(monkeypatch):
     started = []
 
-    def fake_start(workdir, target):     # per-target starter
+    def fake_start(workdir, target, network=None, env=None):   # per-target starter
         started.append(target.name)
         return f"http://127.0.0.1:90/{target.name}"
 

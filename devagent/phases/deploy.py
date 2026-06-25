@@ -73,12 +73,7 @@ class DeployPhase:
                 conn_env = (t.detail or {}).get("conn_env", "DATABASE_URL")
                 env[conn_env] = svc_recipe[ds].conn_url_template.format(
                     host=ds, port=svc_recipe[ds].port)
-            kw: dict = {}
-            if network is not None:
-                kw["network"] = network
-            if env:
-                kw["env"] = env
-            url = self.start_target(self.workdir, t, **kw)
+            url = self.start_target(self.workdir, t, network=network, env=env or None)
             if url:
                 urls[t.name] = url
                 recipe = recipes_mod.get(t.stack)
