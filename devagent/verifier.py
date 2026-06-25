@@ -137,7 +137,7 @@ class BuildVerifier:
             )
             return VerifyReport(
                 build_ok=all_build_ok, dist_present=all_dist_present,
-                exit_code=last_exit_code if not all_build_ok else 0,
+                exit_code=last_exit_code if not all_build_ok else 1,
                 log_tail=combined_log,
                 wall_clock_s=time.monotonic() - t0,
                 error=error,

@@ -9,6 +9,7 @@ under out/<name>/ matching the per-target structure introduced in M6.
 import json
 import subprocess
 
+from devagent import recipes
 from devagent import verifier as verifier_mod
 from devagent.verifier import BuildVerifier, VerifyRequest
 
@@ -124,6 +125,7 @@ def test_rebuild_uses_frozen_lockfile_and_carries_no_secret(tmp_path, monkeypatc
     monkeypatch.setattr(verifier_mod.subprocess, "run", fake_run)
     BuildVerifier().verify(_req(out))
     rebuild = next(a for a in argvs if not _is_acceptance(a))
+    assert "--frozen-lockfile" in recipes.get("node-vite-react").build_cmd  # pinned-deps at recipe level
     assert "--frozen-lockfile" in " ".join(rebuild)         # pinned-deps enforcement
     for argv in argvs:
         assert "ANTHROPIC_API_KEY" not in argv               # verify needs no API key
