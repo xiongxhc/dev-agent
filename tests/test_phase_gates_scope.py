@@ -40,15 +40,24 @@ def test_type_mismatch_fails():
     s = _scope(targets=[ArtifactSpec(type="frontend", stack="node-express", name="api",
                                      acceptance_checks=[AcceptanceCheck(kind="api_json", route="/h",
                                                                         json_path="ok")])])
-    assert not ScopeGate().check(_res(s)).ok
+    g = ScopeGate().check(_res(s))
+    assert not g.ok and "type" in g.reason.lower()
 
 
 def test_unsupported_check_kind_fails():
     s = _scope(targets=[ArtifactSpec(type="backend", stack="node-express", name="api",
                                      acceptance_checks=[AcceptanceCheck(kind="selector_present",
                                                                         route="/h", selector="h1")])])
-    assert not ScopeGate().check(_res(s)).ok
+    g = ScopeGate().check(_res(s))
+    assert not g.ok and "unsupported" in g.reason.lower()
 
 
 def test_phase_error_fails():
-    assert not ScopeGate().check(_res(_scope(), exit_code=1)).ok
+    g = ScopeGate().check(_res(_scope(), exit_code=1))
+    assert not g.ok and "exit" in g.reason.lower()
+
+
+def test_no_targets_fails():
+    s = ProjectScope.model_construct(title="t", targets=[], repo=None, clarifications=[])
+    g = ScopeGate().check(_res(s))
+    assert not g.ok and "no targets" in g.reason.lower()
