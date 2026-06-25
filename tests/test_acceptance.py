@@ -1,9 +1,81 @@
 """Acceptance runner — the kind-dispatch + HTTP (route_status) path, against a REAL local
 static server. No browser, no Docker (selector_present/Playwright is docker-gated)."""
 
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import pytest
 
 from devagent import acceptance_runner as ar
+from devagent.acceptance_runner import check_persistence_survives_restart
+
+
+def _make_store_server(store):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n) or b"{}")
+            new_id = str(len(store) + 1)
+            store[new_id] = body
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"id": new_id}).encode())
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps([{"id": k, **v} for k, v in store.items()]).encode())
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def test_persistence_check_passes_when_state_survives_restart():
+    store = {}                                   # the "datastore" — survives the app restart
+    srv, base = _make_store_server(store)
+    try:
+        # restart() simulates app bounce: same store, same base_url (datastore untouched).
+        result = check_persistence_survives_restart(
+            base, "/api/tasks", "POST", {"title": "buy milk"}, "id", "/api/tasks",
+            restart=lambda: base)
+        assert result["ok"] is True
+    finally:
+        srv.shutdown()
+
+
+def test_persistence_check_fails_when_state_is_lost_on_restart():
+    store = {}
+    srv, base = _make_store_server(store)
+
+    def restart_wipes_state():
+        store.clear()                            # in-memory store loses everything on restart
+        return base
+
+    try:
+        result = check_persistence_survives_restart(
+            base, "/api/tasks", "POST", {"title": "x"}, "id", "/api/tasks",
+            restart=restart_wipes_state)
+        assert result["ok"] is False
+    finally:
+        srv.shutdown()
+
+
+def test_persistence_check_fails_when_restart_unhealthy():
+    srv, base = _make_store_server({})
+    try:
+        result = check_persistence_survives_restart(
+            base, "/api/tasks", "POST", {"title": "x"}, "id", "/api/tasks",
+            restart=lambda: None)               # app never came back
+        assert result["ok"] is False and "restart" in result["detail"].lower()
+    finally:
+        srv.shutdown()
 
 
 @pytest.fixture

@@ -98,6 +98,43 @@ def check_api_json(base_url, route, method, body, json_path, json_equals) -> dic
             "detail": f"{json_path}={value!r}" + ("" if json_equals is None else f" (want {json_equals!r})")}
 
 
+def check_persistence_survives_restart(base_url, route, method, body, json_path,
+                                       verify_route, restart) -> dict:
+    """Prove durable state: write a record, restart the APP (the datastore, if any, stays up),
+    then read it back. `restart` is a callable returning the new base_url (same port) or None
+    if the app did not become healthy again."""
+    kind = "persistence_survives_restart"
+    # 1. write
+    write_url = base_url.rstrip("/") + route
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(write_url, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            created = json.loads(r.read().decode())
+    except Exception as e:  # noqa: BLE001
+        return {"kind": kind, "route": route, "ok": False, "detail": f"write failed: {e}"}
+    found, created_id = _dig(created, json_path)
+    if not found:
+        return {"kind": kind, "route": route, "ok": False,
+                "detail": f"created id not at json_path {json_path!r}"}
+    # 2. restart the app (datastore stays up)
+    new_base = restart()
+    if not new_base:
+        return {"kind": kind, "route": route, "ok": False,
+                "detail": "app did not become healthy after restart"}
+    # 3. read back — the created id must still be present
+    read_url = new_base.rstrip("/") + verify_route
+    try:
+        with urllib.request.urlopen(read_url, timeout=10) as r:
+            payload = json.loads(r.read().decode())
+    except Exception as e:  # noqa: BLE001
+        return {"kind": kind, "route": route, "ok": False, "detail": f"read-back failed: {e}"}
+    present = str(created_id) in json.dumps(payload)
+    return {"kind": kind, "route": route, "ok": present,
+            "detail": f"id {created_id!r} {'present' if present else 'missing'} after restart"}
+
+
 def check_command(workdir, argv, expected_exit, pattern) -> dict:
     try:
         proc = subprocess.run(argv, cwd=workdir, capture_output=True, text=True, timeout=60)
@@ -147,8 +184,9 @@ def _serve(directory: Path) -> tuple[socketserver.TCPServer, str]:
     return httpd, f"http://127.0.0.1:{port}"
 
 
-def run_target_checks(target: dict, base_url: str, workdir: str) -> list[dict]:
-    """Dispatch each check in *target* by kind against *base_url* (HTTP) or *workdir* (command)."""
+def run_target_checks(target: dict, base_url: str, workdir: str, restart=None) -> list[dict]:
+    """Dispatch each check in *target* by kind against *base_url* (HTTP) or *workdir* (command).
+    `restart` (set only for booted backends) lets a persistence check bounce the app."""
     out = []
     for c in target.get("acceptance_checks", []):
         k = c["kind"]
@@ -159,6 +197,14 @@ def run_target_checks(target: dict, base_url: str, workdir: str) -> list[dict]:
         elif k == "api_json":
             out.append(check_api_json(base_url, c["route"], c.get("method", "GET"),
                                       c.get("body"), c.get("json_path"), c.get("json_equals")))
+        elif k == "persistence_survives_restart":
+            if restart is None:
+                out.append({"kind": k, "ok": False,
+                            "detail": "persistence check requires a bootable backend"})
+            else:
+                out.append(check_persistence_survives_restart(
+                    base_url, c["route"], c.get("method", "POST"), c.get("body"),
+                    c.get("json_path"), c.get("verify_route"), restart))
         elif k in ("command_exit", "stdout_matches"):
             out.append(check_command(workdir, c["argv"], c.get("expected_exit", 0), c.get("pattern")))
         else:
@@ -195,34 +241,45 @@ def main() -> None:
         static_dir = target.get("_static_dir")  # relative subpath under /out/<name>, e.g. "dist"
 
         if boot:
-            # Boot the service in the target directory with PORT env var set
             env = {**os.environ, "PORT": str(boot["port"])}
-            proc = subprocess.Popen(boot["cmd"], cwd=workdir, env=env)
             health_url = f"http://127.0.0.1:{boot['port']}{boot.get('health_path', '/health')}"
-            ready = _poll_http(health_url)
-            if not ready:
-                proc.terminate()
+            proc_cell = [subprocess.Popen(boot["cmd"], cwd=workdir, env=env)]
+            if not _poll_http(health_url):
+                proc_cell[0].terminate()
                 try:
-                    proc.wait(timeout=5)
+                    proc_cell[0].wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    proc_cell[0].kill()
                 all_results.append({
                     "kind": "boot", "target": name, "ok": False,
                     "detail": f"service did not become healthy at {health_url}",
                 })
                 continue
             base_url = f"http://127.0.0.1:{boot['port']}"
+
+            def _restart(_proc_cell=proc_cell, _env=env, _cmd=boot["cmd"], _wd=workdir,
+                         _health=health_url, _base=base_url):
+                p = _proc_cell[0]
+                p.terminate()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                _proc_cell[0] = subprocess.Popen(_cmd, cwd=_wd, env=_env)
+                return _base if _poll_http(_health) else None
+
             try:
-                results = run_target_checks(target, base_url, workdir)
+                results = run_target_checks(target, base_url, workdir, restart=_restart)
             except Exception as e:  # one target's failure must not abort the others
-                all_results.append({"kind": "target_error", "target": target.get("name"), "ok": False, "detail": str(e)})
+                all_results.append({"kind": "target_error", "target": target.get("name"),
+                                    "ok": False, "detail": str(e)})
                 continue
             finally:
-                proc.terminate()
+                proc_cell[0].terminate()
                 try:
-                    proc.wait(timeout=5)
+                    proc_cell[0].wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    proc_cell[0].kill()
         else:
             # Static frontend — serve dist (or _static_dir) with the SPA handler
             serve_path = Path(workdir) / (static_dir or "dist")
