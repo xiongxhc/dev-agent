@@ -239,6 +239,35 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
   first run surfaced a real calibration fix — the default `max_tokens` ceiling was raised
   200k→1M (it counts cache-read tokens, and a 2-target build is ~320k+). Design:
   [`../docs/planning/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md`](../docs/planning/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md).
+#### Persistence seam (agent-decided storage)
+
+Storage is **the agent's per-PRD decision** — the Scope phase chooses one of three options:
+**none**, **SQLite** (in-process; declared via `detail.persist_path`), or a **managed datastore
+target** (`postgres` or `mongo`, declared via `detail.datastore` + `detail.conn_env`, default conn
+env `DATABASE_URL`). No operator input required.
+
+Managed datastores are declared as **service recipes** (`kind="service"`, carrying a `ServiceSpec`:
+image, port, env, volume_path, ready_cmd, conn_url_template). `postgres` (postgres:16-alpine) and
+`mongo` (mongo:7) are registered. Service recipes carry no source and no acceptance checks of their
+own.
+
+**Verify** — when the scope includes a datastore target — brings up a real sibling datastore
+container on a per-run Docker bridge network (alias = target name), readiness-polls it, injects the
+resolved connection URL into the rebuilt-from-source backend boot, runs acceptance checks including
+`persistence_survives_restart` (writes a record, **restarts the app process** while the datastore
+stays up, then reads it back — proving state lives in storage, not memory), and tears the container
+and its named volume down when done. Egress allowlist is preserved on the common path.
+
+**Deploy** orders datastores → backends → frontends, creates a shared network when datastores are
+present, injects each backend's connection URL, and uses a **named volume** so preview data survives
+`docker restart` of the app container.
+
+Live fixture: `examples/fullstack-persistent.md` (`DEVAGENT_RUN_LIVE=1` required). The live run is
+**PENDING** an operator-gated execution (spends tokens; needs Docker + pullable postgres/mongo images).
+Unit suite: 168 passed, 3 skipped (the 3 skips are all operator-gated live tests).
+
+Design: [`../docs/planning/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md`](../docs/planning/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md).
+
 - **M5** ⬜ *(after M6)* — **eval corpus + the A/B test** (the two empirical unknowns: quality,
   cost), run on the **full-stack** corpus M6 enables. Lean first cut: ~5 fixtures (easy→hard),
   N=2/arm, deterministic acceptance + blinded per-criterion LLM judge, dual cost normalization
