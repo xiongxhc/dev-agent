@@ -29,7 +29,7 @@ class Orchestrator:
     sandbox: SandboxCtx
 
     def run(self) -> str:
-        self.artifacts: dict = {}  # exposed to the caller (cli persists Brief/Spec/Plan)
+        self.artifacts: dict = {}  # exposed to the caller (cli persists scope/plan/etc.)
         self.ledger.append({"event": "run_start", "phases": [p.name for p in self.phases]})
         try:
             with self.sandbox as sb:

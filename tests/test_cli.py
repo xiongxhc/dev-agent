@@ -1,36 +1,65 @@
 """CLI wiring of the brain pipeline — no live tokens (the phases' LLM call is patched)."""
 
+import devagent.llm as llm
+
 from devagent import cli
 from devagent.phases.base import PhaseContext, PhaseResult
-from devagent.schema import (AcceptanceCheck, ArtifactSpec, Brief, Plan,
-                              ProjectScope, Spec, Task)
+from devagent.schema import AcceptanceCheck, ArtifactSpec, Plan, ProjectScope, Task
 
 USAGE = {"tokens_in": 1, "tokens_out": 1}
 
 
-def _patch_llm(monkeypatch):
-    brief = Brief(source="prd", title="Hello", summary="A page", requirements=["show headline"])
-    spec = Spec(title="Hello", pages=["/"],
-                acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")])
-    plan = Plan(tasks=[Task(id="t1", description="scaffold", owned_files=["web/src/App.tsx"])])
-    scope = ProjectScope(title="Hello", targets=[
+def _make_scope():
+    return ProjectScope(title="Hello", targets=[
         ArtifactSpec(type="frontend", stack="node-vite-react", name="web",
                      detail={"pages": ["/"]},
                      acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")]),
     ])
-    # patch the name bound in each phase module (they did `from ..llm import ...`)
-    monkeypatch.setattr("devagent.phases.intake.generate_structured", lambda *a, **k: (brief, USAGE))
-    monkeypatch.setattr("devagent.phases.spec.generate_structured", lambda *a, **k: (spec, USAGE))
-    # PlanPhase now reads ctx.artifacts["scope"] (M6); the CLI pipeline still wires
-    # SpecPhase -> PlanPhase (SpecPhase stores under "spec", not "scope") — ScopePhase
-    # replaces this seam in Task 10. For now, patch PlanPhase.run directly so the CLI
-    # wiring tests exercise orchestrator/gate logic; also seed ctx.artifacts["scope"] so
-    # BuildPhase (which reads scope, not spec) can proceed in the --build test.
-    def _fake_plan_run(self, ctx: PhaseContext) -> PhaseResult:
-        ctx.artifacts["scope"] = scope  # BuildPhase reads ctx.artifacts["scope"]
-        return PhaseResult(name="plan", exit_code=0, output=f"{len(plan.tasks)} tasks",
-                           meta=USAGE, output_artifact=plan)
-    monkeypatch.setattr("devagent.phases.plan.PlanPhase.run", _fake_plan_run)
+
+
+def _make_plan():
+    return Plan(tasks=[Task(id="t1", description="scaffold", owned_files=["web/src/App.tsx"])])
+
+
+def _patch_llm(monkeypatch):
+    scope = _make_scope()
+    plan = _make_plan()
+
+    def _fake_generate(prompt, schema, **kw):
+        if schema is ProjectScope:
+            return scope, USAGE
+        return plan, USAGE
+
+    monkeypatch.setattr("devagent.phases.scope.generate_structured", _fake_generate)
+    monkeypatch.setattr("devagent.phases.plan.generate_structured", _fake_generate)
+
+
+def test_run_uses_scope_phase(monkeypatch, tmp_path):
+    """CLI now wires ScopePhase -> PlanPhase; verifies scope artifact is produced."""
+    monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path))
+
+    scope = _make_scope()
+    plan = _make_plan()
+
+    def _fake_generate(prompt, schema, **kw):
+        if schema is ProjectScope:
+            return scope, USAGE
+        return plan, USAGE
+
+    monkeypatch.setattr("devagent.phases.scope.generate_structured", _fake_generate)
+    monkeypatch.setattr("devagent.phases.plan.generate_structured", _fake_generate)
+
+    prd = tmp_path / "prd.md"
+    prd.write_text("a health API")
+
+    rc = cli.main(["run", str(prd)])
+    assert rc == 0
+
+    run_dirs = list(tmp_path.glob("run-*"))
+    assert len(run_dirs) == 1
+    rd = run_dirs[0]
+    assert (rd / "scope.json").is_file()
+    assert (rd / "plan.json").is_file()
 
 
 def test_cli_brain_pipeline_succeeds_and_persists_artifacts(tmp_path, monkeypatch, capsys):
@@ -44,8 +73,7 @@ def test_cli_brain_pipeline_succeeds_and_persists_artifacts(tmp_path, monkeypatc
     run_dirs = list(tmp_path.glob("run-*"))
     assert len(run_dirs) == 1
     rd = run_dirs[0]
-    assert (rd / "intake.json").is_file()
-    assert (rd / "spec.json").is_file()
+    assert (rd / "scope.json").is_file()
     assert (rd / "plan.json").is_file()
     text = (rd / "ledger.jsonl").read_text()
     assert '"status": "succeeded"' in text
@@ -58,7 +86,7 @@ def test_cli_missing_input_exits_2(tmp_path, monkeypatch):
 
 def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, capsys):
     """--build appends a BuildPhase+BuildGate; the executor is swapped for a fake that
-    writes the bundle, so the whole PRD->spec->plan->build flow runs without Docker/tokens."""
+    writes the bundle, so the whole PRD->scope->plan->build flow runs without Docker/tokens."""
     import json
 
     from pathlib import Path

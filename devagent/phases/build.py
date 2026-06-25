@@ -1,7 +1,7 @@
 """BuildPhase — the adapter that plugs an Executor into the phase pipeline, and the home
 of the M2 repair loop.
 
-It reads the frozen Spec+Plan from ctx.artifacts and hands them to the injected Executor
+It reads the frozen ProjectScope+Plan from ctx.artifacts and hands them to the injected Executor
 (SdkExecutor in M2, ManagedExecutor in M4 — the A/B seam). Tokens the executor reports are
 folded into the shared Budget so the build counts against the same ceilings as the brain
 phases (a runaway build aborts the run via BudgetExceeded, like any phase).

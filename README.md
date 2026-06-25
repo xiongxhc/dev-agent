@@ -5,15 +5,14 @@ and it produces a built, deployed web app — unattended. A deterministic Python
 drives bounded Claude calls (**LLM brain, deterministic hands**), with a deterministic
 gate between every phase.
 
-**Status: M2 complete — the full loop is live-verified, egress-contained.** `devagent run
---build <prd>` runs `PRD → intake → spec → plan → build → rebuild-from-source verify →
-acceptance → repair` in one command, gated at every phase, with the build/verify containers
-confined to an **egress allowlist** (api.anthropic.com + npm only). A live run built a
-Vite+React+Tailwind app entirely through the proxy and passed both a `route_status` and a
-real-chromium `selector_present` check (~$0.15, 0 repairs). It then **deploys** the app to a
-local preview URL and writes an HTML **run report**. **Both A/B build arms are now live-verified**
-(`SdkExecutor` + `ManagedExecutor`, select with `DEVAGENT_EXECUTOR`); next is **M5** — the eval
-corpus + the quality-vs-cost A/B.
+**Status: M6 implemented + fully unit-verified.** `devagent run --build <prd>` runs
+`PRD → scope → plan → multi-target build → per-target rebuild-from-source verify → acceptance
+→ repair → deploy` in one command, gated at every phase. The pipeline is now **scope-first and
+flexible**: any request is classified into a confirmed `ProjectScope` (frontend, backend, fullstack,
+or any registered recipe) before building. Both A/B arms (`SdkExecutor` + `ManagedExecutor`)
+inherit the new flexible pipeline. A live fullstack E2E test (`test_live_fullstack_build`) has
+been **added** but is **pending an operator live run** (requires Docker + tokens; run with
+`DEVAGENT_RUN_LIVE=1`). Previous M2/M3/M4 frontend-only loop remains live-verified.
 
 ---
 
@@ -48,13 +47,14 @@ sdk|managed`); the comparison itself (**M5**) is what remains.
 ## Architecture
 
 ```
-PRD/URL ─▶ intake ─▶ spec ─▶ plan ─▶ [ Executor ] ─▶ verify ─▶ deploy ─▶ report
-           └──────── shared, gated ────────┘   │      └────── shared ──────┘
-                                    ┌───────────┴───────────┐
-                              SdkExecutor              ManagedExecutor
-                          (Agent SDK, your              (Managed Agents,
-                           Docker sandbox)              hosted/self-hosted)
+PRD/URL ─▶ scope ─▶ plan ─▶ [ Executor ] ─▶ verify ─▶ deploy ─▶ report
+           └──────── shared, gated ────┘   │      └────── shared ──────┘
+                                ┌──────────┴───────────┐
+                          SdkExecutor              ManagedExecutor
+                      (Agent SDK, your              (Managed Agents,
+                       Docker sandbox)              hosted/self-hosted)
    a deterministic gate (schema-valid? build 0? routes 200?) sits after every phase
+   scope → any recipe type (frontend, backend, fullstack, CLI, MCP, ...)
 ```
 
 - **Deterministic harness** (`orchestrator.py`) owns sequencing, gates, budgets, and
@@ -76,10 +76,10 @@ Design + research: `../docs/planning/specs/2026-06-22-dev-agent-research-synthes
 |---|---|---|
 | `orchestrator.py` `budget.py` `ledger.py` `gates.py` | harness: phase loop, hard ceilings, audit ledger, deterministic gates | no |
 | `sandbox.py` | hardened disposable Docker sandbox (+ `NullSandbox`) | no |
-| `schema.py` | pydantic `Brief`/`Spec`/`Plan` (Spec checks are machine-checkable; Plan ownership is disjoint) | no |
+| `schema.py` | pydantic `ProjectScope`/`ArtifactSpec`/`Plan` (scope is flexible + recipe-gated; Plan ownership is disjoint) | no |
 | `executor.py` | the `Executor` Protocol + frozen `BuildRequest`/`BuildResult` seam | no |
 | `llm.py` | `generate_structured()` — Messages API forced tool-use → validated pydantic | **Messages API** |
-| `phases/intake|spec|plan.py` | the brain pipeline | **Messages API** |
+| `phases/scope|plan.py` | the brain pipeline (scope classifies + clarifies; plan tasks the scope) | **Messages API** |
 | `phases/build.py` | `BuildPhase` — adapts an `Executor` into the pipeline; folds build tokens into the shared Budget; owns the **repair loop** (build → verify → repair, cap 2) | via Executor |
 | `executor_sdk.py` | `SdkExecutor` — arm A: contained Agent-SDK build (own disposable container); a repair pass is fed the prior verify diagnostics | **Agent SDK** |
 | `managed_executor.py` | `ManagedExecutor` — arm B: builds on **Claude Managed Agents** (hosted cloud sandbox), tars the result to `/mnt/session/outputs/`, pulls it back via the Files API | **Managed Agents** |
@@ -88,7 +88,7 @@ Design + research: `../docs/planning/specs/2026-06-22-dev-agent-research-synthes
 | `egress.py` `egress_proxy.py` | egress allowlist: an `--internal` network + a tiny CONNECT proxy (in the M2 image, no extra dependency) so build/verify reach only api.anthropic.com + npm | no |
 | `deploy.py` `phases/deploy.py` `preview_server.py` | M3 deploy: a detached container serves `dist/` (SPA fallback) on a host port → preview URL; `DeployGate` proves it answers 200 | no |
 | `report.py` | M3 run report: a self-contained `report.html` (phases, gates, tokens, cost, acceptance, preview URL) from the ledger | no |
-| `phase_gates.py` | `BriefGate`/`SpecGate`/`PlanGate`/`BuildGate`/`VerifyGate` (the build gates re-check the produced repo; they ignore the executor's `success` claim) | no |
+| `phase_gates.py` | `ScopeGate`/`PlanGate`/`BuildGate`/`VerifyGate` (scope gate checks recipe registry; build gates re-check the produced repo; they ignore the executor's `success` claim) | no |
 | `phases/noop.py` | M1 containment probe | no |
 
 ---
@@ -96,14 +96,21 @@ Design + research: `../docs/planning/specs/2026-06-22-dev-agent-research-synthes
 ## Run
 
 ```bash
-python -m devagent.cli run examples/hello.md            # brain only: intake -> spec -> plan
+python -m devagent.cli run examples/hello.md            # brain only: scope -> plan
 # -> "run-<id> succeeded  -> N tasks; artifacts in runs/<id>"
-# writes runs/<id>/{intake,spec,plan}.json + an append-only ledger.jsonl
+# writes runs/<id>/{scope,plan}.json + an append-only ledger.jsonl
 
 python -m devagent.cli run --build examples/hello.md     # + contained build (needs Docker)
 # -> SdkExecutor builds -> rebuild-from-source verify + acceptance -> repair (cap 2)
 # -> deploy to a local preview URL -> writes runs/<id>/report.html
 # -> built app in runs/<id>/out/
+
+python -m devagent.cli run --build examples/fullstack.md  # fullstack: backend + frontend
+# -> scope classifies into two targets (node-express API + node-vite-react web)
+# -> per-target build -> per-target verify (api_json + route_status) -> deploy
+
+python -m devagent.cli run --answers answers.md examples/hello.md
+# -> re-run after providing answers to clarification questions
 
 DEVAGENT_EXECUTOR=managed python -m devagent.cli run --build examples/hello.md
 # -> the A/B arm B: builds on Claude Managed Agents (hosted cloud sandbox), pulls the
@@ -214,17 +221,17 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
   toy frontend-only corpus — its whole job is to pick the executor arm, and that choice is only
   as good as the workload it's measured on. The executor seam makes M6 mostly shared across both
   arms, so "build on both then decide" costs little, and it avoids paying twice for the test.
-- **M6** ⬜ *(next)* — **Flexible scope-first builder.** Invert the pipeline: a new **Scope
-  phase** turns *any* request (PRD / "copy X" / "an MCP for Y" / a URL) into a confirmed,
-  flexible `ProjectScope` — deliverable type(s), stack, and repo-or-not are **request-driven,
-  not a fixed shape** (backend-only, MCP, frontend-only, plugin, skill, full clone, any
-  language, with/without a repo). Ambiguity triggers an up-front **clarification loop** over
-  Feishu before the unattended build. Everything downstream **dispatches on the scope** via an
-  open, extensible **recipe registry**, with the **toolchain provisioned per project** (no
-  fixed image). First slice ships two recipes — `node-vite-react` (frontend) + `node-express`
-  (backend) — proven by **one live fullstack build** (frontend + backend that talk). Both A/B
-  arms inherit it. Brownfield/Java, CLI/MCP/skill recipes, reference-clone, git-binding, and
-  the M4 managed-cost leftover move to **M7 / later**. Design:
+- **M6** ✅ *(implemented + fully unit-verified; live fullstack E2E pending operator run)* —
+  **Flexible scope-first builder.** Inverted the pipeline: a new **Scope phase** turns *any*
+  request into a confirmed, flexible `ProjectScope` — deliverable type(s), stack, and repo-or-not
+  are **request-driven** (backend-only, MCP, frontend-only, fullstack, any language). Ambiguity
+  triggers a clarification loop (Feishu out / `--answers` in). Everything downstream dispatches
+  on the scope via an open **recipe registry**; toolchain is provisioned per project. Ships two
+  recipes: `node-vite-react` (frontend) + `node-express` (backend). CLI rewired:
+  `scope → plan [→ build → verify → deploy]`; `intake`/`spec` phases and `Brief`/`Spec`/`BriefGate`/
+  `SpecGate` retired. Both A/B arms inherit the new pipeline. A live fullstack E2E test
+  (`test_live_fullstack_build`, `examples/fullstack.md`) is **added** but **pending an operator
+  live run** (needs Docker + tokens; `DEVAGENT_RUN_LIVE=1`). Design:
   [`../docs/planning/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md`](../docs/planning/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md).
 - **M5** ⬜ *(after M6)* — **eval corpus + the A/B test** (the two empirical unknowns: quality,
   cost), run on the **full-stack** corpus M6 enables. Lean first cut: ~5 fixtures (easy→hard),

@@ -1,7 +1,8 @@
-"""`devagent run <prd>` — the M2 brain pipeline: intake -> spec -> plan, each a bounded
-LLM call gated deterministically. Brain phases run on the host (NullSandbox); the build
-phase (next increment) uses the real Docker sandbox. Produced artifacts (Brief/Spec/Plan)
-are written to runs/<id>/ as JSON for inspection."""
+"""`devagent run <prd>` — the brain pipeline: scope -> plan [-> build -> deploy].
+
+Each phase is a bounded LLM call gated deterministically. Brain phases run on the host
+(NullSandbox); the build phase uses a real Docker sandbox (SdkExecutor or ManagedExecutor).
+Produced artifacts (scope.json / plan.json) are written to runs/<id>/ for inspection."""
 
 import argparse
 import json
@@ -18,12 +19,11 @@ from .executor_sdk import SdkExecutor
 from .ledger import Ledger
 from .managed_executor import ManagedExecutor
 from .orchestrator import SUCCEEDED, Orchestrator
-from .phase_gates import BriefGate, PlanGate, SpecGate, VerifyGate
+from .phase_gates import PlanGate, ScopeGate, VerifyGate
 from .phases.build import BuildPhase
 from .phases.deploy import DeployPhase
-from .phases.intake import IntakePhase
 from .phases.plan import PlanPhase
-from .phases.spec import SpecPhase
+from .phases.scope import ScopePhase
 from .report import write_report
 from .sandbox import NullSandbox
 from .verifier import BuildVerifier
@@ -40,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("input", help="path to a PRD/requirement file")
     run_p.add_argument("--build", action="store_true",
                        help="run the contained build phase (SdkExecutor; needs Docker + spends tokens)")
+    run_p.add_argument("--answers", help="answers file for a prior clarification round")
     args = parser.parse_args(argv)
 
     if not Path(args.input).is_file():
@@ -52,8 +53,8 @@ def main(argv: list[str] | None = None) -> int:
     ledger = Ledger(run_dir)
     ledger.append({"event": "input", "path": args.input})
 
-    phases = [IntakePhase(args.input), SpecPhase(), PlanPhase()]
-    gates = {"intake": BriefGate(), "spec": SpecGate(), "plan": PlanGate()}
+    phases = [ScopePhase(args.input, answers_path=args.answers), PlanPhase()]
+    gates = {"scope": ScopeGate(), "plan": PlanGate()}
     if args.build:
         # SdkExecutor self-contains its own disposable Docker container, so the
         # orchestrator's NullSandbox still suffices for the host-side brain phases.

@@ -3,9 +3,10 @@
 A phase is input -> bounded work in the sandbox -> PhaseResult. Phases never touch
 the host filesystem directly; all work goes through ctx.sandbox.
 
-Inter-phase data flow (M2): a phase returns a typed `output_artifact`; the orchestrator
-stuffs it into ctx.artifacts[phase.name] so downstream phases (spec reads intake's Brief,
-build reads the frozen Spec+Plan) can consume it. The orchestrator is the only writer."""
+Inter-phase data flow: a phase returns a typed `output_artifact`; the orchestrator
+stuffs it into ctx.artifacts[phase.name] so downstream phases (plan reads scope's
+ProjectScope, build reads the frozen ProjectScope+Plan) can consume it. The orchestrator
+is the only writer."""
 
 from dataclasses import dataclass, field
 from typing import Any, Protocol

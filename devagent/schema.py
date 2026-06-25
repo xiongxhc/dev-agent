@@ -1,17 +1,16 @@
-"""Typed, validated artifacts that flow between phases: Brief -> Spec -> Plan.
+"""Typed, validated artifacts that flow between phases: Scope → Plan → Build.
 
-These are the frozen contracts the Executor seam consumes. The defining property of a
-Spec is that EVERY acceptance check is machine-checkable (a route+status, or a
-selector on a route) — the verify phase computes a bool from each without the model.
-The opinionated stack is fixed here (research Q1): the model fills a Spec, it does not
-choose a framework."""
+These are the frozen contracts the Executor seam consumes. `ProjectScope` is the
+confirmed, flexible contract produced by the Scope phase; it may contain one or more
+`ArtifactSpec` targets (frontend, backend, CLI, or any other registered recipe type).
+Every acceptance check in each `ArtifactSpec` is machine-checkable: `route_status`,
+`selector_present`, `api_json`, `command_exit`, or `stdout_matches` — the verify phase
+computes a bool from each without the model in the loop. The stack is OPEN (no frozen
+enum); `ScopeGate` validates each target's stack against the recipe registry."""
 
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-
-# The one blessed stack (research Q1). The scaffold template matches this.
-STACK = "vite-react-tailwind"
 
 AcceptanceKind = Literal[
     "route_status", "selector_present",   # frontend (HTTP / browser)
@@ -80,23 +79,6 @@ class ProjectScope(BaseModel):
     targets: list[ArtifactSpec] = Field(..., min_length=1)
     repo: RepoBinding | None = None
     clarifications: list[str] = Field(default_factory=list)  # open questions; empty = confirmed
-
-
-class Brief(BaseModel):
-    """Normalized intake output."""
-
-    source: Literal["prd", "url"]
-    title: str = Field(..., min_length=1)
-    summary: str = Field(..., min_length=1)
-    requirements: list[str] = Field(default_factory=list)
-
-
-class Spec(BaseModel):
-    title: str = Field(..., min_length=1)
-    stack: Literal["vite-react-tailwind"] = STACK
-    pages: list[str] = Field(..., min_length=1)
-    components: list[str] = Field(default_factory=list)
-    acceptance_checks: list[AcceptanceCheck] = Field(..., min_length=1)
 
 
 class Task(BaseModel):
