@@ -1,7 +1,9 @@
 """CLI wiring of the brain pipeline — no live tokens (the phases' LLM call is patched)."""
 
 from devagent import cli
-from devagent.schema import AcceptanceCheck, Brief, Plan, Spec, Task
+from devagent.phases.base import PhaseContext, PhaseResult
+from devagent.schema import (AcceptanceCheck, ArtifactSpec, Brief, Plan,
+                              ProjectScope, Spec, Task)
 
 USAGE = {"tokens_in": 1, "tokens_out": 1}
 
@@ -10,11 +12,23 @@ def _patch_llm(monkeypatch):
     brief = Brief(source="prd", title="Hello", summary="A page", requirements=["show headline"])
     spec = Spec(title="Hello", pages=["/"],
                 acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")])
-    plan = Plan(tasks=[Task(id="t1", description="scaffold", owned_files=["src/App.tsx"])])
+    plan = Plan(tasks=[Task(id="t1", description="scaffold", owned_files=["web/src/App.tsx"])])
+    scope = ProjectScope(title="Hello", targets=[
+        ArtifactSpec(type="frontend", stack="node-vite-react", name="web",
+                     detail={"pages": ["/"]},
+                     acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")]),
+    ])
     # patch the name bound in each phase module (they did `from ..llm import ...`)
     monkeypatch.setattr("devagent.phases.intake.generate_structured", lambda *a, **k: (brief, USAGE))
     monkeypatch.setattr("devagent.phases.spec.generate_structured", lambda *a, **k: (spec, USAGE))
-    monkeypatch.setattr("devagent.phases.plan.generate_structured", lambda *a, **k: (plan, USAGE))
+    # PlanPhase now reads ctx.artifacts["scope"] (M6); the CLI pipeline still wires
+    # SpecPhase -> PlanPhase (SpecPhase stores under "spec", not "scope") — ScopePhase
+    # replaces this seam in Task 10. For now, patch PlanPhase.run directly so the CLI
+    # wiring tests exercise orchestrator/gate logic without a real scope in the context.
+    def _fake_plan_run(self, ctx: PhaseContext) -> PhaseResult:
+        return PhaseResult(name="plan", exit_code=0, output=f"{len(plan.tasks)} tasks",
+                           meta=USAGE, output_artifact=plan)
+    monkeypatch.setattr("devagent.phases.plan.PlanPhase.run", _fake_plan_run)
 
 
 def test_cli_brain_pipeline_succeeds_and_persists_artifacts(tmp_path, monkeypatch, capsys):

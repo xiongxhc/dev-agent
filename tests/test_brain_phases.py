@@ -9,7 +9,7 @@ from devagent.phases.base import PhaseContext
 from devagent.phases.intake import IntakePhase
 from devagent.phases.plan import PlanPhase
 from devagent.phases.spec import SpecPhase
-from devagent.schema import AcceptanceCheck, Brief, Plan, Spec, Task
+from devagent.schema import AcceptanceCheck, ArtifactSpec, Brief, Plan, ProjectScope, Spec, Task
 
 
 class FakeSandbox:
@@ -32,7 +32,12 @@ SPEC = Spec(
     components=["TodoList"],
     acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")],
 )
-PLAN = Plan(tasks=[Task(id="t1", description="scaffold", owned_files=["src/App.tsx"])])
+PLAN = Plan(tasks=[Task(id="t1", description="scaffold", owned_files=["web/src/App.tsx"])])
+SCOPE = ProjectScope(title="Todo App", targets=[
+    ArtifactSpec(type="frontend", stack="node-vite-react", name="web",
+                 detail={"pages": ["/"]},
+                 acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")]),
+])
 USAGE = {"tokens_in": 12, "tokens_out": 3}
 
 
@@ -106,7 +111,7 @@ def test_spec_missing_intake_artifact_is_exit_1(monkeypatch):
     assert result.exit_code == 1
 
 
-def test_plan_reads_spec_artifact(monkeypatch):
+def test_plan_reads_scope_artifact(monkeypatch):
     seen = {}
 
     def fake(prompt, schema, **kw):
@@ -115,16 +120,16 @@ def test_plan_reads_spec_artifact(monkeypatch):
         return PLAN, USAGE
 
     monkeypatch.setattr("devagent.phases.plan.generate_structured", fake)
-    result = PlanPhase().run(make_ctx(spec=SPEC))
+    result = PlanPhase().run(make_ctx(scope=SCOPE))
 
     assert result.exit_code == 0
     assert result.output_artifact is PLAN
     assert result.meta == USAGE
     assert seen["schema"] is Plan
-    assert SPEC.title in seen["prompt"]  # spec is threaded into the prompt
+    assert SCOPE.title in seen["prompt"]  # scope title is threaded into the prompt
 
 
-def test_plan_missing_spec_artifact_is_exit_1(monkeypatch):
+def test_plan_missing_scope_artifact_is_exit_1(monkeypatch):
     monkeypatch.setattr(
         "devagent.phases.plan.generate_structured",
         lambda *a, **k: (PLAN, USAGE),

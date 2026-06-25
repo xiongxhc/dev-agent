@@ -1,49 +1,48 @@
-"""Plan brain phase: decompose the frozen Spec into an ordered, parallelizable Plan.
+"""Plan brain phase: decompose the confirmed ProjectScope into an ordered, parallelizable
+Plan spanning ALL targets. owned_files are DISJOINT across tasks (the Plan schema enforces
+this too) so build subagents never collide — across targets, files live under each target's
+dir (e.g. web/src/..., api/src/...)."""
 
-Host-side — calls the LLM, emits an artifact, never touches the sandbox. The prompt
-forces DISJOINT owned_files across tasks (the Plan schema also enforces this) so build
-subagents never collide on a file."""
+import json
 
 from ..llm import generate_structured
 from ..schema import Plan
 from .base import PhaseContext, PhaseResult
 
 _PROMPT = """\
-Decompose this Spec into an ordered Plan of build tasks.
+Decompose this multi-target project into an ordered Plan of build tasks.
 
 Rules:
+- Cover EVERY target. Put each target's files under its own directory: `<target.name>/...`.
 - Order tasks so earlier tasks unblock later ones (scaffolding/shared bits first).
-- owned_files MUST be DISJOINT across tasks: no file may appear in more than one task's
-  owned_files. Each task fully owns the files it lists. Split the work along file
-  boundaries so parallel build subagents never touch the same file.
+- owned_files MUST be DISJOINT across tasks: no file in more than one task. Split along
+  file boundaries so parallel build subagents never touch the same file.
 - Give each task a short stable id and a one-line description.
 
-Spec title: {title}
-Stack: {stack}
-Pages: {pages}
-Components: {components}
+PROJECT: {title}
+TARGETS (name | type | stack):
+{targets}
+
+TARGET DETAIL (JSON):
+{detail}
 """
 
 
 class PlanPhase:
     name = "plan"
 
+    def __init__(self, client=None):
+        self.client = client
+
     def run(self, ctx: PhaseContext) -> PhaseResult:
         try:
-            spec = ctx.artifacts["spec"]
-            prompt = _PROMPT.format(
-                title=spec.title,
-                stack=spec.stack,
-                pages=", ".join(spec.pages),
-                components=", ".join(spec.components),
-            )
-            plan, usage = generate_structured(prompt, Plan)
-            return PhaseResult(
-                name=self.name,
-                exit_code=0,
-                output=f"{len(plan.tasks)} tasks",
-                meta=usage,
-                output_artifact=plan,
-            )
+            scope = ctx.artifacts["scope"]
+            targets = "\n".join(f"- {t.name} | {t.type} | {t.stack}" for t in scope.targets)
+            detail = json.dumps({t.name: t.detail for t in scope.targets}, indent=2)
+            prompt = _PROMPT.format(title=scope.title, targets=targets, detail=detail)
+            plan, usage = generate_structured(prompt, Plan, client=self.client)
+            return PhaseResult(name=self.name, exit_code=0,
+                               output=f"{len(plan.tasks)} tasks", meta=usage,
+                               output_artifact=plan)
         except Exception as e:
             return PhaseResult(name=self.name, exit_code=1, output=str(e))
