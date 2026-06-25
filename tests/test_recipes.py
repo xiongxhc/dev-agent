@@ -54,3 +54,21 @@ def test_recipe_defaults_to_build_kind_and_allows_service():
                                      volume_path="/v", ready_cmd=("true",),
                                      conn_url_template="postgresql://{host}:{port}/app"))
     assert svc.kind == "service" and svc.boot is None and svc.build_cmd == ""
+
+
+def test_postgres_service_recipe_registered():
+    r = recipes.get("postgres")
+    assert r.kind == "service" and r.type == "datastore"
+    assert r.boot is None and r.supported_checks == ()
+    assert r.service.image == "postgres:16-alpine" and r.service.port == 5432
+    assert "{host}" in r.service.conn_url_template and "{port}" in r.service.conn_url_template
+
+
+def test_mongo_service_recipe_registered():
+    r = recipes.get("mongo")
+    assert r.kind == "service" and r.service.image == "mongo:7"
+    assert r.service.port == 27017
+
+
+def test_node_express_supports_persistence_check():
+    assert "persistence_survives_restart" in recipes.get("node-express").supported_checks

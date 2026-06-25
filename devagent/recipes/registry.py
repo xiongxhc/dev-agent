@@ -3,7 +3,7 @@
 makes a new artifact type buildable with NO harness change — that is the extensibility
 seam M7 (Java/Python, brownfield detection) plugs into."""
 
-from .base import BootSpec, Recipe, Toolchain
+from .base import BootSpec, Recipe, ServiceSpec, Toolchain
 
 NODE = Toolchain(image="devagent-sandbox:m2")    # node + pnpm + chromium + python3; npm allowlist
 
@@ -39,7 +39,29 @@ REGISTRY: dict[str, Recipe] = {
         build_cmd="pnpm install --frozen-lockfile && pnpm build",
         artifact_glob="dist/server.js",
         boot=BootSpec(cmd=("node", "dist/server.js"), port=3000, health_path="/health"),
-        supported_checks=("api_json", "route_status"),
+        supported_checks=("api_json", "route_status", "persistence_survives_restart"),
+    ),
+    "postgres": Recipe(
+        name="postgres", type="datastore", toolchain=NODE, kind="service",
+        service=ServiceSpec(
+            image="postgres:16-alpine", port=5432,
+            env=(("POSTGRES_USER", "devagent"),
+                 ("POSTGRES_PASSWORD", "devagent"),
+                 ("POSTGRES_DB", "app")),
+            volume_path="/var/lib/postgresql/data",
+            ready_cmd=("pg_isready", "-U", "devagent"),
+            conn_url_template="postgresql://devagent:devagent@{host}:{port}/app",
+        ),
+    ),
+    "mongo": Recipe(
+        name="mongo", type="datastore", toolchain=NODE, kind="service",
+        service=ServiceSpec(
+            image="mongo:7", port=27017,
+            env=(),
+            volume_path="/data/db",
+            ready_cmd=("mongosh", "--quiet", "--eval", "db.runCommand({ping:1})"),
+            conn_url_template="mongodb://{host}:{port}/app",
+        ),
     ),
 }
 
