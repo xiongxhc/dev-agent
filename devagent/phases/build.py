@@ -76,8 +76,10 @@ class BuildPhase:
 
     def _build(self, ctx: PhaseContext, req: BuildRequest):
         result = self.executor.build(req)
-        # Account spent tokens against the shared ceiling (may raise BudgetExceeded).
-        ctx.budget.add_tokens(result.tokens_in + result.tokens_out)
+        # Account spent tokens against the shared ceiling (may raise BudgetExceeded). Counts
+        # result.budget_tokens — expensive tokens only; cache-read is excluded (it's ~0.1x cost
+        # and balloons on a legitimate agentic build, falsely tripping the runaway guard).
+        ctx.budget.add_tokens(result.budget_tokens)
         return result
 
     @staticmethod

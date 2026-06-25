@@ -105,6 +105,21 @@ def test_build_phase_accounts_executor_tokens_into_shared_budget(tmp_path):
     assert budget.tokens == 2000
 
 
+def test_build_phase_excludes_cache_read_from_runaway_ceiling(tmp_path):
+    """Cache-read tokens (~0.1x cost) must NOT count against the runaway ceiling. A legitimate
+    cache-heavy build (the persistence live run: 1.39M token_in, 1.33M of it cache-read, $1.80)
+    must spend only the ~92k expensive tokens, not trip a 1M ceiling."""
+    scope, plan = _scope_plan()
+    out = tmp_path / "out"
+    ex = FakeExecutor(BuildResult(repo_path=str(out), success=True,
+                                  tokens_in=1_388_702, tokens_out=30_267,
+                                  cache_read_tokens=1_327_201))
+    budget = Budget(1_000_000, 1e9, 9)        # the exact ceiling the live run tripped
+    BuildPhase(executor=ex, workdir=str(out), run_id="r").run(_ctx(tmp_path, scope, plan, budget))
+    assert budget.tokens == 1_388_702 + 30_267 - 1_327_201   # expensive tokens only = 91,768
+    assert budget.tokens < 1_000_000                          # did NOT trip the runaway guard
+
+
 def test_build_phase_carries_cost_and_wallclock_in_meta(tmp_path):
     scope, plan = _scope_plan()
     out = tmp_path / "out"

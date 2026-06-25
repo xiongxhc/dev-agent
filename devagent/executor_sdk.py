@@ -81,6 +81,7 @@ class SdkExecutor:
             success=bool(r.get("ok_stream")) and built,  # CLAIM — the build gate re-checks
             tokens_in=int(r.get("tokens_in") or 0),
             tokens_out=int(r.get("tokens_out") or 0),
+            cache_read_tokens=int((r.get("usage") or {}).get("cache_read_input_tokens") or 0),
             wall_clock_s=wall,
             cost_usd=r.get("cost_usd"),
             transcript_path=str(result_path) if result_path.exists() else None,

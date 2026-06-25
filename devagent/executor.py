@@ -31,13 +31,22 @@ class BuildRequest:
 class BuildResult:
     repo_path: str               # built source on disk — verify runs on THIS
     success: bool                # executor's claim — NOT trusted; gates re-check
-    tokens_in: int = 0
+    tokens_in: int = 0           # reported total INCLUDING cache create+read (cost transparency)
     tokens_out: int = 0
+    cache_read_tokens: int = 0   # cheap (~0.1x) cached portion of tokens_in; excluded from budget
     wall_clock_s: float = 0.0
     transcript_path: str | None = None  # full trace -> failure-transparency metric
     tool_calls: list[dict] = field(default_factory=list)  # observability
     cost_usd: float | None = None
     error: str | None = None
+
+    @property
+    def budget_tokens(self) -> int:
+        """Tokens that count against the runaway ceiling: everything EXCEPT cache-read.
+        Cache-read (~0.1x cost) dominates an agentic build's raw token_in but is not a runaway
+        signal — counting it at full weight tripped the ceiling on a legitimate build (the
+        persistence live run hit 1.42M token_in of which 1.33M was cache-read, $1.80 total)."""
+        return self.tokens_in + self.tokens_out - self.cache_read_tokens
 
 
 class Executor(Protocol):

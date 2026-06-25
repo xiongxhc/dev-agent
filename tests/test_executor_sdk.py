@@ -50,6 +50,30 @@ def test_success_when_stream_ok_and_dist_present(tmp_path, monkeypatch):
     assert res.error is None
 
 
+def test_cache_read_tokens_extracted_for_budget(tmp_path, monkeypatch):
+    """The cheap cache-read portion is pulled from the raw usage breakdown into
+    cache_read_tokens, so budget_tokens (the runaway count) excludes it."""
+    out = tmp_path / "out"
+
+    def fake_run(argv, **kw):
+        dev = out / ".devagent"
+        dev.mkdir(parents=True, exist_ok=True)
+        dev.joinpath("result.json").write_text(json.dumps({
+            "ok_stream": True, "tokens_in": 1_388_702, "tokens_out": 30_267,
+            "usage": {"input_tokens": 3312, "cache_creation_input_tokens": 58189,
+                      "cache_read_input_tokens": 1_327_201, "output_tokens": 30_267},
+        }))
+        (out / "web" / "dist").mkdir(parents=True, exist_ok=True)
+        (out / "web" / "dist" / "index.html").write_text("<html></html>")
+        return _Proc()
+
+    monkeypatch.setattr(executor_sdk.subprocess, "run", fake_run)
+    res = SdkExecutor().build(_req(out))
+    assert res.cache_read_tokens == 1_327_201          # extracted from usage
+    assert res.tokens_in == 1_388_702                  # reported total still includes it
+    assert res.budget_tokens == 91_768                 # runaway count excludes cache-read
+
+
 def test_failure_when_no_dist_produced(tmp_path, monkeypatch):
     out = tmp_path / "out"
 
