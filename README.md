@@ -262,9 +262,15 @@ and its named volume down when done. Egress allowlist is preserved on the common
 present, injects each backend's connection URL, and uses a **named volume** so preview data survives
 `docker restart` of the app container.
 
-Live fixture: `examples/fullstack-persistent.md` (`DEVAGENT_RUN_LIVE=1` required). The live run is
-**PENDING** an operator-gated execution (spends tokens; needs Docker + pullable postgres/mongo images).
-Unit suite: 168 passed, 3 skipped (the 3 skips are all operator-gated live tests).
+Live fixture: `examples/fullstack-persistent.md` (`DEVAGENT_RUN_LIVE=1` required). **Live-verified
+(2026-06-25):** given the durability PRD, the agent autonomously chose **SQLite** (`persist_path:
+data/tasks.db`, no datastore target); the build rebuilt from source, booted the API, and all 8
+acceptance checks went green — including `persistence_survives_restart` (POST a task → kill &
+relaunch the API process → GET still returns it: *"id 2 present after restart"*) — then deployed a
+live preview. ~$0.53, ~10 min. The first attempt surfaced a real calibration fix: the runaway token
+ceiling was double-counting cache-read tokens (~0.1× cost), so a legitimate cache-heavy build (1.42M
+token_in, 1.33M cache-read) falsely aborted at 1M; the budget now counts expensive tokens only
+(`BuildResult.budget_tokens`). Unit suite: 173 passed, 3 skipped (the 3 skips are operator-gated live).
 
 Design: [`../docs/planning/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md`](../docs/planning/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md).
 
