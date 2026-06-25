@@ -93,6 +93,8 @@ class BuildVerifier:
         last_exit_code = 0
 
         for target in targets:
+            if recipes.get(target["stack"]).kind == "service":
+                continue                          # datastores carry no source to rebuild
             name = target["name"]
             recipe = recipes.get(target["stack"])
             build_cmd = REBUILD_CMD.format(build_cmd=recipe.build_cmd)
@@ -143,8 +145,60 @@ class BuildVerifier:
                 error=error,
             )
 
-        # All targets green; run acceptance ONCE for the whole project.
-        checks = self._acceptance(out)
+        # All build targets green; bring up any datastores, then run acceptance ONCE.
+        service_targets = [t for t in targets
+                           if recipes.get(t["stack"]).kind == "service"]
+        started: list[tuple[str, str]] = []       # (container, volume)
+        created_net: str | None = None
+        accept_net = self.network                 # default: the egress network (allowlist preserved)
+        extra_env: list[str] = []
+        try:
+            if service_targets:
+                if accept_net is None:
+                    accept_net = f"devagent-verify-{req.run_id}"
+                    self.runner(["docker", "network", "create", accept_net],
+                                capture_output=True, text=True)
+                    created_net = accept_net
+                for st in service_targets:
+                    svc = recipes.get(st["stack"]).service
+                    cname = f"devagent-verify-{req.run_id}-{st['name']}"
+                    vol = f"{cname}-data"
+                    env_flags = []
+                    for k, v in svc.env:
+                        env_flags += ["-e", f"{k}={v}"]
+                    self.runner(["docker", "rm", "-f", cname], capture_output=True, text=True)
+                    self.runner([
+                        "docker", "run", "-d", "--name", cname,
+                        "--network", accept_net, "--network-alias", st["name"],
+                        *env_flags, "-v", f"{vol}:{svc.volume_path}", svc.image,
+                    ], capture_output=True, text=True)
+                    started.append((cname, vol))
+                    if not self._wait_service_ready(cname, svc.ready_cmd, svc.ready_timeout_s):
+                        return VerifyReport(
+                            build_ok=True, dist_present=True, exit_code=1,
+                            log_tail=f"datastore {st['name']!r} not ready",
+                            wall_clock_s=time.monotonic() - t0,
+                            error="datastore did not become ready",
+                        )
+                # Resolve <conn_env>=<url> for every backend that declares a datastore.
+                svc_by_name = {t["name"]: recipes.get(t["stack"]).service for t in service_targets}
+                for bt in targets:
+                    if recipes.get(bt["stack"]).kind != "build":
+                        continue
+                    ds = (bt.get("detail") or {}).get("datastore")
+                    if not ds or ds not in svc_by_name:
+                        continue
+                    conn_env = (bt.get("detail") or {}).get("conn_env", "DATABASE_URL")
+                    url = svc_by_name[ds].conn_url_template.format(host=ds, port=svc_by_name[ds].port)
+                    extra_env += ["-e", f"{conn_env}={url}"]
+            checks = self._acceptance(out, network=accept_net, extra_env=extra_env)
+        finally:
+            for cname, vol in started:
+                self.runner(["docker", "rm", "-f", cname], capture_output=True, text=True)
+                self.runner(["docker", "volume", "rm", vol], capture_output=True, text=True)
+            if created_net:
+                self.runner(["docker", "network", "rm", created_net], capture_output=True, text=True)
+
         failed = [f"{c.kind} {c.route}: {c.detail}" for c in checks if not c.ok]
         if failed:
             combined_log = (combined_log + "\nACCEPTANCE FAILURES:\n" + "\n".join(failed))[-2000:]
@@ -153,12 +207,32 @@ class BuildVerifier:
             wall_clock_s=time.monotonic() - t0, checks=checks,
         )
 
-    def _acceptance(self, out: Path) -> list[CheckResult]:
+    def _wait_service_ready(self, container: str, ready_cmd, timeout_s: float) -> bool:
+        """Poll `docker exec <container> <ready_cmd>` until it exits 0 or timeout."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            proc = self.runner(["docker", "exec", container, *ready_cmd],
+                               capture_output=True, text=True)
+            if getattr(proc, "returncode", 1) == 0:
+                return True
+            time.sleep(1.0)
+        return False
+
+    def _acceptance(self, out: Path, network: str | None = None,
+                    extra_env: list[str] | None = None) -> list[CheckResult]:
+        net = network if network is not None else self.network
+        # Proxy/allowlist flags only when on OUR egress network; a per-run bridge net (egress
+        # disabled) gets a plain --network so the booted app can reach the sibling datastore.
+        if net and net == self.network:
+            net_flags = egress.docker_flags(net, self.proxy_url)
+        elif net:
+            net_flags = ["--network", net]
+        else:
+            net_flags = []
         argv = [
             "docker", "run", "--rm",
-            # Acceptance is localhost-only, but run it behind the same allowlist anyway —
-            # a built app that phones home during the checks must not reach the internet.
-            *egress.docker_flags(self.network, self.proxy_url),
+            *net_flags,
+            *(extra_env or []),
             "-e", "HOME=/home/node",
             "--user", "1000:1000",
             "-v", f"{out}:/out",

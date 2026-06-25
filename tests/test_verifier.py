@@ -145,6 +145,46 @@ def test_verify_timeout_returns_failed_report(tmp_path, monkeypatch):
     assert "tim" in (rep.error or "").lower()
 
 
+def test_verify_brings_up_datastore_and_injects_conn_env(tmp_path):
+    dev = tmp_path / ".devagent"
+    dev.mkdir(parents=True)
+    (dev / "scope.json").write_text(json.dumps({"targets": [
+        {"name": "api", "stack": "node-express", "kind": "build",
+         "detail": {"datastore": "db", "conn_env": "DATABASE_URL"}},
+        {"name": "db", "stack": "postgres", "kind": "service", "detail": {}},
+    ]}))
+    (tmp_path / "api" / "dist").mkdir(parents=True)
+    (tmp_path / "api" / "dist" / "server.js").write_text("x")
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if "/acceptance.py" in argv:
+            (tmp_path / ".devagent" / "acceptance.json").write_text(
+                '{"checks":[{"kind":"persistence_survives_restart","route":"/api/tasks",'
+                '"ok":true,"detail":"present"}],"all_pass":true}')
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})
+
+    rep = BuildVerifier(runner=fake_run, network="devagent-egress",
+                        proxy_url="http://devagent-proxy:3128").verify(
+        VerifyRequest(workdir=str(tmp_path), run_id="r1"))
+    flat = [" ".join(map(str, a)) for a in calls]
+    # datastore started detached with its image, a named volume, and an alias == target name
+    assert any("run" in f and "-d" in f and "postgres:16-alpine" in f
+               and "--network-alias" in f and "db" in f for f in flat)
+    assert any("pg_isready" in f for f in flat)                      # readiness poll via docker exec
+    # acceptance container received the resolved connection URL
+    accept = next(f for f in flat if "/acceptance.py" in f)
+    assert "DATABASE_URL=postgresql://devagent:devagent@db:5432/app" in accept
+    # teardown removed the datastore container AND its named volume
+    assert any(f.startswith("docker rm -f") and "r1" in f for f in flat) or \
+           any("rm" in f and "-f" in f and "r1" in f for f in flat)
+    assert any("volume" in f and "rm" in f for f in flat)
+    assert rep.ok is True
+    # the service target was NOT rebuilt (no `sh -c` build for it)
+    assert not any("/out/db" in f for f in flat)
+
+
 def test_verifier_loops_targets_and_aggregates(tmp_path, monkeypatch):
     # scope.json with two targets
     dev = tmp_path / ".devagent"
