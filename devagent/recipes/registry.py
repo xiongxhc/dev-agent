@@ -11,8 +11,10 @@ _FRONTEND_HINT = (
     "Scaffold a Vite + React + Tailwind app in this target's directory: package.json "
     "(PIN exact dependency versions — no ^ or ~), vite.config, tailwind.config, "
     "postcss.config, index.html, and src/. Implement every page (a route that renders) "
-    "and satisfy every acceptance check. If the spec lists a backend base URL, read it "
-    "from an env var (import.meta.env.VITE_API_BASE) defaulting to that URL."
+    "and satisfy every acceptance check. For the API base URL: at app startup fetch "
+    "`/config.json` and use its `apiBase` field as the API base URL (the deploy step "
+    "writes this file into dist/ so the pre-built bundle discovers the backend URL at "
+    "runtime without a rebuild)."
 )
 _BACKEND_HINT = (
     "Scaffold an Express + TypeScript HTTP API in this target's directory: package.json "

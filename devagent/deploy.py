@@ -4,15 +4,21 @@ proves the URL actually answers HTTP 200.
 
 Unlike SdkExecutor/BuildVerifier this needs no API key — a static server runs no model, so
 nothing secret is passed to the container (the docker argv carries no key). Reuses the M2
-image (python3 only) and the same `--user 1000:1000`, `:ro`-mount argv style."""
+image (python3 only) and the same `--user 1000:1000`, `:ro`-mount argv style.
 
+M6 extension: `start_target(out_dir, target)` starts one target per recipe type — backend
+targets are run detached via docker on a host port; frontend targets are served statically
+via preview_server.py. Backend(s) start first; the frontend receives a /config.json with the
+backend's URL so the pre-built bundle can discover the API base at runtime."""
+
+import json
 import os
 import socket
 import subprocess
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .gates import GateResult
@@ -27,6 +33,7 @@ class DeployResult:
     url: str
     container: str | None = None
     error: str | None = None
+    urls: dict[str, str] = field(default_factory=dict)
 
 
 def _free_port() -> int:
@@ -59,6 +66,59 @@ def start_preview(out_dir, image: str = DEFAULT_IMAGE, port: int | None = None) 
 
 def stop_preview() -> None:
     subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True, text=True)
+
+
+def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE) -> str | None:
+    """Start one target for local preview; return its URL or None on failure.
+
+    Backend targets (recipe has a BootSpec) run detached via `docker run -d` on a free host
+    port. Frontend targets (no BootSpec) are served statically via preview_server.py.
+    Returns the URL string so the caller can aggregate into DeployResult.urls, or None if the
+    start failed.
+    """
+    from .recipes import get as get_recipe
+
+    out = Path(out_dir).resolve()
+    recipe = get_recipe(target.stack)
+    boot = recipe.boot
+    container_name = f"devagent-preview-{target.name}"
+
+    if boot is not None:
+        # --- backend: run the built service detached ---
+        host_port = _free_port()
+        target_dir = out / target.name
+        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, text=True)
+        argv = [
+            "docker", "run", "-d", "--name", container_name,
+            "-p", f"{host_port}:{boot.port}",
+            "--user", "1000:1000",
+            "-v", f"{target_dir}:/out/{target.name}",
+            "-w", f"/out/{target.name}",
+            image,
+            *boot.cmd,
+        ]
+        proc = subprocess.run(argv, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return None
+        return f"http://127.0.0.1:{host_port}"
+    else:
+        # --- frontend: serve <name>/dist statically via preview_server.py ---
+        host_port = _free_port()
+        dist_dir = out / target.name / "dist"
+        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, text=True)
+        argv = [
+            "docker", "run", "-d", "--name", container_name,
+            "-p", f"{host_port}:8000",
+            "--user", "1000:1000",
+            "-v", f"{dist_dir}:/out/dist:ro",
+            "-v", f"{PREVIEW_SERVER}:/preview.py:ro",
+            image,
+            "python3", "/preview.py",
+        ]
+        proc = subprocess.run(argv, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return None
+        return f"http://127.0.0.1:{host_port}"
 
 
 @dataclass

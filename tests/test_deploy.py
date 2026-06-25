@@ -1,5 +1,6 @@
 """M3 local preview — start_preview's docker argv is mocked (no container); the DeployPhase
-gets an injected fake start; DeployGate is exercised against a REAL local http.server."""
+gets an injected fake start; DeployGate is exercised against a REAL local http.server.
+M6: per-target preview (backend detached + frontend static, wired via /config.json)."""
 
 import functools
 import http.server
@@ -8,8 +9,9 @@ import threading
 
 from devagent import deploy
 from devagent.deploy import DeployGate, DeployResult, start_preview
-from devagent.phases.base import PhaseResult
+from devagent.phases.base import PhaseContext, PhaseResult
 from devagent.phases.deploy import DeployPhase
+from devagent.schema import ArtifactSpec, ProjectScope
 
 
 class _Proc:
@@ -116,3 +118,27 @@ def test_deploy_gate_fails_on_empty_url():
     art = DeployResult(url="", error="boom")
     res = PhaseResult("deploy", 0, output_artifact=art)
     assert DeployGate().check(res).ok is False
+
+
+# ---------------------------------------------------------------------------
+# M6: per-target preview
+# ---------------------------------------------------------------------------
+
+def test_deploy_starts_each_target(monkeypatch):
+    started = []
+
+    def fake_start(workdir, target):     # per-target starter
+        started.append(target.name)
+        return f"http://127.0.0.1:90/{target.name}"
+
+    scope = ProjectScope(title="A", targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api",
+                     acceptance_checks=[]),
+        ArtifactSpec(type="frontend", stack="node-vite-react", name="web",
+                     acceptance_checks=[]),
+    ])
+    ctx = PhaseContext(sandbox=None, budget=None, ledger=None, artifacts={"scope": scope})
+    res = DeployPhase(workdir="/out", start_target=fake_start).run(ctx)
+    assert set(started) == {"api", "web"}
+    assert res.exit_code == 0
+    assert "web" in res.output_artifact.urls and "api" in res.output_artifact.urls
