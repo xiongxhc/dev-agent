@@ -1,12 +1,20 @@
-"""Runs INSIDE the M2 image, after a successful rebuild. Boots a static server on the
-built dist/ and runs the spec's acceptance_checks, KIND-DISPATCHED:
+"""Runs INSIDE the M2 image, after a successful rebuild. Per-target dispatch:
 
+  - backend targets:  boots the service (using _boot cmd/port/health_path from scope.json),
+                      polls until healthy, then runs acceptance checks against the live HTTP port.
+  - frontend targets: serves the static build dir (dist/ or _static_dir) with an SPA-fallback
+                      HTTP handler, then runs acceptance checks against that server.
+
+Check kinds dispatched per target:
   - route_status      HTTP GET the route, assert status == expected_status   (no browser)
   - selector_present  Playwright renders the route, assert the CSS selector exists (browser)
+  - api_json          HTTP method + optional body, assert a dotted JSON path equals a value
+  - command_exit /    Run an argv in the target workdir, assert exit code and optional stdout
+    stdout_matches    regex pattern.
 
 Only selector_present needs a browser; Playwright is imported LAZILY so a route-only spec
-(and the future backend/CLI check kinds) never require it, and this module imports — and
-its HTTP path unit-tests — without Playwright installed. Writes .devagent/acceptance.json.
+never requires it, and this module imports — and its HTTP path unit-tests — without
+Playwright installed. Writes .devagent/acceptance.json.
 """
 
 import functools
@@ -25,7 +33,6 @@ from pathlib import Path
 
 OUT = Path("/out")
 DEV = OUT / ".devagent"
-DIST = OUT / "dist"
 
 
 def check_route_status(base_url: str, route: str, expected_status: int) -> dict:

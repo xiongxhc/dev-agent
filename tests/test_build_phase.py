@@ -45,11 +45,27 @@ class FakeExecutor:
         return self.result
 
 
-def _write_dist(workdir):
-    # BuildGate still checks dist/index.html at the top of workdir (updated in a later task)
-    dist = workdir / "dist"
-    dist.mkdir(parents=True, exist_ok=True)
-    (dist / "index.html").write_text("<html></html>")
+_SCOPE_JSON = {
+    "title": "Hello",
+    "targets": [
+        {"name": "web", "stack": "node-vite-react", "artifact_glob": "dist/index.html"},
+    ],
+}
+
+
+def _write_scope(workdir: "Path") -> None:
+    """Seed a one-target scope.json under <workdir>/.devagent/."""
+    dev = workdir / ".devagent"
+    dev.mkdir(parents=True, exist_ok=True)
+    import json
+    (dev / "scope.json").write_text(json.dumps(_SCOPE_JSON))
+
+
+def _write_artifact(workdir: "Path") -> None:
+    """Write the per-target artifact at <workdir>/web/dist/index.html."""
+    artifact = workdir / "web" / "dist"
+    artifact.mkdir(parents=True, exist_ok=True)
+    (artifact / "index.html").write_text("<html></html>")
 
 
 # --- BuildPhase ----------------------------------------------------------------
@@ -102,16 +118,41 @@ def test_build_phase_carries_cost_and_wallclock_in_meta(tmp_path):
 
 # --- BuildGate (re-checks disk; does NOT trust BuildResult.success) -------------
 
-def test_build_gate_passes_when_dist_index_present(tmp_path):
+def test_build_gate_passes_when_per_target_artifact_present(tmp_path):
+    """Per-target check: scope.json exists and web/dist/index.html is present."""
     out = tmp_path / "out"
-    _write_dist(out)
+    _write_scope(out)
+    _write_artifact(out)
     from devagent.phases.base import PhaseResult
     res = PhaseResult("build", 0, output_artifact=BuildResult(repo_path=str(out), success=True))
     assert BuildGate().check(res).ok is True
 
 
-def test_build_gate_fails_when_executor_claims_success_but_no_dist(tmp_path):
-    # The anti-trust property: a lying executor (success=True, nothing built) is caught.
+def test_build_gate_fails_when_executor_claims_success_but_no_artifact(tmp_path):
+    """Anti-trust property: scope.json exists but artifact is absent — lying executor caught."""
+    out = tmp_path / "out"
+    _write_scope(out)
+    # Do NOT write the artifact
+    from devagent.phases.base import PhaseResult
+    res = PhaseResult("build", 0, output_artifact=BuildResult(repo_path=str(out), success=True))
+    gr = BuildGate().check(res)
+    assert gr.ok is False
+    assert "web" in gr.reason
+
+
+def test_build_gate_legacy_fallback_passes_with_dist_index(tmp_path):
+    """Legacy path (no scope.json): flat dist/index.html is sufficient."""
+    out = tmp_path / "out"
+    dist = out / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    (dist / "index.html").write_text("<html></html>")
+    from devagent.phases.base import PhaseResult
+    res = PhaseResult("build", 0, output_artifact=BuildResult(repo_path=str(out), success=True))
+    assert BuildGate().check(res).ok is True
+
+
+def test_build_gate_legacy_fallback_fails_when_no_dist(tmp_path):
+    """Legacy path (no scope.json): missing dist/index.html fails."""
     out = tmp_path / "out"
     out.mkdir()
     from devagent.phases.base import PhaseResult

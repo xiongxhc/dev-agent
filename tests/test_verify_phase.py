@@ -21,7 +21,7 @@ def test_verify_gate_fails_when_dist_missing_despite_zero_exit():
     rep = VerifyReport(build_ok=True, dist_present=False, exit_code=0, checks=_PASS)
     # exit_code 0 in the PhaseResult so we hit the gate's own dist branch, not the precheck.
     gr = VerifyGate().check(PhaseResult("build", 0, output_artifact=rep))
-    assert gr.ok is False and "dist" in gr.reason
+    assert gr.ok is False and "artifact" in gr.reason
 
 
 def test_verify_gate_fails_when_build_not_ok():

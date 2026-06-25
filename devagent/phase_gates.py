@@ -3,6 +3,7 @@ output is ready for the next phase. Each reads result.output_artifact (a Project
 or a VerifyReport/BuildResult) and result.exit_code; pydantic already guarantees field
 types, so these assert the "ready for the next phase" semantic guarantees on top."""
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,11 +60,19 @@ class PlanGate:
 
 @dataclass
 class BuildGate:
-    """Passes iff the build produced a bundle on disk (dist/index.html under repo_path).
+    """Passes iff the build produced every target's artifact on disk.
 
-    Deterministic, and the executor's BuildResult.success CLAIM is deliberately ignored —
-    this re-checks the produced repo, so a lying or crashed executor is caught. (M2 next
-    increment upgrades this to a full `pnpm build` re-run + pinned-deps check.)"""
+    When <repo_path>/.devagent/scope.json exists (written by enrich_scope via the executor),
+    checks each target: Path(repo_path)/<target["name"]> must contain at least one file
+    matching <target["artifact_glob"]> (via pathlib.Path.glob). All targets must pass.
+    Fails with a clear message naming the first missing target.
+
+    LEGACY fallback: if scope.json is absent, falls back to checking dist/index.html at
+    the top of repo_path (pre-M6 / non-scope callers). This keeps existing callers working.
+
+    Deterministic — the executor's BuildResult.success CLAIM is deliberately ignored so
+    a lying or crashed executor is caught. (M2 next increment upgrades this to a full
+    `pnpm build` re-run + pinned-deps check.)"""
 
     name: str = "build_produced_bundle"
 
@@ -72,7 +81,22 @@ class BuildGate:
         if fail:
             return fail
         build: BuildResult = result.output_artifact
-        index = Path(build.repo_path) / "dist" / "index.html"
+        repo = Path(build.repo_path)
+        scope_file = repo / ".devagent" / "scope.json"
+        if scope_file.is_file():
+            scope = json.loads(scope_file.read_text())
+            for t in scope.get("targets", []):
+                target_dir = repo / t["name"]
+                matches = list(target_dir.glob(t["artifact_glob"]))
+                if not matches:
+                    return GateResult(
+                        False,
+                        f"target {t['name']!r}: no artifact matching {t['artifact_glob']!r}"
+                        f" under {str(target_dir)!r}",
+                    )
+            return GateResult(True)
+        # Legacy fallback: no scope.json — check flat dist/index.html
+        index = repo / "dist" / "index.html"
         if not index.is_file():
             return GateResult(False, f"no dist/index.html under {build.repo_path!r}")
         return GateResult(True)
@@ -96,7 +120,7 @@ class VerifyGate:
         if not rep.build_ok:
             return GateResult(False, f"rebuild from source failed (exit {rep.exit_code})")
         if not rep.dist_present:
-            return GateResult(False, "rebuild produced no dist/index.html")
+            return GateResult(False, "one or more target artifacts missing after rebuild")
         if not rep.checks:
             return GateResult(False, "no acceptance checks ran")
         failed = [f"{c.kind} {c.route}" for c in rep.checks if not c.ok]
