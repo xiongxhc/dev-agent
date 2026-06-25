@@ -21,7 +21,14 @@ _BACKEND_HINT = (
     "(PIN exact versions), tsconfig.json compiling src/ to dist/, and src/server.ts that "
     "listens on process.env.PORT||3000, exposes GET /health -> 200 {\"ok\":true}, and "
     "implements every endpoint in the spec. Build with `tsc` so `dist/server.js` exists. "
-    "Enable permissive CORS so the frontend can call it in preview."
+    "Enable permissive CORS so the frontend can call it in preview. "
+    "PERSISTENCE: if this target's detail has `datastore`, read the connection URL from "
+    "process.env[detail.conn_env] (default DATABASE_URL) and use the matching driver "
+    "(pg for postgres, mongodb for mongo) — PIN its exact version. If detail has "
+    "`persist_path` instead, store data in a SQLite file at that path (e.g. better-sqlite3, "
+    "PINNED). On boot, create the schema / run migrations IDEMPOTENTLY (CREATE TABLE IF NOT "
+    "EXISTS or equivalent) so a restart against existing data does not fail. Never keep "
+    "state only in memory when persistence is required."
 )
 
 REGISTRY: dict[str, Recipe] = {

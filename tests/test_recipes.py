@@ -72,3 +72,11 @@ def test_mongo_service_recipe_registered():
 
 def test_node_express_supports_persistence_check():
     assert "persistence_survives_restart" in recipes.get("node-express").supported_checks
+
+
+def test_backend_hint_covers_persistence():
+    hint = recipes.get("node-express").scaffold_hint.lower()
+    assert "database_url" in hint or "conn" in hint
+    assert "sqlite" in hint
+    assert "idempotent" in hint or "create table if not exists" in hint
+    assert "pin" in hint                         # driver version pinned like every dep
