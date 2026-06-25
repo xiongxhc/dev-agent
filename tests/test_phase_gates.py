@@ -1,6 +1,6 @@
 from devagent.phase_gates import PlanGate
 from devagent.phases.base import PhaseResult
-from devagent.schema import Plan, Task
+from devagent.schema import ArtifactSpec, Plan, ProjectScope, Task
 
 
 def _result(artifact, exit_code=0):
@@ -52,3 +52,12 @@ def test_plan_gate_fails_on_none_artifact():
     gr = PlanGate().check(_result(None))
     assert not gr.ok
     assert "no output_artifact" in gr.reason
+
+
+def test_plan_gate_fails_on_wrong_artifact_type():
+    wrong = ProjectScope(title="Hello", targets=[
+        ArtifactSpec(type="frontend", stack="node-vite-react", name="web",
+                     detail={"pages": ["/"]})
+    ])
+    gr = PlanGate().check(_result(wrong))
+    assert gr.ok is False

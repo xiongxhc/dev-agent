@@ -104,6 +104,15 @@ def main(argv: list[str] | None = None) -> int:
     report_path = write_report(run_dir, ledger.events(), run_id,
                                preview_url=preview_url, acceptance=acceptance)
 
+    if status != SUCCEEDED:
+        scope = orch.artifacts.get("scope")
+        clar = getattr(scope, "clarifications", None) if scope is not None else None
+        if clar:
+            print("  -> needs clarification before building:", file=sys.stderr)
+            for q in clar:
+                print(f"     - {q}", file=sys.stderr)
+            print("  -> answer these in a file and re-run with --answers <file>", file=sys.stderr)
+
     print(f"{run_id} {status}")
     plan = orch.artifacts.get("plan")
     if status == SUCCEEDED and plan is not None:

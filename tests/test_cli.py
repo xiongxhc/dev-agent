@@ -84,6 +84,39 @@ def test_cli_missing_input_exits_2(tmp_path, monkeypatch):
     assert cli.main(["run", "/does/not/exist.md"]) == 2
 
 
+def test_run_prints_clarifications_on_scope_failure(tmp_path, monkeypatch, capsys):
+    """When ScopePhase returns a scope with clarifications, ScopeGate fails and the CLI
+    prints the questions + re-run hint to stderr."""
+    monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path))
+
+    scope_with_clar = ProjectScope(
+        title="Hello",
+        targets=[
+            ArtifactSpec(type="frontend", stack="node-vite-react", name="web",
+                         detail={"pages": ["/"]},
+                         acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")]),
+        ],
+        clarifications=["Which auth?"],
+    )
+
+    def _fake_generate(prompt, schema, **kw):
+        if schema is ProjectScope:
+            return scope_with_clar, USAGE
+        return _make_plan(), USAGE
+
+    monkeypatch.setattr("devagent.phases.scope.generate_structured", _fake_generate)
+
+    prd = tmp_path / "prd.md"
+    prd.write_text("a health API")
+
+    rc = cli.main(["run", str(prd)])
+    assert rc == 1
+
+    err = capsys.readouterr().err
+    assert "Which auth?" in err
+    assert "answers" in err
+
+
 def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, capsys):
     """--build appends a BuildPhase+BuildGate; the executor is swapped for a fake that
     writes the bundle, so the whole PRD->scope->plan->build flow runs without Docker/tokens."""
