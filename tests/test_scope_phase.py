@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from devagent.phases.base import PhaseContext
@@ -53,6 +52,18 @@ def test_clarifications_block_with_exit_1_and_notify(tmp_path):
     assert res.exit_code == 1
     assert res.output_artifact.clarifications
     assert sent and "What should it do?" in sent[0]
+
+
+def test_notifier_failure_does_not_crash(tmp_path):
+    prd = tmp_path / "p.md"; prd.write_text("build something")
+    payload = {"title": "?", "targets": [
+        {"type": "frontend", "stack": "node-vite-react", "name": "web",
+         "detail": {}, "acceptance_checks": [{"kind": "route_status", "route": "/"}]}],
+        "clarifications": ["Q?"]}
+    def boom(_): raise RuntimeError("boom")
+    phase = ScopePhase(str(prd), client=_FakeLLM(payload), notifier=boom)
+    res = phase.run(_ctx())
+    assert res.exit_code == 1   # swallowed; must not propagate
 
 
 def test_answers_file_is_fed_into_prompt(tmp_path):

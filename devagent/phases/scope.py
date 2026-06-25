@@ -60,10 +60,13 @@ class ScopePhase:
 
     def run(self, ctx: PhaseContext) -> PhaseResult:
         try:
-            request = open(self.input_path).read()
+            with open(self.input_path) as f:
+                request = f.read()
             answers = ""
             if self.answers_path:
-                answers = "\nOPERATOR ANSWERS TO PRIOR QUESTIONS:\n" + open(self.answers_path).read()
+                with open(self.answers_path) as f:
+                    answers_text = f.read()
+                answers = "\nOPERATOR ANSWERS TO PRIOR QUESTIONS:\n" + answers_text
             cat, checks = _recipe_catalog()
             prompt = _PROMPT.format(recipes=cat, checks=checks, request=request, answers=answers)
             scope, usage = generate_structured(prompt, ProjectScope, client=self.client)
