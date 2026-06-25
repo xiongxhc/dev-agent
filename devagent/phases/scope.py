@@ -33,6 +33,16 @@ Rules:
 - If the request is genuinely underspecified (you cannot pick targets/stacks/checks with
   confidence), put concrete questions in `clarifications` and leave targets as your best guess.
   If it is clear, leave `clarifications` empty.
+- Persistence is your call. If the spec needs durable state, either (a) persist to a file
+  inside the target (e.g. SQLite at `data/<x>.db`) — declare `detail.persist_path` on that
+  backend, no extra target — or (b) add a datastore target (stack `postgres` or `mongo`,
+  type `datastore`) and on the dependent backend set `detail.datastore` to the datastore
+  target's `name` and `detail.conn_env` to the env var your code reads the connection URL
+  from (default `DATABASE_URL`). Either way add a `persistence_survives_restart` acceptance
+  check on the backend: set `route`+`method`+`body` for the write that creates a record,
+  `json_path` to locate the created id in the response, and `verify_route` for the GET that
+  must still return it after the API process restarts. A `datastore` target carries NO
+  acceptance checks of its own.
 
 REQUEST:
 {request}

@@ -73,3 +73,18 @@ def test_answers_file_is_fed_into_prompt(tmp_path):
     phase = ScopePhase(str(prd), answers_path=str(ans), client=llm)
     phase.run(_ctx())
     assert "notes API, backend only" in llm.seen_prompt
+
+
+def test_prompt_instructs_agent_to_decide_persistence():
+    from devagent.phases.scope import _PROMPT
+    text = _PROMPT.lower()
+    assert "persistence is your call" in text
+    assert "sqlite" in text and "datastore" in text
+    assert "persistence_survives_restart" in text
+    assert "conn_env" in text and "detail.datastore" in text
+
+
+def test_catalog_lists_service_recipes():
+    from devagent.phases.scope import _recipe_catalog
+    cat, _ = _recipe_catalog()
+    assert "postgres" in cat and "mongo" in cat
