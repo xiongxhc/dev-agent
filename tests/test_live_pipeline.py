@@ -32,3 +32,11 @@ def test_live_fullstack_build(tmp_path):
     from devagent.cli import main
     rc = main(["run", "--build", "examples/fullstack.md"])
     assert rc == 0   # scope(web+api) -> build -> per-target rebuild + boot + api_json + route_status -> deploy
+
+
+@pytest.mark.skipif(os.getenv("DEVAGENT_RUN_LIVE") != "1", reason="live")
+def test_live_fullstack_persistent_build(tmp_path):
+    from devagent.cli import main
+    rc = main(["run", "--build", "examples/fullstack-persistent.md"])
+    assert rc == 0   # scope picks a persistence strategy -> build -> verify with a real
+                     # datastore (if chosen) + persistence_survives_restart -> deploy
