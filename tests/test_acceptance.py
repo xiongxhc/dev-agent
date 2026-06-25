@@ -37,6 +37,16 @@ def _make_store_server(store):
     return srv, f"http://127.0.0.1:{srv.server_address[1]}"
 
 
+def test_contains_value_is_exact_not_substring():
+    from devagent.acceptance_runner import _contains_value
+    assert _contains_value([{"id": "7", "title": "x"}], "7")        # nested in a list of dicts
+    assert _contains_value({"data": [{"id": 42}]}, 42)              # numeric, deeper nesting
+    # exact-value: "7" must NOT match a field that merely CONTAINS the digit 7
+    # (the old `str(id) in json.dumps(payload)` substring check would wrongly pass here)
+    assert not _contains_value([{"createdAt": "2027-01-07", "count": 70}], "7")
+    assert not _contains_value([], "7")                            # empty store = missing
+
+
 def test_persistence_check_passes_when_state_survives_restart():
     store = {}                                   # the "datastore" — survives the app restart
     srv, base = _make_store_server(store)

@@ -178,6 +178,7 @@ def test_deploy_starts_datastore_before_backend_and_injects_conn_env(monkeypatch
 
     from devagent import deploy as deploy_mod
     monkeypatch.setattr(deploy_mod, "ensure_network", lambda name: None)
+    monkeypatch.setattr(deploy_mod, "sweep_preview_volumes", lambda keep: None)  # no real docker
 
     scope = ProjectScope(title="A", targets=[
         ArtifactSpec(type="datastore", stack="postgres", name="db", acceptance_checks=[]),
@@ -215,3 +216,44 @@ def test_start_service_argv_runs_image_with_volume_and_alias(monkeypatch):
     assert "--network-alias" in run_argv and "db" in run_argv
     assert any(str(a).endswith(":/var/lib/postgresql/data") for a in run_argv)
     assert cname == "devagent-preview-db"
+
+
+def test_start_service_drops_stale_volume_before_create(monkeypatch):
+    """A fresh build deploy must remove the prior named volume before recreating, so stale
+    data from a same-named target's previous deploy cannot carry over."""
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return _Proc()
+
+    monkeypatch.setattr(deploy.subprocess, "run", fake_run)
+    monkeypatch.setattr(deploy, "_wait_service_ready", lambda *a, **k: True)
+    from devagent.schema import ArtifactSpec
+    deploy.start_service(ArtifactSpec(type="datastore", stack="postgres", name="db",
+                                      acceptance_checks=[]), network="net")
+    vol_rm_idx = next(i for i, a in enumerate(calls)
+                      if a[:3] == ["docker", "volume", "rm"] and "devagent-preview-db-data" in a)
+    run_idx = next(i for i, a in enumerate(calls) if "-d" in a)
+    assert vol_rm_idx < run_idx                    # volume removed BEFORE the container is created
+
+
+def test_sweep_preview_volumes_removes_orphans_keeps_current(monkeypatch):
+    removed = []
+
+    def fake_run(argv, **kw):
+        if argv[:3] == ["docker", "volume", "ls"]:
+            p = _Proc()
+            p.stdout = "\n".join([
+                "devagent-preview-db-data",       # current target -> keep
+                "devagent-preview-oldpg-data",    # orphan -> remove
+                "some-other-volume",              # not a preview volume -> ignore
+            ])
+            return p
+        if argv[:3] == ["docker", "volume", "rm"]:
+            removed.append(argv[3])
+        return _Proc()
+
+    monkeypatch.setattr(deploy.subprocess, "run", fake_run)
+    deploy.sweep_preview_volumes({"db"})
+    assert removed == ["devagent-preview-oldpg-data"]   # only the orphan; current + non-preview untouched

@@ -76,6 +76,24 @@ def ensure_network(name: str) -> None:
         subprocess.run(["docker", "network", "create", name], capture_output=True, text=True)
 
 
+def sweep_preview_volumes(keep: set[str]) -> None:
+    """Reclaim orphaned preview datastore volumes (design §6 volume hygiene).
+
+    Removes every `devagent-preview-<name>-data` volume whose `<name>` is NOT in *keep*
+    (the current scope's datastore target names) — i.e. volumes left behind by datastore
+    targets that were renamed or dropped. A volume still attached to a running preview
+    container cannot be removed (docker refuses), so live previews are never disturbed."""
+    listing = subprocess.run(["docker", "volume", "ls", "--format", "{{.Name}}"],
+                             capture_output=True, text=True)
+    for name in (listing.stdout or "").splitlines():
+        name = name.strip()
+        if not (name.startswith("devagent-preview-") and name.endswith("-data")):
+            continue
+        target = name[len("devagent-preview-"):-len("-data")]
+        if target not in keep:
+            subprocess.run(["docker", "volume", "rm", name], capture_output=True, text=True)
+
+
 def _wait_service_ready(container: str, ready_cmd, timeout_s: float) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -99,6 +117,10 @@ def start_service(target, image: str = DEFAULT_IMAGE, network: str | None = None
     for k, v in svc.env:
         env_flags += ["-e", f"{k}={v}"]
     subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, text=True)
+    # Fresh build deploy = fresh datastore: drop the prior named volume so stale data from a
+    # same-named target's previous deploy can't silently carry over. (Data still survives a
+    # `docker restart` of the container — that reuses the volume and never calls start_service.)
+    subprocess.run(["docker", "volume", "rm", vol], capture_output=True, text=True)
     argv = ["docker", "run", "-d", "--name", container_name]
     if network:
         argv += ["--network", network, "--network-alias", target.name]

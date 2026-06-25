@@ -80,6 +80,17 @@ def _dig(obj, dotted: str):
     return True, cur
 
 
+def _contains_value(obj, target) -> bool:
+    """True if *target* (compared as a string) equals any SCALAR value anywhere in *obj*.
+    Exact-value match (not substring) so a created id can't false-positive against an
+    unrelated field that merely contains its digits — this is the durability proof."""
+    if isinstance(obj, dict):
+        return any(_contains_value(v, target) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_contains_value(v, target) for v in obj)
+    return str(obj) == str(target)
+
+
 def check_api_json(base_url, route, method, body, json_path, json_equals) -> dict:
     url = base_url.rstrip("/") + route
     data = json.dumps(body).encode() if body is not None else None
@@ -130,7 +141,7 @@ def check_persistence_survives_restart(base_url, route, method, body, json_path,
             payload = json.loads(r.read().decode())
     except Exception as e:  # noqa: BLE001
         return {"kind": kind, "route": route, "ok": False, "detail": f"read-back failed: {e}"}
-    present = str(created_id) in json.dumps(payload)
+    present = _contains_value(payload, created_id)
     return {"kind": kind, "route": route, "ok": present,
             "detail": f"id {created_id!r} {'present' if present else 'missing'} after restart"}
 

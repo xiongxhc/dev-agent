@@ -55,6 +55,8 @@ class DeployPhase:
         if datastores:
             network = PREVIEW_NETWORK
             deploy.ensure_network(network)
+            # Reclaim orphaned preview datastore volumes from dropped/renamed targets (design §6).
+            deploy.sweep_preview_volumes({t.name for t in datastores})
 
         # 1. datastores first
         for t in datastores:
