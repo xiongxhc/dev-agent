@@ -220,3 +220,64 @@ def test_verifier_loops_targets_and_aggregates(tmp_path, monkeypatch):
     assert "frozen-lockfile" in " ".join(web_call)
     assert "frozen-lockfile" in " ".join(api_call)
     assert rep.ok is True
+
+
+def test_verify_creates_per_run_network_when_egress_disabled(tmp_path):
+    # Seed scope with a build target (api) and a service target (db).
+    dev = tmp_path / ".devagent"
+    dev.mkdir(parents=True)
+    (dev / "scope.json").write_text(json.dumps({"targets": [
+        {"name": "api", "stack": "node-express", "kind": "build",
+         "detail": {"datastore": "db", "conn_env": "DATABASE_URL"}},
+        {"name": "db", "stack": "postgres", "kind": "service", "detail": {}},
+    ]}))
+    # Create the artifact.
+    (tmp_path / "api" / "dist").mkdir(parents=True)
+    (tmp_path / "api" / "dist" / "server.js").write_text("x")
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if "/acceptance.py" in argv:
+            (tmp_path / ".devagent" / "acceptance.json").write_text(
+                '{"checks":[{"kind":"persistence_survives_restart","route":"/api/tasks",'
+                '"ok":true,"detail":"present"}],"all_pass":true}')
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})
+
+    # BuildVerifier with NO network (egress disabled) — forces per-run bridge network.
+    rep = BuildVerifier(runner=fake_run).verify(
+        VerifyRequest(workdir=str(tmp_path), run_id="r1"))
+    flat = [" ".join(map(str, a)) for a in calls]
+
+    # 1. Per-run bridge network created before service startup.
+    assert any("docker" in f and "network" in f and "create" in f
+               and "devagent-verify-r1" in f for f in flat), \
+        f"Expected 'docker network create devagent-verify-r1' in calls: {flat}"
+
+    # 2. Datastore (postgres) runs on the per-run network, not an egress network.
+    ds_run = next((f for f in flat if "run" in f and "-d" in f and "postgres:16-alpine" in f),
+                  None)
+    assert ds_run is not None, f"Expected postgres docker run in: {flat}"
+    assert "--network devagent-verify-r1" in ds_run, \
+        f"Expected '--network devagent-verify-r1' in datastore run: {ds_run}"
+    assert "--network-alias" in ds_run and "db" in ds_run, \
+        f"Expected network alias 'db' in datastore run: {ds_run}"
+
+    # 3. Acceptance runs on the per-run network with NO proxy (egress disabled).
+    accept = next((f for f in flat if "/acceptance.py" in f), None)
+    assert accept is not None, f"Expected acceptance run in: {flat}"
+    assert "--network devagent-verify-r1" in accept, \
+        f"Expected '--network devagent-verify-r1' in acceptance: {accept}"
+    assert "HTTPS_PROXY" not in accept and "HTTP_PROXY" not in accept, \
+        f"Expected no proxy env in acceptance (egress disabled): {accept}"
+    # But connection env should be injected.
+    assert "DATABASE_URL=postgresql://devagent:devagent@db:5432/app" in accept, \
+        f"Expected DATABASE_URL in acceptance: {accept}"
+
+    # 4. Per-run network torn down in cleanup.
+    assert any("docker" in f and "network" in f and "rm" in f
+               and "devagent-verify-r1" in f for f in flat), \
+        f"Expected 'docker network rm devagent-verify-r1' in calls: {flat}"
+
+    # 5. Overall result is pass.
+    assert rep.ok is True
