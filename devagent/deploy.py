@@ -35,6 +35,7 @@ class DeployResult:
     error: str | None = None
     urls: dict[str, str] = field(default_factory=dict)
     health_paths: dict[str, str] = field(default_factory=dict)
+    services: dict[str, str] = field(default_factory=dict)   # datastore name -> container (not HTTP)
 
 
 def _free_port() -> int:
@@ -69,7 +70,49 @@ def stop_preview() -> None:
     subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True, text=True)
 
 
-def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE) -> str | None:
+def ensure_network(name: str) -> None:
+    if subprocess.run(["docker", "network", "inspect", name],
+                      capture_output=True, text=True).returncode != 0:
+        subprocess.run(["docker", "network", "create", name], capture_output=True, text=True)
+
+
+def _wait_service_ready(container: str, ready_cmd, timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        proc = subprocess.run(["docker", "exec", container, *ready_cmd],
+                              capture_output=True, text=True)
+        if proc.returncode == 0:
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def start_service(target, image: str = DEFAULT_IMAGE, network: str | None = None) -> str | None:
+    """Start a datastore sibling container for preview; return its container name or None.
+    A named volume at the engine's data dir makes the data survive `docker restart`."""
+    from .recipes import get as get_recipe
+
+    svc = get_recipe(target.stack).service
+    container_name = f"devagent-preview-{target.name}"
+    vol = f"{container_name}-data"
+    env_flags = []
+    for k, v in svc.env:
+        env_flags += ["-e", f"{k}={v}"]
+    subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, text=True)
+    argv = ["docker", "run", "-d", "--name", container_name]
+    if network:
+        argv += ["--network", network, "--network-alias", target.name]
+    argv += [*env_flags, "-v", f"{vol}:{svc.volume_path}", svc.image]
+    proc = subprocess.run(argv, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    if not _wait_service_ready(container_name, svc.ready_cmd, svc.ready_timeout_s):
+        return None
+    return container_name
+
+
+def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE,
+                 network: str | None = None, env: dict | None = None) -> str | None:
     """Start one target for local preview; return its URL or None on failure.
 
     Backend targets (recipe has a BootSpec) run detached via `docker run -d` on a free host
@@ -89,9 +132,14 @@ def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE) -> str | None
         host_port = _free_port()
         target_dir = out / target.name
         subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, text=True)
+        env_flags = []
+        for k, v in (env or {}).items():
+            env_flags += ["-e", f"{k}={v}"]
+        net_flags = ["--network", network, "--network-alias", target.name] if network else []
         argv = [
             "docker", "run", "-d", "--name", container_name,
             "-p", f"{host_port}:{boot.port}",
+            *net_flags, *env_flags,
             "--user", "1000:1000",
             "-v", f"{target_dir}:/out/{target.name}",
             "-w", f"/out/{target.name}",
@@ -103,7 +151,7 @@ def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE) -> str | None
             return None
         return f"http://127.0.0.1:{host_port}"
     else:
-        # --- frontend: serve <name>/dist statically via preview_server.py ---
+        # --- frontend: serve <name>/dist statically (unchanged) ---
         host_port = _free_port()
         dist_dir = out / target.name / "dist"
         subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, text=True)

@@ -161,3 +161,57 @@ def test_deploy_gate_fails_when_one_target_is_dead(tmp_path):
         assert DeployGate().check(res).ok is False
     finally:
         httpd.shutdown()
+
+
+def test_deploy_starts_datastore_before_backend_and_injects_conn_env(monkeypatch):
+    order = []
+    captured_env = {}
+
+    def fake_start_service(target, network=None):
+        order.append(("service", target.name, network))
+        return f"devagent-preview-{target.name}"
+
+    def fake_start_target(workdir, target, network=None, env=None):
+        order.append(("target", target.name, network))
+        captured_env[target.name] = env or {}
+        return f"http://127.0.0.1:90/{target.name}"
+
+    from devagent import deploy as deploy_mod
+    monkeypatch.setattr(deploy_mod, "ensure_network", lambda name: None)
+
+    scope = ProjectScope(title="A", targets=[
+        ArtifactSpec(type="datastore", stack="postgres", name="db", acceptance_checks=[]),
+        ArtifactSpec(type="backend", stack="node-express", name="api",
+                     detail={"datastore": "db", "conn_env": "DATABASE_URL"}, acceptance_checks=[]),
+        ArtifactSpec(type="frontend", stack="node-vite-react", name="web", acceptance_checks=[]),
+    ])
+    ctx = PhaseContext(sandbox=None, budget=None, ledger=None, artifacts={"scope": scope})
+    res = DeployPhase(workdir="/out", start_service=fake_start_service,
+                      start_target=fake_start_target).run(ctx)
+    # datastore first, then backend, then frontend
+    assert [o[0] for o in order] == ["service", "target", "target"]
+    assert order[0][1] == "db" and order[1][1] == "api" and order[2][1] == "web"
+    # backend received the resolved connection URL on the conn_env var
+    assert captured_env["api"]["DATABASE_URL"] == "postgresql://devagent:devagent@db:5432/app"
+    # datastore is recorded as a service, NOT as an HTTP url (so DeployGate won't probe it)
+    assert "db" in res.output_artifact.services and "db" not in res.output_artifact.urls
+    assert res.exit_code == 0
+
+
+def test_start_service_argv_runs_image_with_volume_and_alias(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, **kw):
+        captured.setdefault("argvs", []).append(argv)
+        return _Proc()
+
+    monkeypatch.setattr(deploy.subprocess, "run", fake_run)
+    monkeypatch.setattr(deploy, "_wait_service_ready", lambda *a, **k: True)
+    from devagent.schema import ArtifactSpec
+    cname = deploy.start_service(ArtifactSpec(type="datastore", stack="postgres", name="db",
+                                              acceptance_checks=[]), network="net")
+    run_argv = next(a for a in captured["argvs"] if "-d" in a)
+    assert "postgres:16-alpine" in run_argv
+    assert "--network-alias" in run_argv and "db" in run_argv
+    assert any(str(a).endswith(":/var/lib/postgresql/data") for a in run_argv)
+    assert cname == "devagent-preview-db"
