@@ -6,14 +6,19 @@ import tarfile
 
 from devagent.executor import BuildRequest
 from devagent.managed_executor import ManagedExecutor
-from devagent.schema import AcceptanceCheck, Plan, Spec, Task
+from devagent.schema import AcceptanceCheck, ArtifactSpec, Plan, ProjectScope, Task
 
 
 def _req(workdir):
-    spec = Spec(title="Hello", pages=["/"],
-                acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")])
+    scope = ProjectScope(
+        title="Hello",
+        targets=[ArtifactSpec(
+            type="frontend", stack="node-vite-react", name="web", detail={},
+            acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")],
+        )],
+    )
     plan = Plan(tasks=[Task(id="a", description="scaffold", owned_files=["package.json"])])
-    return BuildRequest(spec=spec, plan=plan, workdir=str(workdir), run_id="r1")
+    return BuildRequest(scope=scope, plan=plan, workdir=str(workdir), run_id="r1")
 
 
 def _tar(files: dict) -> bytes:
@@ -103,23 +108,24 @@ def _exec(client):
 
 def test_builds_and_extracts_tarball_into_workdir(tmp_path):
     out = tmp_path / "out"
-    tar = _tar({"package.json": "{}", "pnpm-lock.yaml": "lock",
-                "src/App.tsx": "x", "dist/index.html": "<html></html>"})
+    # tarball uses target-scoped paths: web/ prefix for the frontend target
+    tar = _tar({"web/package.json": "{}", "web/pnpm-lock.yaml": "lock",
+                "web/src/App.tsx": "x", "web/dist/index.html": "<html></html>"})
     fake = FakeClient(tar)
     res = _exec(fake).build(_req(out))
 
     assert res.success is True
-    assert (out / "dist" / "index.html").is_file()
-    assert (out / "src" / "App.tsx").is_file()   # directory tree survived the round-trip
-    assert (out / "pnpm-lock.yaml").is_file()
+    assert (out / "web" / "dist" / "index.html").is_file()
+    assert (out / "web" / "src" / "App.tsx").is_file()   # directory tree survived the round-trip
+    assert (out / "web" / "pnpm-lock.yaml").is_file()
 
 
 def test_prompt_carries_spec_and_plan_and_agent_uses_toolset(tmp_path):
-    fake = FakeClient(_tar({"dist/index.html": "<html></html>"}))
+    fake = FakeClient(_tar({"web/dist/index.html": "<html></html>"}))
     _exec(fake).build(_req(tmp_path / "out"))
     # agent created with the managed-agents toolset
     assert fake.calls["agent"]["tools"] == [{"type": "agent_toolset_20260401"}]
-    # the user message embeds the Spec (title) + the /mnt/session/outputs tar instruction
+    # the user message embeds the scope title (Hello) + the /mnt/session/outputs tar instruction
     sent_text = fake.calls["sent"][0][0]["content"][0]["text"]
     assert "Hello" in sent_text and "/mnt/session/outputs" in sent_text and "app.tar.gz" in sent_text
     # files.list scoped to the session, with the managed-agents beta
@@ -133,25 +139,26 @@ def test_failure_when_no_tarball_in_outputs(tmp_path):
     assert "app.tar.gz" in (res.error or "")
 
 
-def test_failure_when_tarball_has_no_dist(tmp_path):
-    fake = FakeClient(_tar({"package.json": "{}"}))  # built tree but no dist/index.html
+def test_failure_when_tarball_has_no_target_artifacts(tmp_path):
+    # tarball contains a file but NOT the expected per-target artifact (web/dist/index.html)
+    fake = FakeClient(_tar({"web/package.json": "{}"}))
     res = _exec(fake).build(_req(tmp_path / "out"))
     assert res.success is False
-    assert "dist" in (res.error or "")
+    assert "target artifacts" in (res.error or "")
 
 
-def test_writes_spec_and_plan_for_shared_acceptance(tmp_path):
-    # The shared acceptance runner reads out/.devagent/spec.json; the managed arm must drop it
-    # too (SdkExecutor does). Regression for the first live run's acceptance crash.
+def test_writes_scope_and_plan_for_shared_acceptance(tmp_path):
+    # The shared acceptance runner reads out/.devagent/scope.json; both arms must drop it.
+    # Regression for the first live run's acceptance crash.
     out = tmp_path / "out"
-    _exec(FakeClient(_tar({"dist/index.html": "<html></html>"}))).build(_req(out))
-    assert (out / ".devagent" / "spec.json").is_file()
+    _exec(FakeClient(_tar({"web/dist/index.html": "<html></html>"}))).build(_req(out))
+    assert (out / ".devagent" / "scope.json").is_file()
     assert (out / ".devagent" / "plan.json").is_file()
     import json
-    assert json.loads((out / ".devagent" / "spec.json").read_text())["title"] == "Hello"
+    assert json.loads((out / ".devagent" / "scope.json").read_text())["title"] == "Hello"
 
 
 def test_session_is_always_deleted(tmp_path):
-    fake = FakeClient(_tar({"dist/index.html": "<html></html>"}))
+    fake = FakeClient(_tar({"web/dist/index.html": "<html></html>"}))
     _exec(fake).build(_req(tmp_path / "out"))
     assert fake.calls["deleted"] == ["sesn_1"]  # cleanup ran (stops session-hour billing)

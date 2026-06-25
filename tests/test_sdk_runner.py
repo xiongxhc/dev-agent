@@ -27,3 +27,18 @@ def test_handles_missing_and_none_fields():
 def test_none_usage_is_zero():
     assert input_output_tokens(None) == (0, 0)
     assert input_output_tokens("not a dict") == (0, 0)
+
+
+def test_prompt_covers_each_target_with_its_recipe_hint():
+    from devagent.sdk_runner import build_prompt
+
+    scope = {"title": "App", "targets": [
+        {"type": "frontend", "stack": "node-vite-react", "name": "web", "detail": {"pages": ["/"]},
+         "_scaffold_hint": "Scaffold a Vite", "build_cmd": "pnpm build", "artifact_glob": "dist/index.html"},
+        {"type": "backend", "stack": "node-express", "name": "api", "detail": {"endpoints": ["/api/x"]},
+         "_scaffold_hint": "Scaffold an Express", "build_cmd": "pnpm build", "artifact_glob": "dist/server.js"},
+    ]}
+    plan = {"tasks": [{"id": "t1", "description": "d", "owned_files": ["web/src/App.tsx"]}]}
+    p = build_prompt(scope, plan)
+    assert "web/" in p and "api/" in p
+    assert "Scaffold a Vite" in p and "Scaffold an Express" in p

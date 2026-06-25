@@ -9,15 +9,20 @@ from devagent.executor import BuildResult
 from devagent.ledger import Ledger
 from devagent.phases.base import PhaseContext
 from devagent.phases.build import BuildPhase
-from devagent.schema import AcceptanceCheck, Plan, Spec, Task
+from devagent.schema import AcceptanceCheck, ArtifactSpec, Plan, ProjectScope, Task
 from devagent.verifier import CheckResult, VerifyReport
 
 
 def _ctx(tmp_path, budget=None):
     budget = budget or Budget(10**9, 1e9, max_retries=9)
     ctx = PhaseContext(sandbox=None, budget=budget, ledger=Ledger(tmp_path / "run"))
-    ctx.artifacts["spec"] = Spec(title="Hello", pages=["/"],
-                                 acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")])
+    ctx.artifacts["scope"] = ProjectScope(
+        title="Hello",
+        targets=[ArtifactSpec(
+            type="frontend", stack="node-vite-react", name="web", detail={},
+            acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")],
+        )],
+    )
     ctx.artifacts["plan"] = Plan(tasks=[Task(id="t", description="x", owned_files=["package.json"])])
     return ctx
 

@@ -6,14 +6,19 @@ from pathlib import Path
 from devagent import executor_sdk
 from devagent.executor import BuildRequest
 from devagent.executor_sdk import SdkExecutor
-from devagent.schema import AcceptanceCheck, Plan, Spec, Task
+from devagent.schema import AcceptanceCheck, ArtifactSpec, Plan, ProjectScope, Task
 
 
 def _req(workdir):
-    spec = Spec(title="Hello", pages=["/"],
-                acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")])
+    scope = ProjectScope(
+        title="Hello",
+        targets=[ArtifactSpec(
+            type="frontend", stack="node-vite-react", name="web", detail={},
+            acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")],
+        )],
+    )
     plan = Plan(tasks=[Task(id="a", description="scaffold", owned_files=["package.json"])])
-    return BuildRequest(spec=spec, plan=plan, workdir=str(workdir), run_id="r1")
+    return BuildRequest(scope=scope, plan=plan, workdir=str(workdir), run_id="r1")
 
 
 class _Proc:
@@ -28,12 +33,13 @@ def test_success_when_stream_ok_and_dist_present(tmp_path, monkeypatch):
     def fake_run(argv, **kw):
         dev = out / ".devagent"
         dev.mkdir(parents=True, exist_ok=True)
-        # the executor must have written spec/plan before invoking docker
-        assert (dev / "spec.json").is_file() and (dev / "plan.json").is_file()
+        # the executor must have written scope/plan before invoking docker
+        assert (dev / "scope.json").is_file() and (dev / "plan.json").is_file()
         dev.joinpath("result.json").write_text(json.dumps(
             {"ok_stream": True, "tokens_in": 1200, "tokens_out": 800, "cost_usd": 0.05}))
-        (out / "dist").mkdir(parents=True, exist_ok=True)
-        (out / "dist" / "index.html").write_text("<html></html>")
+        # artifact lives under the target subdirectory (web/dist/index.html)
+        (out / "web" / "dist").mkdir(parents=True, exist_ok=True)
+        (out / "web" / "dist" / "index.html").write_text("<html></html>")
         return _Proc()
 
     monkeypatch.setattr(executor_sdk.subprocess, "run", fake_run)
@@ -50,12 +56,12 @@ def test_failure_when_no_dist_produced(tmp_path, monkeypatch):
     def fake_run(argv, **kw):
         (out / ".devagent").mkdir(parents=True, exist_ok=True)
         (out / ".devagent" / "result.json").write_text(json.dumps({"ok_stream": True}))
-        return _Proc()  # no dist/ created
+        return _Proc()  # no target artifact created
 
     monkeypatch.setattr(executor_sdk.subprocess, "run", fake_run)
     res = SdkExecutor().build(_req(out))
     assert res.success is False
-    assert "dist" in (res.error or "")
+    assert "target artifacts" in (res.error or "")
 
 
 def test_repair_context_written_for_the_runner(tmp_path, monkeypatch):

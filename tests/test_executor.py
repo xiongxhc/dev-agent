@@ -1,7 +1,7 @@
 """The Executor seam + a FakeExecutor proving the contract (no SDK needed)."""
 
 from devagent.executor import BuildRequest, BuildResult, Executor
-from devagent.schema import AcceptanceCheck, Plan, Spec, Task
+from devagent.schema import AcceptanceCheck, ArtifactSpec, Plan, ProjectScope, Task
 
 
 class FakeExecutor:
@@ -12,13 +12,15 @@ class FakeExecutor:
 
 
 def _req(tmp_path):
-    spec = Spec(
+    scope = ProjectScope(
         title="Hello",
-        pages=["/"],
-        acceptance_checks=[AcceptanceCheck(kind="route_status", route="/", expected_status=200)],
+        targets=[ArtifactSpec(
+            type="frontend", stack="node-vite-react", name="web", detail={},
+            acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")],
+        )],
     )
     plan = Plan(tasks=[Task(id="a", description="page", owned_files=["src/App.tsx"])])
-    return BuildRequest(spec=spec, plan=plan, workdir=str(tmp_path), run_id="run-1")
+    return BuildRequest(scope=scope, plan=plan, workdir=str(tmp_path), run_id="run-1")
 
 
 def test_fake_executor_satisfies_protocol(tmp_path):

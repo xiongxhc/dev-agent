@@ -35,7 +35,7 @@ class BuildPhase:
 
     def run(self, ctx: PhaseContext) -> PhaseResult:
         req = BuildRequest(
-            spec=ctx.artifacts["spec"],
+            scope=ctx.artifacts["scope"],
             plan=ctx.artifacts["plan"],
             workdir=self.workdir,
             run_id=self.run_id,

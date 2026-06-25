@@ -24,8 +24,10 @@ def _patch_llm(monkeypatch):
     # PlanPhase now reads ctx.artifacts["scope"] (M6); the CLI pipeline still wires
     # SpecPhase -> PlanPhase (SpecPhase stores under "spec", not "scope") — ScopePhase
     # replaces this seam in Task 10. For now, patch PlanPhase.run directly so the CLI
-    # wiring tests exercise orchestrator/gate logic without a real scope in the context.
+    # wiring tests exercise orchestrator/gate logic; also seed ctx.artifacts["scope"] so
+    # BuildPhase (which reads scope, not spec) can proceed in the --build test.
     def _fake_plan_run(self, ctx: PhaseContext) -> PhaseResult:
+        ctx.artifacts["scope"] = scope  # BuildPhase reads ctx.artifacts["scope"]
         return PhaseResult(name="plan", exit_code=0, output=f"{len(plan.tasks)} tasks",
                            meta=USAGE, output_artifact=plan)
     monkeypatch.setattr("devagent.phases.plan.PlanPhase.run", _fake_plan_run)

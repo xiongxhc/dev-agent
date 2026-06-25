@@ -1,6 +1,6 @@
 """SdkExecutor — the self-built A/B arm. Launches the disposable M2 container and runs
 the Claude Agent SDK INSIDE it (via sdk_runner.py) to build the app per the frozen
-Spec+Plan, writing to the host-mounted /out. Returns a BuildResult.
+Scope+Plan, writing to the host-mounted /out. Returns a BuildResult.
 
 The API key is passed by NAME (`-e ANTHROPIC_API_KEY`) so the value flows via the host
 process env, never into the `docker run` argv (which the ledger records) — per the M1
@@ -15,8 +15,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import egress
-from .executor import BuildRequest, BuildResult
+from . import egress, recipes
+from .executor import BuildRequest, BuildResult, enrich_scope
 
 RUNNER = Path(__file__).parent / "sdk_runner.py"
 DEFAULT_IMAGE = os.getenv("DEVAGENT_M2_IMAGE", "devagent-sandbox:m2")
@@ -39,7 +39,7 @@ class SdkExecutor:
         out = Path(req.workdir).resolve()
         dev = out / ".devagent"
         dev.mkdir(parents=True, exist_ok=True)
-        (dev / "spec.json").write_text(req.spec.model_dump_json())
+        (dev / "scope.json").write_text(json.dumps(enrich_scope(req.scope)))
         (dev / "plan.json").write_text(req.plan.model_dump_json())
         repair = dev / "repair.txt"
         if req.repair_context:
@@ -71,7 +71,10 @@ class SdkExecutor:
 
         result_path = dev / "result.json"
         r = json.loads(result_path.read_text()) if result_path.exists() else {}
-        built = (out / "dist" / "index.html").exists()
+        built = all(
+            list((out / t.name).glob(recipes.get(t.stack).artifact_glob))
+            for t in req.scope.targets
+        )
         return BuildResult(
             repo_path=str(out),
             success=bool(r.get("ok_stream")) and built,  # CLAIM — the build gate re-checks
@@ -80,5 +83,5 @@ class SdkExecutor:
             wall_clock_s=wall,
             cost_usd=r.get("cost_usd"),
             transcript_path=str(result_path) if result_path.exists() else None,
-            error=r.get("error") or (None if built else "no dist/index.html produced"),
+            error=r.get("error") or (None if built else "no target artifacts produced"),
         )

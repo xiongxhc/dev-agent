@@ -10,20 +10,25 @@ from devagent.ledger import Ledger
 from devagent.phase_gates import BuildGate
 from devagent.phases.base import PhaseContext
 from devagent.phases.build import BuildPhase
-from devagent.schema import AcceptanceCheck, Plan, Spec, Task
+from devagent.schema import AcceptanceCheck, ArtifactSpec, Plan, ProjectScope, Task
 
 
-def _spec_plan():
-    spec = Spec(title="Hello", pages=["/"],
-                acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")])
+def _scope_plan():
+    scope = ProjectScope(
+        title="Hello",
+        targets=[ArtifactSpec(
+            type="frontend", stack="node-vite-react", name="web", detail={},
+            acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")],
+        )],
+    )
     plan = Plan(tasks=[Task(id="t1", description="scaffold", owned_files=["package.json"])])
-    return spec, plan
+    return scope, plan
 
 
-def _ctx(tmp_path, spec, plan, budget=None):
+def _ctx(tmp_path, scope, plan, budget=None):
     budget = budget or Budget(10**9, 1e9, 9)
     ctx = PhaseContext(sandbox=None, budget=budget, ledger=Ledger(tmp_path / "run"))
-    ctx.artifacts["spec"] = spec
+    ctx.artifacts["scope"] = scope
     ctx.artifacts["plan"] = plan
     return ctx
 
@@ -41,6 +46,7 @@ class FakeExecutor:
 
 
 def _write_dist(workdir):
+    # BuildGate still checks dist/index.html at the top of workdir (updated in a later task)
     dist = workdir / "dist"
     dist.mkdir(parents=True, exist_ok=True)
     (dist / "index.html").write_text("<html></html>")
@@ -48,16 +54,16 @@ def _write_dist(workdir):
 
 # --- BuildPhase ----------------------------------------------------------------
 
-def test_build_phase_passes_frozen_spec_plan_workdir_runid_to_executor(tmp_path):
-    spec, plan = _spec_plan()
+def test_build_phase_passes_frozen_scope_plan_workdir_runid_to_executor(tmp_path):
+    scope, plan = _scope_plan()
     out = tmp_path / "out"
     ex = FakeExecutor(BuildResult(repo_path=str(out), success=True))
     phase = BuildPhase(executor=ex, workdir=str(out), run_id="run-xyz")
 
-    result = phase.run(_ctx(tmp_path, spec, plan))
+    result = phase.run(_ctx(tmp_path, scope, plan))
 
     assert ex.seen is not None
-    assert ex.seen.spec is spec and ex.seen.plan is plan
+    assert ex.seen.scope is scope and ex.seen.plan is plan
     assert ex.seen.workdir == str(out)
     assert ex.seen.run_id == "run-xyz"
     assert result.name == "build"
@@ -66,29 +72,29 @@ def test_build_phase_passes_frozen_spec_plan_workdir_runid_to_executor(tmp_path)
 
 
 def test_build_phase_exit_1_when_executor_claims_failure(tmp_path):
-    spec, plan = _spec_plan()
+    scope, plan = _scope_plan()
     out = tmp_path / "out"
     ex = FakeExecutor(BuildResult(repo_path=str(out), success=False, error="boom"))
-    result = BuildPhase(executor=ex, workdir=str(out), run_id="r").run(_ctx(tmp_path, spec, plan))
+    result = BuildPhase(executor=ex, workdir=str(out), run_id="r").run(_ctx(tmp_path, scope, plan))
     assert result.exit_code == 1
     assert "boom" in result.output
 
 
 def test_build_phase_accounts_executor_tokens_into_shared_budget(tmp_path):
-    spec, plan = _spec_plan()
+    scope, plan = _scope_plan()
     out = tmp_path / "out"
     ex = FakeExecutor(BuildResult(repo_path=str(out), success=True, tokens_in=1200, tokens_out=800))
     budget = Budget(10**9, 1e9, 9)
-    BuildPhase(executor=ex, workdir=str(out), run_id="r").run(_ctx(tmp_path, spec, plan, budget))
+    BuildPhase(executor=ex, workdir=str(out), run_id="r").run(_ctx(tmp_path, scope, plan, budget))
     assert budget.tokens == 2000
 
 
 def test_build_phase_carries_cost_and_wallclock_in_meta(tmp_path):
-    spec, plan = _spec_plan()
+    scope, plan = _scope_plan()
     out = tmp_path / "out"
     ex = FakeExecutor(BuildResult(repo_path=str(out), success=True,
                                   tokens_in=10, tokens_out=5, cost_usd=0.21, wall_clock_s=28.0))
-    result = BuildPhase(executor=ex, workdir=str(out), run_id="r").run(_ctx(tmp_path, spec, plan))
+    result = BuildPhase(executor=ex, workdir=str(out), run_id="r").run(_ctx(tmp_path, scope, plan))
     assert result.meta["cost_usd"] == 0.21
     assert result.meta["wall_clock_s"] == 28.0
     assert result.meta["tokens_in"] == 10 and result.meta["tokens_out"] == 5

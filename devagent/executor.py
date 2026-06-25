@@ -10,18 +10,20 @@ the build/verify gates re-check the produced repo deterministically.
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
-from .schema import Plan, Spec
+from . import recipes
+from .schema import Plan, ProjectScope
 
 
 @dataclass(frozen=True)
 class BuildRequest:
-    spec: Spec          # frozen — identical bytes go to both A/B arms
-    plan: Plan          # frozen task list with disjoint file ownership
-    workdir: str        # host-visible out/ dir the built repo must land in
+    scope: ProjectScope   # frozen — identical bytes go to both A/B arms
+    plan: Plan            # frozen task list with disjoint file ownership
+    workdir: str          # host-visible out/ dir the built repo must land in
     run_id: str
-    budget: Any = None  # shared Budget instance (token/wall-clock/retry ceilings)
+    budget: Any = None    # shared Budget instance (token/wall-clock/retry ceilings)
     repair_context: str | None = None  # verify diagnostics for a repair pass (None = fresh build)
 
 
@@ -40,3 +42,25 @@ class BuildResult:
 
 class Executor(Protocol):
     def build(self, req: BuildRequest) -> BuildResult: ...
+
+
+def enrich_scope(scope) -> dict:
+    """Bake recipe-derived fields into a JSON-serializable scope dict that the in-container
+    build prompt + acceptance runner consume (they stay registry-free)."""
+    targets = []
+    for t in scope.targets:
+        r = recipes.get(t.stack)
+        boot = ({"cmd": list(r.boot.cmd), "port": r.boot.port, "health_path": r.boot.health_path}
+                if r.boot is not None else None)
+        static_dir = None if r.boot is not None else (str(Path(r.artifact_glob).parent) or ".")
+        targets.append({
+            "name": t.name, "type": t.type, "stack": t.stack,
+            "detail": t.detail,
+            "acceptance_checks": [c.model_dump() for c in t.acceptance_checks],
+            "_scaffold_hint": r.scaffold_hint,
+            "build_cmd": r.build_cmd,
+            "artifact_glob": r.artifact_glob,
+            "_boot": boot,
+            "_static_dir": static_dir,
+        })
+    return {"title": scope.title, "targets": targets}

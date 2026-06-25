@@ -1,5 +1,5 @@
 """Runs INSIDE the M2 sandbox container. Drives the Claude Agent SDK to build the app
-per the frozen Spec+Plan (written by the host to /out/.devagent/), writing the app to
+per the frozen Scope+Plan (written by the host to /out/.devagent/), writing the app to
 /out. Reports usage + any error to /out/.devagent/result.json.
 
 setting_sources=[] is mandatory (proven in de-risk) so the in-container SDK never tries
@@ -16,25 +16,6 @@ from pathlib import Path
 
 OUT = Path("/out")
 DEV = OUT / ".devagent"
-
-PROMPT = """You are building a {stack} web app. Write ALL files under the current working \
-directory (/out). Never write outside /out.
-
-SPEC (JSON):
-{spec}
-
-BUILD PLAN — ordered tasks, each owns specific files; implement every task:
-{plan}
-
-Instructions:
-- Scaffold a Vite + React + Tailwind project: package.json (PIN exact dependency versions \
-— no ^ or ~), vite.config, tailwind.config, postcss.config, index.html, and src/.
-- Implement every page in the spec and satisfy every acceptance check (each route must \
-render; each listed CSS selector must exist in the DOM).
-- Then run `pnpm install` and `pnpm build`. Fix any errors and re-run until the build \
-succeeds and a dist/ directory is produced.
-- Keep it minimal and idiomatic. Stop once `pnpm build` passes.
-"""
 
 REPAIR_PREFIX = """\
 This is a REPAIR pass. A previous attempt was rebuilt from source and FAILED with the \
@@ -60,10 +41,30 @@ def input_output_tokens(usage) -> tuple[int, int]:
     return tin, (usage.get("output_tokens") or 0)
 
 
+def build_prompt(scope: dict, plan: dict) -> str:
+    """Pure, host-importable prompt builder — consumes baked scope dict (registry-free)."""
+    lines = [f"You are building '{scope['title']}'. Write ALL files under /out. Never write outside /out.\n"]
+    for t in scope["targets"]:
+        lines.append(
+            f"Build target '{t['name']}' (type={t['type']}, stack={t['stack']}) "
+            f"in directory ./{t['name']}/:"
+        )
+        lines.append(t["_scaffold_hint"])
+        lines.append(f"Target detail (JSON): {json.dumps(t['detail'], indent=2)}")
+        lines.append(
+            f"Run `{t['build_cmd']}` in ./{t['name']} until it succeeds and "
+            f"`{t['artifact_glob']}` exists."
+        )
+        lines.append("")
+    lines.append("BUILD PLAN — ordered tasks, each owns specific files; implement every task:")
+    lines.append(json.dumps(plan, indent=2))
+    return "\n".join(lines)
+
+
 async def run(max_turns: int) -> None:
     from claude_agent_sdk import ClaudeAgentOptions, query
 
-    spec = json.loads((DEV / "spec.json").read_text())
+    scope = json.loads((DEV / "scope.json").read_text())
     plan = json.loads((DEV / "plan.json").read_text())
     opts = ClaudeAgentOptions(
         allowed_tools=["Write", "Edit", "Read", "Bash"],
@@ -72,11 +73,7 @@ async def run(max_turns: int) -> None:
         max_turns=max_turns,
         setting_sources=[],
     )
-    prompt = PROMPT.format(
-        stack=spec.get("stack", "vite-react-tailwind"),
-        spec=json.dumps(spec, indent=2),
-        plan=json.dumps(plan, indent=2),
-    )
+    prompt = build_prompt(scope, plan)
     repair_file = DEV / "repair.txt"
     if repair_file.exists():
         prompt = REPAIR_PREFIX.format(diagnostics=repair_file.read_text()[:4000]) + prompt
