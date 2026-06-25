@@ -61,3 +61,23 @@ def test_no_targets_fails():
     s = ProjectScope.model_construct(title="t", targets=[], repo=None, clarifications=[])
     g = ScopeGate().check(_res(s))
     assert not g.ok and "no targets" in g.reason.lower()
+
+
+def test_service_target_with_no_checks_is_allowed():
+    s = _scope(targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api",
+                     detail={"datastore": "db", "conn_env": "DATABASE_URL"},
+                     acceptance_checks=[AcceptanceCheck(kind="api_json", route="/health", json_path="ok")]),
+        ArtifactSpec(type="datastore", stack="postgres", name="db", acceptance_checks=[]),
+    ])
+    assert ScopeGate().check(_res(s)).ok
+
+
+def test_dangling_datastore_reference_fails():
+    s = _scope(targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api",
+                     detail={"datastore": "ghost", "conn_env": "DATABASE_URL"},
+                     acceptance_checks=[AcceptanceCheck(kind="api_json", route="/health", json_path="ok")]),
+    ])
+    g = ScopeGate().check(_res(s))
+    assert not g.ok and "ghost" in g.reason.lower()

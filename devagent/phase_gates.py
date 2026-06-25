@@ -148,6 +148,8 @@ class ScopeGate:
             return GateResult(False, f"scope has pending clarifications: {scope.clarifications}")
         if not scope.targets:
             return GateResult(False, "scope has no targets")
+        service_names = {t.name for t in scope.targets
+                         if recipes.is_registered(t.stack) and recipes.get(t.stack).kind == "service"}
         for t in scope.targets:
             if not recipes.is_registered(t.stack):
                 return GateResult(False, f"target {t.name!r}: no recipe yet for stack {t.stack!r}")
@@ -155,7 +157,13 @@ class ScopeGate:
             if r.type != t.type:
                 return GateResult(False,
                     f"target {t.name!r}: recipe {t.stack!r} is type {r.type!r}, not {t.type!r}")
-            if not t.acceptance_checks:
+            # A datastore reference must name a real service target in this scope.
+            ds = t.detail.get("datastore") if isinstance(t.detail, dict) else None
+            if ds and ds not in service_names:
+                return GateResult(False,
+                    f"target {t.name!r}: detail.datastore {ds!r} is not a service target in this scope")
+            # Service targets carry no acceptance checks of their own; build targets must.
+            if r.kind != "service" and not t.acceptance_checks:
                 return GateResult(False, f"target {t.name!r}: no acceptance_checks")
             for chk in t.acceptance_checks:
                 if chk.kind not in r.supported_checks:
