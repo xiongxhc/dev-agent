@@ -52,6 +52,7 @@ def enrich_scope(scope) -> dict:
         r = recipes.get(t.stack)
         boot = ({"cmd": list(r.boot.cmd), "port": r.boot.port, "health_path": r.boot.health_path}
                 if r.boot is not None else None)
+        # static targets serve the dir holding the built bundle (parent of artifact_glob, e.g. "dist")
         static_dir = None if r.boot is not None else (str(Path(r.artifact_glob).parent) or ".")
         targets.append({
             "name": t.name, "type": t.type, "stack": t.stack,

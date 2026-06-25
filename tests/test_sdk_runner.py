@@ -42,3 +42,5 @@ def test_prompt_covers_each_target_with_its_recipe_hint():
     p = build_prompt(scope, plan)
     assert "web/" in p and "api/" in p
     assert "Scaffold a Vite" in p and "Scaffold an Express" in p
+    assert "dist/index.html" in p
+    assert "dist/server.js" in p
