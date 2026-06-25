@@ -195,7 +195,10 @@ def main() -> None:
             ready = _poll_http(health_url)
             if not ready:
                 proc.terminate()
-                proc.wait(timeout=5)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
                 all_results.append({
                     "kind": "boot", "target": name, "ok": False,
                     "detail": f"service did not become healthy at {health_url}",
@@ -204,6 +207,9 @@ def main() -> None:
             base_url = f"http://127.0.0.1:{boot['port']}"
             try:
                 results = run_target_checks(target, base_url, workdir)
+            except Exception as e:  # one target's failure must not abort the others
+                all_results.append({"kind": "target_error", "target": target.get("name"), "ok": False, "detail": str(e)})
+                continue
             finally:
                 proc.terminate()
                 try:
@@ -220,9 +226,12 @@ def main() -> None:
                     socket.create_connection(("127.0.0.1", httpd.server_address[1]), timeout=0.2).close()
                     break
                 except OSError:
-                    pass
+                    time.sleep(0.05)
             try:
                 results = run_target_checks(target, base_url, workdir)
+            except Exception as e:  # one target's failure must not abort the others
+                all_results.append({"kind": "target_error", "target": target.get("name"), "ok": False, "detail": str(e)})
+                continue
             finally:
                 httpd.shutdown()
 
