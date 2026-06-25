@@ -57,3 +57,22 @@ def test_project_scope_round_trips():
     assert scope.title == "Hello"
     assert len(scope.targets) == 1
     assert scope.clarifications == []
+
+
+def test_persistence_check_requires_route_verifyroute_jsonpath():
+    ok = AcceptanceCheck(kind="persistence_survives_restart", route="/api/tasks",
+                         method="POST", body={"title": "x"}, json_path="id",
+                         verify_route="/api/tasks")
+    assert ok.verify_route == "/api/tasks" and ok.method == "POST"
+
+
+def test_persistence_check_missing_verify_route_rejected():
+    with pytest.raises(ValidationError):
+        AcceptanceCheck(kind="persistence_survives_restart", route="/api/tasks",
+                        json_path="id")            # no verify_route
+
+
+def test_persistence_check_missing_json_path_rejected():
+    with pytest.raises(ValidationError):
+        AcceptanceCheck(kind="persistence_survives_restart", route="/api/tasks",
+                        verify_route="/api/tasks")  # no json_path

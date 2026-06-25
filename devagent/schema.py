@@ -16,6 +16,7 @@ AcceptanceKind = Literal[
     "route_status", "selector_present",   # frontend (HTTP / browser)
     "api_json",                            # backend (HTTP JSON-body assertion)
     "command_exit", "stdout_matches",      # cli/mcp (subprocess) — plumbed for future recipes
+    "persistence_survives_restart",        # backend durability across an app restart
 ]
 
 
@@ -32,6 +33,7 @@ class AcceptanceCheck(BaseModel):
     json_equals: Any = None                     # api_json: expected value at json_path (None = presence-only)
     method: str = "GET"                         # api_json HTTP method
     body: dict | None = None                    # api_json request body
+    verify_route: str | None = None             # persistence_survives_restart: GET path to read state back
     # subprocess checks (command_exit / stdout_matches):
     argv: list[str] | None = None
     expected_exit: int = 0
@@ -49,6 +51,13 @@ class AcceptanceCheck(BaseModel):
             raise ValueError(f"{self.kind} requires a non-empty argv")
         if self.kind == "stdout_matches" and not self.pattern:
             raise ValueError("stdout_matches requires a pattern")
+        if self.kind == "persistence_survives_restart":
+            if not self.route or not self.route.startswith("/"):
+                raise ValueError("persistence_survives_restart requires a route starting with '/'")
+            if not self.verify_route or not self.verify_route.startswith("/"):
+                raise ValueError("persistence_survives_restart requires a verify_route starting with '/'")
+            if not self.json_path:
+                raise ValueError("persistence_survives_restart requires json_path to locate the created id")
         return self
 
 
