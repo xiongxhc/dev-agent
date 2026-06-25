@@ -10,7 +10,9 @@ from pathlib import Path
 class Config:
     image: str = "devagent-sandbox:m1"
     runs_dir: Path = Path("runs")
-    max_tokens: int = 200_000
+    max_tokens: int = 1_000_000  # runaway ceiling; counts cache-read tokens too, so multi-target
+                                 # builds need headroom — a 2-target build is ~320k+ (the M6 live
+                                 # run aborted at the old 200k). Override via DEVAGENT_MAX_TOKENS.
     max_seconds: float = 1800.0
     max_retries: int = 3
     egress: bool = True  # route --build containers through the egress allowlist (DEVAGENT_EGRESS=0 to disable)

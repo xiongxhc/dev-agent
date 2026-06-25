@@ -5,14 +5,17 @@ and it produces a built, deployed web app — unattended. A deterministic Python
 drives bounded Claude calls (**LLM brain, deterministic hands**), with a deterministic
 gate between every phase.
 
-**Status: M6 implemented + fully unit-verified.** `devagent run --build <prd>` runs
+**Status: M6 complete — live-verified end-to-end.** `devagent run --build <prd>` runs
 `PRD → scope → plan → multi-target build → per-target rebuild-from-source verify → acceptance
 → repair → deploy` in one command, gated at every phase. The pipeline is now **scope-first and
 flexible**: any request is classified into a confirmed `ProjectScope` (frontend, backend, fullstack,
 or any registered recipe) before building. Both A/B arms (`SdkExecutor` + `ManagedExecutor`)
-inherit the new flexible pipeline. A live fullstack E2E test (`test_live_fullstack_build`) has
-been **added** but is **pending an operator live run** (requires Docker + tokens; run with
-`DEVAGENT_RUN_LIVE=1`). Previous M2/M3/M4 frontend-only loop remains live-verified.
+inherit the new flexible pipeline. **Live-verified (2026-06-25):** `examples/fullstack.md` built a
+real **Express API + Vite/React frontend** monorepo — scope classified `api`+`web`, the SDK arm
+built both (1 repair), the shared verify rebuilt each from source, **booted the backend** and passed
+all 6 per-target acceptance checks (`api_json /health` + `/api/tasks` serving real JSON, frontend
+`route_status`/`selector_present`), then deployed to a preview URL — **$0.13, ~4 min**. Previous
+M2/M3/M4 frontend-only loop also remains live-verified.
 
 ---
 
@@ -216,12 +219,13 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
     than the sdk arm — capping/skipping repairs for the managed arm is worth considering.
   - ⬜ remaining: capture managed token/cost (session-hr) into `BuildResult` for the A/B cost
     comparison — **done as M5 prep** (small, self-contained; needed only for the cost comparison).
-- **Execution order (decided 2026-06-24): M6 → M5 → M7.** M5's A/B was reordered to run *after*
+- **Execution order: M6 → M5 → M7 → M8 → M9.** (M5 reorder decided 2026-06-24; the old monolithic
+  M7 was split into M7/M8/M9 along the bind → CI → deploy seam on 2026-06-25.) M5's A/B was reordered to run *after*
   M6 so the eval measures the **real full-stack workload** (frontend + backend + CLI), not a
   toy frontend-only corpus — its whole job is to pick the executor arm, and that choice is only
   as good as the workload it's measured on. The executor seam makes M6 mostly shared across both
   arms, so "build on both then decide" costs little, and it avoids paying twice for the test.
-- **M6** ✅ *(implemented + fully unit-verified; live fullstack E2E pending operator run)* —
+- **M6** ✅ *(complete — live-verified 2026-06-25)* —
   **Flexible scope-first builder.** Inverted the pipeline: a new **Scope phase** turns *any*
   request into a confirmed, flexible `ProjectScope` — deliverable type(s), stack, and repo-or-not
   are **request-driven** (backend-only, MCP, frontend-only, fullstack, any language). Ambiguity
@@ -229,24 +233,40 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
   on the scope via an open **recipe registry**; toolchain is provisioned per project. Ships two
   recipes: `node-vite-react` (frontend) + `node-express` (backend). CLI rewired:
   `scope → plan [→ build → verify → deploy]`; `intake`/`spec` phases and `Brief`/`Spec`/`BriefGate`/
-  `SpecGate` retired. Both A/B arms inherit the new pipeline. A live fullstack E2E test
-  (`test_live_fullstack_build`, `examples/fullstack.md`) is **added** but **pending an operator
-  live run** (needs Docker + tokens; `DEVAGENT_RUN_LIVE=1`). Design:
+  `SpecGate` retired. Both A/B arms inherit the new pipeline. **Live-verified:** a real Express
+  API + Vite/React frontend monorepo built, both targets rebuilt-from-source, backend booted +
+  all 6 per-target acceptance checks green, deployed (`DEVAGENT_RUN_LIVE=1`, ~$0.13/~4 min). The
+  first run surfaced a real calibration fix — the default `max_tokens` ceiling was raised
+  200k→1M (it counts cache-read tokens, and a 2-target build is ~320k+). Design:
   [`../docs/planning/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md`](../docs/planning/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md).
 - **M5** ⬜ *(after M6)* — **eval corpus + the A/B test** (the two empirical unknowns: quality,
   cost), run on the **full-stack** corpus M6 enables. Lean first cut: ~5 fixtures (easy→hard),
   N=2/arm, deterministic acceptance + blinded per-criterion LLM judge, dual cost normalization
   (model-token vs all-in incl. session-hr). PRD-only; reference-URL clones + SSIM deferred
   (URL intake doesn't exist yet).
-- **M7** ⬜ — **Git destination binding + per-trigger confirmation (Feishu-driven).** Every run
-  **binds to a target git repo *before* execution**, confirmed with the operator **every time a
-  new dev-agent project is triggered** (comms over **Feishu**):
+- **M7** ⬜ — **Git destination binding (where output lands).** Every run **binds to a target git
+  repo *before* execution**, confirmed with the operator **per trigger** (comms over **Feishu**):
   - **Where code lives:** dev-agent *itself* lives in the operator's **GitHub** (this repo). The
     **output** destination *depends* — **default Acme GitLab** — and is confirmed per trigger.
   - **The per-trigger question (always asked):** commit the built output to a **separate repo**,
     **no commit needed**, or **somewhere specific** (ask where).
-  - **Repo resolution:** ask whether the target repo **already exists**; if **not, create it**
-    (ask where). **New project → monorepo**; **existing project → multi-repo allowed**.
-  - Ships a `GitLabDeployer` (GitLab API / `glab` + git push, optional MR) behind the deploy seam
-    + a **path-scoped `.gitlab-ci.yml` generator** (reuses this repo's per-dir `changes:`-gated
-    monorepo-CI pattern). Per-target CI templates depend on M6.
+  - **Repo resolution:** does the target repo **already exist**? if **not, create it** (ask where).
+    **New project → monorepo**; **existing project → multi-repo allowed**.
+  - Ships a `GitLabDeployer` (GitLab API / `glab` + git push, optional MR) behind the deploy seam.
+  - **Self-contained** — makes generated apps actually *land* somewhere (today they're throwaway
+    under `runs/`). **No CI/deploy yet — that's M8.**
+- **M8** ⬜ *(after M7)* — **Ops: CI/CD + deploy, per project.** With the repo bound (M7), set up
+  the pipeline and ship it. Two paths; **prefer the ops platform for Acme**:
+  - **Preferred — `internal-ops-cli`:** register the app from its GitLab URL on the ops platform (portal
+    `192.0.2.5`); the platform provisions CI/CD; trigger builds; deploy to **test/uat/prod**.
+    Far less to maintain than hand-rolled YAML, and it *is* Acme's platform.
+  - **Alternative — generate CI:** a **path-scoped `.gitlab-ci.yml` generator** (per-target
+    templates keyed off M6's recipes; reuses the per-dir `changes:`-gated monorepo-CI pattern) +
+    **k8s deploy** (`kubectl set image`, scoped `gitlab-deployer` ServiceAccount) — matching the
+    real `acme-app` pipeline (`test → push image → deploy` to the `acme-app` namespace on Rancher).
+- **M9** ⬜ — **Brownfield (existing repos / Java).** Operate *inside* an existing repo instead of
+  scaffolding greenfield: git-clone the bound repo, **detect** its stack (e.g. Java/Spring Boot/
+  Maven) rather than pick one, build/verify with its existing toolchain + tests (the compile-only
+  gate pattern), and fit its existing CI. Adds a JDK+Maven toolchain image and a brownfield
+  detection path to the recipe registry. The realistic Acme backend case (new projects stay
+  greenfield-modern; older projects are Java).
