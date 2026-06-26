@@ -10,38 +10,71 @@ import html
 from pathlib import Path
 
 _STYLE = """
-:root { --green: #137333; --red: #c5221f; --bg: #f6f8fa; --line: #d0d7de; }
+:root {
+  --ink: #0f172a; --muted: #64748b; --faint: #94a3b8; --line: #e2e8f0;
+  --panel: #f8fafc; --accent: #4f46e5; --accent-soft: #eef2ff;
+  --green: #15803d; --green-soft: #f0fdf4; --red: #b91c1c; --red-soft: #fef2f2;
+  --radius: 12px; --shadow: 0 1px 2px rgba(15,23,42,.04), 0 6px 24px -12px rgba(15,23,42,.12);
+}
 * { box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
-       sans-serif; margin: 0; padding: 2rem; color: #1f2328; background: #fff; line-height: 1.5; }
-.wrap { max-width: 880px; margin: 0 auto; }
+html { -webkit-text-size-adjust: 100%; }
+body { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+       Helvetica, Arial, sans-serif; margin: 0; padding: 2.5rem 1.25rem; color: var(--ink);
+       background: linear-gradient(180deg, #f1f5f9 0%, #f8fafc 240px, #fff 600px);
+       line-height: 1.55; -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 920px; margin: 0 auto; background: #fff; border: 1px solid var(--line);
+        border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
 header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
-         border-bottom: 1px solid var(--line); padding-bottom: 1rem; margin-bottom: 1.5rem; }
-h1 { font-size: 1.25rem; margin: 0; font-weight: 600; }
-.run-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #57606a; }
-.badge { font-size: 1rem; font-weight: 700; letter-spacing: .05em; color: #fff;
-         padding: .35rem .9rem; border-radius: 6px; margin-left: auto; }
-.badge.pass { background: var(--green); }
-.badge.fail { background: var(--red); }
-h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .04em; color: #57606a;
-     margin: 1.75rem 0 .6rem; }
-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line);
-         vertical-align: top; }
-th { background: var(--bg); font-weight: 600; }
-td.num { font-variant-numeric: tabular-nums; text-align: right;
-         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.ok { color: var(--green); font-weight: 600; }
-.bad { color: var(--red); font-weight: 600; }
-.reason { color: #57606a; font-size: .85rem; }
-.totals { display: flex; gap: 2rem; flex-wrap: wrap; background: var(--bg);
-          border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.25rem; }
-.totals .k { font-size: .8rem; color: #57606a; text-transform: uppercase; letter-spacing: .03em; }
-.totals .v { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.preview { background: #ddf4ff; border: 1px solid #54aeff; border-radius: 8px;
-           padding: .9rem 1.1rem; margin: 1.5rem 0; font-size: 1rem; }
-.preview a { color: #0969da; font-weight: 600; word-break: break-all; }
-.note { color: #57606a; font-size: .85rem; margin-top: 1.5rem; }
+         padding: 1.6rem 2rem; border-bottom: 1px solid var(--line);
+         background: linear-gradient(180deg, #fff, var(--panel)); }
+.brand { display: flex; align-items: center; gap: .7rem; }
+.mark { width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto;
+        background: linear-gradient(135deg, var(--accent), #7c3aed); color: #fff;
+        display: grid; place-items: center; font-weight: 800; font-size: 1rem;
+        box-shadow: 0 2px 8px -2px rgba(79,70,229,.5); }
+h1 { font-size: 1.15rem; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+.run-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--faint);
+          font-size: .82rem; margin-top: .15rem; }
+.badge { font-size: .8rem; font-weight: 700; letter-spacing: .06em; padding: .4rem .85rem;
+         border-radius: 999px; margin-left: auto; display: inline-flex; align-items: center;
+         gap: .4rem; border: 1px solid transparent; }
+.badge::before { content: ""; width: .5rem; height: .5rem; border-radius: 50%; background: currentColor; }
+.badge.pass { color: var(--green); background: var(--green-soft); border-color: #bbf7d0; }
+.badge.fail { color: var(--red); background: var(--red-soft); border-color: #fecaca; }
+.body { padding: 1.4rem 2rem 2rem; }
+h2 { font-size: .76rem; text-transform: uppercase; letter-spacing: .08em; color: var(--faint);
+     font-weight: 700; margin: 2rem 0 .75rem; }
+.detail { color: var(--muted); font-size: .9rem; margin: .25rem 0 0; }
+table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+thead th { text-align: left; padding: .5rem .7rem; color: var(--muted); font-weight: 600;
+           font-size: .74rem; text-transform: uppercase; letter-spacing: .05em;
+           border-bottom: 1px solid var(--line); }
+tbody td { text-align: left; padding: .6rem .7rem; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--panel); }
+td.num, th.num { font-variant-numeric: tabular-nums; text-align: right;
+                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+td.phase { font-weight: 600; }
+.ok { color: var(--green); font-weight: 650; }
+.bad { color: var(--red); font-weight: 650; }
+.reason { color: var(--muted); font-size: .82rem; }
+.totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: .9rem; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+        padding: .9rem 1.1rem; }
+.card .k { font-size: .72rem; color: var(--faint); text-transform: uppercase; letter-spacing: .05em;
+           font-weight: 600; }
+.card .v { font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums;
+           letter-spacing: -.02em; margin-top: .2rem; }
+.preview { background: var(--accent-soft); border: 1px solid #c7d2fe; border-radius: var(--radius);
+           padding: 1rem 1.2rem; margin: .25rem 0 .5rem; font-size: .95rem; display: flex;
+           align-items: center; gap: .6rem; }
+.preview .lbl { color: var(--accent); font-weight: 700; text-transform: uppercase;
+                font-size: .72rem; letter-spacing: .06em; }
+.preview a { color: var(--accent); font-weight: 600; word-break: break-all; text-decoration: none; }
+.preview a:hover { text-decoration: underline; }
+.note { color: var(--faint); font-size: .82rem; margin-top: 1.75rem; padding-top: 1rem;
+        border-top: 1px solid var(--line); }
 """
 
 
@@ -98,7 +131,7 @@ def render_report(events: list[dict], run_id: str, *, preview_url: str | None = 
         cost_cell = f"${cost:.4f}" if cost is not None else "—"
         rows.append(
             "<tr>"
-            f"<td>{html.escape(str(ph.get('phase', '')))}</td>"
+            f"<td class='phase'>{html.escape(str(ph.get('phase', '')))}</td>"
             f"<td class='num'>{html.escape(str(ph.get('exit', '')))}</td>"
             f"<td>{gate_cell}</td>"
             f"<td class='num'>{tin:,}</td>"
@@ -114,17 +147,19 @@ def render_report(events: list[dict], run_id: str, *, preview_url: str | None = 
     parts.append(f"<style>{_STYLE}</style></head><body><div class='wrap'>")
 
     parts.append("<header>")
-    parts.append(f"<div><h1>dev-agent run report</h1>"
-                 f"<div class='run-id'>{html.escape(run_id)}</div></div>")
+    parts.append("<div class='brand'><div class='mark'>DA</div>"
+                 "<div><h1>dev-agent run report</h1>"
+                 f"<div class='run-id'>{html.escape(run_id)}</div></div></div>")
     parts.append(_badge(status))
     parts.append("</header>")
+    parts.append("<div class='body'>")
 
     if detail:
-        parts.append(f"<p class='reason'>{html.escape(detail)}</p>")
+        parts.append(f"<p class='detail'>{html.escape(detail)}</p>")
 
     if preview_url:
         href = html.escape(preview_url, quote=True)
-        parts.append(f"<div class='preview'>Preview: "
+        parts.append(f"<div class='preview'><span class='lbl'>Preview</span>"
                      f"<a href='{href}'>{html.escape(preview_url)}</a></div>")
 
     parts.append("<h2>Pipeline</h2>")
@@ -134,11 +169,11 @@ def render_report(events: list[dict], run_id: str, *, preview_url: str | None = 
     parts.append("</tbody></table>")
 
     parts.append("<h2>Totals</h2><div class='totals'>")
-    parts.append(f"<div><div class='k'>tokens in</div><div class='v'>{tot_in:,}</div></div>")
-    parts.append(f"<div><div class='k'>tokens out</div><div class='v'>{tot_out:,}</div></div>")
-    parts.append(f"<div><div class='k'>cost</div><div class='v'>${tot_cost:.4f}</div></div>")
+    parts.append(f"<div class='card'><div class='k'>tokens in</div><div class='v'>{tot_in:,}</div></div>")
+    parts.append(f"<div class='card'><div class='k'>tokens out</div><div class='v'>{tot_out:,}</div></div>")
+    parts.append(f"<div class='card'><div class='k'>cost</div><div class='v'>${tot_cost:.4f}</div></div>")
     if total_repairs is not None:
-        parts.append(f"<div><div class='k'>repairs</div><div class='v'>{total_repairs}</div></div>")
+        parts.append(f"<div class='card'><div class='k'>repairs</div><div class='v'>{total_repairs}</div></div>")
     parts.append("</div>")
 
     if acceptance:
@@ -161,7 +196,7 @@ def render_report(events: list[dict], run_id: str, *, preview_url: str | None = 
         net = html.escape(str(egress[-1].get("network", "")))
         parts.append(f"<p class='note'>egress-contained: {net}</p>")
 
-    parts.append("</div></body></html>")
+    parts.append("</div></div></body></html>")  # close .body, .wrap
     return "".join(parts)
 
 
