@@ -273,6 +273,20 @@ token_in, 1.33M cache-read) falsely aborted at 1M; the budget now counts expensi
 (`BuildResult.budget_tokens`). Unit suite: 173 passed, 3 skipped (the 3 skips are operator-gated live).
 
 Design: [`../docs/planning/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md`](../docs/planning/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md).
+Remaining follow-ups (non-blocking, tracked):
+  - ⬜ **live-validate the managed-datastore path** — run `examples/fullstack-persistent-shared.md`
+    (`DEVAGENT_RUN_LIVE=1`); its shared-state PRD nudges the agent to pick Postgres/Mongo, so the
+    sibling-container verify + deploy path gets live coverage (only SQLite is live-proven so far).
+  - ⬜ **`max_cost_usd` ceiling** — a per-run dollar guard (uses the SDK's exact `cost_usd`) as the
+    project-agnostic runaway bound, complementing the now-cache-read-excluded token ceiling.
+  - ⬜ **harden `preview_server.py`** — the static web-preview process dies on its own after deploy
+    (container shows Up, nothing listening); make it crash-proof per-request / exit-visibly.
+
+- **Feishu channel** ⬜ *(NEXT — channel adapter; design [2026-06-23](../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md))* —
+  a Feishu group bot where members drop a PRD → autonomous build → **preview URL + report posted
+  back in-thread**, with **live phase-by-phase progress** streamed as the run executes; plus a
+  converse path (status/follow-ups). Needs an **inbound event subscription** + an `enqueue_run` seam
+  — today's `channels/feishu.py` is **outbound-only**.
 
 - **M5** ⬜ *(after M6)* — **eval corpus + the A/B test** (the two empirical unknowns: quality,
   cost), run on the **full-stack** corpus M6 enables. Lean first cut: ~5 fixtures (easy→hard),
