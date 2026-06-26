@@ -71,8 +71,10 @@ PRD/URL ─▶ scope ─▶ plan ─▶ [ Executor ] ─▶ verify ─▶ deploy
 
 Design + research: `../docs/planning/specs/2026-06-22-dev-agent-research-synthesis.md`.
 
-> **Visual walkthrough:** [`../docs/how-dev-agent-works.html`](../docs/how-dev-agent-works.html) —
-> an Anthropic-styled slide deck of how the whole system works (open in a browser; ← → to navigate).
+> **One-page overview + sample run:** [`../docs/how-dev-agent-works.html`](../docs/how-dev-agent-works.html)
+> — every build now writes a single Anthropic-styled `report.html` that shows **this run's** results
+> *and* explains **how dev-agent works** (the pipeline, where each part runs — local Docker vs the
+> Anthropic API — verify-from-source, persistence). This file is that report, generated from a real run.
 
 ### How a request flows end-to-end
 
@@ -106,11 +108,19 @@ Feishu chat  ──@bot / DM (a PRD)──▶  feishu_bot.py            (runs on
                      Feishu chat  ◀── 📋 scope ✓ · 🗂 plan ✓ · 🔨 build ✓ · 🚀 URL · report.html
 ```
 
-- **Where it runs:** the **brain** phases (scope/plan) run on the **host** via the Anthropic
-  Messages API. **build / verify / deploy** run in **local Docker** containers
-  (`devagent-sandbox:m2`), egress-contained behind an allowlist proxy (`egress.py`). The
-  **Agent SDK arm calls the Anthropic API** with your `ANTHROPIC_API_KEY` — that's the token
-  cost (~$0.50/build). Default arm is **SDK** (`DEVAGENT_EXECUTOR=sdk|managed`).
+- **Where it runs — you host the agent, Anthropic hosts the brain.** The split:
+  - **Local (Docker on your machine):** the **Claude Agent SDK runtime itself**, all file
+    writes, the `pnpm`/`tsc` builds, verify (rebuild-from-source + booting the app), and the
+    deploy preview container(s) — all in disposable `devagent-sandbox:m2` containers,
+    egress-contained behind an allowlist proxy (`egress.py`). The scope/plan **brain** runs on
+    the host too. The Feishu bot and the pipeline are local processes.
+  - **Remote (the Anthropic API):** only the **Claude model / inference**. Whenever the SDK (or
+    a brain phase) needs the model to *think or write code*, it calls `api.anthropic.com` with
+    your `ANTHROPIC_API_KEY`. That network round-trip is the **only** thing that leaves the box
+    (alongside npm), and it's the per-build cost (~$0.50). **The model weights never run locally.**
+  - In one line: **the agent and the build run on your hardware; the thinking happens on
+    Anthropic's servers.** Default arm is **SDK** (local Docker); `DEVAGENT_EXECUTOR=managed`
+    flips the agent itself to Anthropic's hosted sandbox instead.
 - **Agent-decided persistence:** if the PRD needs durable state, the **Scope LLM picks the
   store** — none, in-process **SQLite** (`detail.persist_path`), or a managed **Postgres/Mongo**
   datastore target (`detail.datastore` + `detail.conn_env`). Verify holds every choice to the
