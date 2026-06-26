@@ -356,8 +356,10 @@ Remaining follow-ups (non-blocking, tracked):
     sibling-container verify + deploy path gets live coverage (only SQLite is live-proven so far).
   - ⬜ **`max_cost_usd` ceiling** — a per-run dollar guard (uses the SDK's exact `cost_usd`) as the
     project-agnostic runaway bound, complementing the now-cache-read-excluded token ceiling.
-  - ⬜ **harden `preview_server.py`** — the static web-preview process dies on its own after deploy
-    (container shows Up, nothing listening); make it crash-proof per-request / exit-visibly.
+  - ✅ **hardened `preview_server.py`** — was a single-threaded `TCPServer` that died on a hung/dropped
+    client (container stayed `Up`, port unresponsive); now `ThreadingHTTPServer` + per-request error
+    swallow + a supervisor loop that rebinds on any crash, and deploy runs preview/datastore containers
+    with `--restart unless-stopped`.
 
 - **Feishu channel** ⬜ *(NEXT — channel adapter; design [2026-06-23](../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md))* —
   a Feishu group bot where members drop a PRD → autonomous build → **preview URL + report posted

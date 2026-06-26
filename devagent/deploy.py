@@ -52,7 +52,7 @@ def start_preview(out_dir, image: str = DEFAULT_IMAGE, port: int | None = None) 
     # replace any prior preview so the name is free (ignore errors — none may exist)
     subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True, text=True)
     argv = [
-        "docker", "run", "-d", "--name", CONTAINER,
+        "docker", "run", "-d", "--restart", "unless-stopped", "--name", CONTAINER,
         "-p", f"{port}:8000",
         "--user", "1000:1000",
         "-v", f"{out}:/out:ro",
@@ -121,7 +121,7 @@ def start_service(target, image: str = DEFAULT_IMAGE, network: str | None = None
     # same-named target's previous deploy can't silently carry over. (Data still survives a
     # `docker restart` of the container — that reuses the volume and never calls start_service.)
     subprocess.run(["docker", "volume", "rm", vol], capture_output=True, text=True)
-    argv = ["docker", "run", "-d", "--name", container_name]
+    argv = ["docker", "run", "-d", "--restart", "unless-stopped", "--name", container_name]
     if network:
         argv += ["--network", network, "--network-alias", target.name]
     argv += [*env_flags, "-v", f"{vol}:{svc.volume_path}", svc.image]
@@ -159,7 +159,7 @@ def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE,
             env_flags += ["-e", f"{k}={v}"]
         net_flags = ["--network", network, "--network-alias", target.name] if network else []
         argv = [
-            "docker", "run", "-d", "--name", container_name,
+            "docker", "run", "-d", "--restart", "unless-stopped", "--name", container_name,
             "-p", f"{host_port}:{boot.port}",
             *net_flags, *env_flags,
             "--user", "1000:1000",
@@ -178,7 +178,7 @@ def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE,
         dist_dir = out / target.name / "dist"
         subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, text=True)
         argv = [
-            "docker", "run", "-d", "--name", container_name,
+            "docker", "run", "-d", "--restart", "unless-stopped", "--name", container_name,
             "-p", f"{host_port}:8000",
             "--user", "1000:1000",
             "-v", f"{dist_dir}:/out/dist:ro",
