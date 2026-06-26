@@ -71,6 +71,9 @@ PRD/URL ─▶ scope ─▶ plan ─▶ [ Executor ] ─▶ verify ─▶ deploy
 
 Design + research: `../docs/planning/specs/2026-06-22-dev-agent-research-synthesis.md`.
 
+> **Visual walkthrough:** [`../docs/how-dev-agent-works.html`](../docs/how-dev-agent-works.html) —
+> an Anthropic-styled slide deck of how the whole system works (open in a browser; ← → to navigate).
+
 ### How a request flows end-to-end
 
 A build can be triggered two ways — both land in the **same pipeline**:
