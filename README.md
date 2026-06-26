@@ -71,6 +71,70 @@ PRD/URL ─▶ scope ─▶ plan ─▶ [ Executor ] ─▶ verify ─▶ deploy
 
 Design + research: `../docs/planning/specs/2026-06-22-dev-agent-research-synthesis.md`.
 
+### How a request flows end-to-end
+
+A build can be triggered two ways — both land in the **same pipeline**:
+
+- **CLI:** `devagent run --build <prd.md>` (the primitive everything else wraps).
+- **Feishu:** drop a PRD into a Feishu chat → a bot triggers a run and **streams live progress
+  back into the chat**. See "Feishu channel" below.
+
+The whole chain, from a Feishu message to a running preview:
+
+```
+Feishu chat  ──@bot / DM (a PRD)──▶  feishu_bot.py            (runs on THIS host; WebSocket
+                                       │  long-connection, no public URL — lark_oapi)
+                                       │  spawns: devagent run --build <prd>
+                                       ▼
+                              orchestrator.py                 (host; LLM-brain, deterministic hands)
+        ┌─ scope ─ plan ─┬─────────── build ───────────┬─ deploy ─┐   gate after EVERY phase
+        │  (Messages API)│        Executor seam         │          │
+        │  on the host   │   SdkExecutor (default)      │          │
+        │                │   → Docker sandbox + Agent   │          │
+        │                │     SDK → Anthropic API      │          │
+        │                │   (or ManagedExecutor, hosted)│         │
+        │                ▼                               ▼          ▼
+        │           rebuild-from-source verify      datastore?  preview container(s)
+        │           + acceptance (boots the app,    (agent's    on 127.0.0.1:<port>
+        │            persistence_survives_restart)   choice)         │
+        └──────────────────────── ledger.jsonl (append-only event stream) ──────────────┘
+                                       │  feishu_bot tails the ledger
+                                       ▼
+                     Feishu chat  ◀── 📋 scope ✓ · 🗂 plan ✓ · 🔨 build ✓ · 🚀 URL · report.html
+```
+
+- **Where it runs:** the **brain** phases (scope/plan) run on the **host** via the Anthropic
+  Messages API. **build / verify / deploy** run in **local Docker** containers
+  (`devagent-sandbox:m2`), egress-contained behind an allowlist proxy (`egress.py`). The
+  **Agent SDK arm calls the Anthropic API** with your `ANTHROPIC_API_KEY` — that's the token
+  cost (~$0.50/build). Default arm is **SDK** (`DEVAGENT_EXECUTOR=sdk|managed`).
+- **Agent-decided persistence:** if the PRD needs durable state, the **Scope LLM picks the
+  store** — none, in-process **SQLite** (`detail.persist_path`), or a managed **Postgres/Mongo**
+  datastore target (`detail.datastore` + `detail.conn_env`). Verify holds every choice to the
+  same bar: rebuild from source → boot → `persistence_survives_restart` (write a record, restart
+  the **app** while the datastore stays up, read it back). See "Persistence seam" below.
+- **Live preview is local:** deploy starts preview container(s) on `http://127.0.0.1:<port>` —
+  reachable **only on this host**. The Feishu chat gets all the progress + the URL, but the URL
+  opens on the machine running the bot. Public, shareable deploys are **M7/M8**.
+- **The run report** (`report.html`) is a self-contained styled page rendered from the ledger:
+  pipeline table, token/cost totals, acceptance checks, preview URL (`report.py`).
+
+### Feishu channel (single app bot)
+
+`channels/feishu_bot.py` + `channels/feishu_app.py` — a **Feishu custom app** (one bot) that
+does **both** directions: it **receives** PRDs (event subscription over a WebSocket
+long-connection — no public URL) and **sends** progress/results back into the same chat via the
+app message API. Setup: a custom app with Bot enabled, scopes `im:message` + `im:message:send_as_bot`,
+event `im.message.receive_v1` (long-connection mode), published, and added to a DM or group
+(in a group it acts on **@mentions**; in a DM, on any message). Credentials live in `.env`
+(`FEISHU_APP_ID` / `FEISHU_APP_SECRET`), never committed.
+
+> The older `channels/feishu.py` is a one-way **group-webhook** bot used only for best-effort
+> outbound notifications (e.g. scope-clarification questions on the CLI path). It is **not
+> required** — the single app bot above covers the full Feishu UX, including relaying
+> clarification questions back to the chat. Run the bot with `python -m devagent.channels.feishu_bot`.
+> Design: [`../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md`](../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md).
+
 ---
 
 ## What's built (by module)

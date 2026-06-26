@@ -7,6 +7,7 @@ dependencies = ["pydantic>=2.6", "anthropic>=0.69"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+feishu = ["lark-oapi"]   # inbound Feishu bot (channels/feishu_bot.py): WebSocket long-connection
 
 [project.scripts]
 devagent = "devagent.cli:main"
