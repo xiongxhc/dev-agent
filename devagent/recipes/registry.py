@@ -1,9 +1,19 @@
 # devagent/recipes/registry.py
 """The recipe REGISTRY. M6 registers two Node recipes (no new image). Adding a recipe
 makes a new artifact type buildable with NO harness change — that is the extensibility
-seam M7 (Java/Python, brownfield detection) plugs into."""
+seam M7 (Java/Python, brownfield detection) plugs into.
 
-from .base import BootSpec, Recipe, ServiceSpec, Toolchain
+M11: recipes are also loadable as DATA. Point `DEVAGENT_RECIPES_DIR` at a directory of `*.json`
+manifests (each a recipe dict, or a list of them) and they merge into the REGISTRY at import —
+so a new stack/language is a config file, not a code edit. A manifest with a built-in's name
+overrides it. (The manifest registers the recipe; a brand-new toolchain *image* it references
+must still be built — the bundled `devagent-sandbox:m2` already carries node + python3.)"""
+
+import json
+import os
+from pathlib import Path
+
+from .base import BootSpec, Recipe, ServiceSpec, Toolchain, recipe_from_dict
 
 NODE = Toolchain(image="devagent-sandbox:m2")    # node + pnpm + chromium + python3; npm allowlist
 
@@ -71,6 +81,35 @@ REGISTRY: dict[str, Recipe] = {
         ),
     ),
 }
+
+
+def load_external_recipes(directory) -> dict[str, Recipe]:
+    """Parse every `*.json` recipe manifest under *directory* into Recipes. Each file is one
+    recipe dict or a list of them. Raises ValueError (naming the file) on a malformed manifest —
+    a typo'd recipe must fail loudly, not vanish. Returns {} if the dir is absent."""
+    out: dict[str, Recipe] = {}
+    p = Path(directory)
+    if not p.is_dir():
+        return out
+    for f in sorted(p.glob("*.json")):
+        try:
+            data = json.loads(f.read_text())
+        except json.JSONDecodeError as e:
+            raise ValueError(f"recipe manifest {f}: invalid JSON: {e}") from e
+        for item in (data if isinstance(data, list) else [data]):
+            try:
+                r = recipe_from_dict(item)
+            except (KeyError, TypeError, ValueError) as e:
+                raise ValueError(f"recipe manifest {f}: invalid recipe "
+                                 f"{item.get('name', '?') if isinstance(item, dict) else item!r}: {e}") from e
+            out[r.name] = r
+    return out
+
+
+# Merge operator-supplied recipes at import: a new stack is a manifest, not a code change.
+_EXTERNAL_DIR = os.getenv("DEVAGENT_RECIPES_DIR")
+if _EXTERNAL_DIR:
+    REGISTRY.update(load_external_recipes(_EXTERNAL_DIR))
 
 
 def get(name: str) -> Recipe:

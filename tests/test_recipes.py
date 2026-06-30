@@ -80,3 +80,77 @@ def test_backend_hint_covers_persistence():
     assert "sqlite" in hint
     assert "idempotent" in hint or "create table if not exists" in hint
     assert "pin" in hint                         # driver version pinned like every dep
+
+
+# --- M11: declarative recipes (add a stack as DATA, not a code edit) ---
+import json
+from devagent.recipes import load_external_recipes, recipe_from_dict
+
+
+def test_recipe_from_dict_builds_a_bootable_backend():
+    r = recipe_from_dict({
+        "name": "python-flask", "type": "backend", "toolchain": {"image": "devagent-sandbox:m2"},
+        "scaffold_hint": "Scaffold a Flask app", "build_cmd": "pip install -r requirements.txt",
+        "artifact_glob": "app.py",
+        "boot": {"cmd": ["python", "app.py"], "port": 5000, "health_path": "/healthz"},
+        "supported_checks": ["api_json", "route_status"],
+    })
+    assert r.name == "python-flask" and r.type == "backend"
+    assert r.boot.cmd == ("python", "app.py") and r.boot.port == 5000
+    assert r.boot.health_path == "/healthz"
+    assert r.supported_checks == ("api_json", "route_status")
+    assert r.kind == "build" and r.service is None
+
+
+def test_recipe_from_dict_builds_a_service_with_dict_env():
+    r = recipe_from_dict({
+        "name": "redis", "type": "datastore", "kind": "service",
+        "toolchain": {"image": "devagent-sandbox:m2"},
+        "service": {"image": "redis:7", "port": 6379, "env": {"FOO": "bar"},
+                    "volume_path": "/data", "ready_cmd": ["redis-cli", "ping"],
+                    "conn_url_template": "redis://{host}:{port}"},
+    })
+    assert r.kind == "service" and r.service.image == "redis:7"
+    assert r.service.env == (("FOO", "bar"),)        # JSON object env normalized to pairs
+    assert r.service.ready_cmd == ("redis-cli", "ping")
+
+
+def test_load_external_recipes_from_dir(tmp_path):
+    (tmp_path / "rust.json").write_text(json.dumps({
+        "name": "rust-axum", "type": "backend", "toolchain": {"image": "devagent-rust:m1"},
+        "build_cmd": "cargo build --release", "artifact_glob": "target/release/app",
+        "boot": {"cmd": ["./target/release/app"], "port": 8080}, "supported_checks": ["api_json"],
+    }))
+    loaded = load_external_recipes(tmp_path)
+    assert "rust-axum" in loaded
+    assert loaded["rust-axum"].toolchain.image == "devagent-rust:m1"
+    assert loaded["rust-axum"].boot.health_path == "/health"   # defaulted
+
+
+def test_external_manifest_can_override_a_builtin(tmp_path):
+    (tmp_path / "override.json").write_text(json.dumps({
+        "name": "node-express", "type": "backend", "toolchain": {"image": "my-custom:latest"},
+        "build_cmd": "pnpm build", "artifact_glob": "dist/server.js",
+    }))
+    loaded = load_external_recipes(tmp_path)
+    assert loaded["node-express"].toolchain.image == "my-custom:latest"
+
+
+def test_a_file_may_hold_a_list_of_recipes(tmp_path):
+    (tmp_path / "pair.json").write_text(json.dumps([
+        {"name": "a", "type": "backend", "toolchain": {"image": "i"}, "artifact_glob": "x"},
+        {"name": "b", "type": "frontend", "toolchain": {"image": "i"}, "artifact_glob": "y"},
+    ]))
+    loaded = load_external_recipes(tmp_path)
+    assert set(loaded) == {"a", "b"}
+
+
+def test_malformed_manifest_fails_loudly_with_filename(tmp_path):
+    (tmp_path / "bad.json").write_text(json.dumps({"type": "backend"}))  # missing name + toolchain
+    with pytest.raises(ValueError) as ei:
+        load_external_recipes(tmp_path)
+    assert "bad.json" in str(ei.value)
+
+
+def test_missing_dir_is_empty_not_an_error(tmp_path):
+    assert load_external_recipes(tmp_path / "nope") == {}

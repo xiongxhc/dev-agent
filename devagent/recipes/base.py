@@ -50,3 +50,38 @@ class Recipe:
     supported_checks: tuple[str, ...] = ()
     kind: str = "build"                           # "build" | "service"
     service: ServiceSpec | None = None            # set iff kind == "service"
+
+
+def recipe_from_dict(d: dict) -> Recipe:
+    """Build a Recipe from a plain dict (a JSON manifest) — the seam that lets an operator add a
+    new stack/language as DATA (a recipe file) instead of editing this module. Raises KeyError/
+    ValueError on a malformed manifest so a bad recipe fails loudly at load, never silently."""
+    tc = d.get("toolchain") or {}
+    if "image" not in tc:
+        raise ValueError("recipe.toolchain.image is required")
+    toolchain = Toolchain(image=tc["image"], egress_hosts=tuple(tc.get("egress_hosts", ())))
+
+    boot = None
+    if d.get("boot"):
+        b = d["boot"]
+        boot = BootSpec(cmd=tuple(b["cmd"]), port=int(b["port"]),
+                        health_path=b.get("health_path", "/health"),
+                        ready_timeout_s=float(b.get("ready_timeout_s", 30.0)))
+
+    service = None
+    if d.get("service"):
+        s = d["service"]
+        env = s.get("env") or {}
+        env_pairs = tuple(env.items()) if isinstance(env, dict) else tuple(tuple(p) for p in env)
+        service = ServiceSpec(
+            image=s["image"], port=int(s["port"]), env=env_pairs,
+            volume_path=s["volume_path"], ready_cmd=tuple(s["ready_cmd"]),
+            conn_url_template=s["conn_url_template"],
+            ready_timeout_s=float(s.get("ready_timeout_s", 60.0)))
+
+    return Recipe(
+        name=d["name"], type=d["type"], toolchain=toolchain,
+        scaffold_hint=d.get("scaffold_hint", ""), build_cmd=d.get("build_cmd", ""),
+        artifact_glob=d.get("artifact_glob", ""), boot=boot,
+        supported_checks=tuple(d.get("supported_checks", ())),
+        kind=d.get("kind", "build"), service=service)

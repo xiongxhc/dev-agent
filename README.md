@@ -446,12 +446,19 @@ Remaining follow-ups (non-blocking, tracked):
     an **IdP service dependency** (a test OpenLDAP / mock-OIDC container with seeded users); verify
     stands it up on the per-run network and the app authenticates against *that*. Real interactive
     OAuth/SAML consent is **not** deterministically verifiable — flag "not verified", don't fake a pass.
-- **M11** ⬜ — **Declarative extensibility — add languages/recipes without editing dev-agent.** The
-  operator must be able to support a new stack (Java, **Python**, **Rust**, Go, more TS frameworks)
-  *and* new auth styles **without changing dev-agent's code each time** — recipes are the seam, but
-  today they're Python objects in `recipes.REGISTRY` (a code edit per stack). Make recipes
-  **declarative/loadable** (a config/manifest or drop-in plugin dir: toolchain image, `build_cmd`,
-  `artifact_glob`, boot cmd/health, `supported_checks`, optional service spec) so a new language or
-  framework is *data*, not a patch. The pipeline is already recipe-dispatched and language-agnostic by
-  design; this closes the last "I had to touch the code" gap and is what makes "different projects,
-  different languages, different purposes" self-serve.
+- **M11** ◐ — **Declarative extensibility — add languages/recipes without editing dev-agent.**
+  - ✅ **declarative recipe loading** (2026-06-30): `recipe_from_dict` + `load_external_recipes`
+    parse `*.json` recipe manifests from `DEVAGENT_RECIPES_DIR` (each a recipe dict or a list:
+    `toolchain.image`, `build_cmd`, `artifact_glob`, `boot` cmd/port/health, `supported_checks`,
+    optional `service` spec) and merge them into `REGISTRY` at import — a manifest with a built-in's
+    name overrides it; a malformed manifest fails loudly (naming the file). Because the scope prompt
+    catalog iterates the registry, a dropped manifest is **immediately offered to the model** and the
+    whole pipeline (scope→plan→build→verify→deploy) dispatches on it with **no code change**. Proven
+    end-to-end: a `python-flask.json` registered and appeared in the scope catalog. The pipeline was
+    already recipe-dispatched/language-agnostic; this closes the "I had to touch the code" gap for
+    **stacks** (Java/Python/Rust/Go/TS frameworks).
+  - ⬜ **toolchain images:** a manifest *registers* a recipe, but a new toolchain it names (e.g. a
+    JDK+Maven or Rust image) must still be **built** (`sandbox/build.sh`). The bundled
+    `devagent-sandbox:m2` already carries node + python3, so Python/Node recipes need no new image.
+  - ⬜ **declarative auth styles:** the same data-not-code treatment for new `AuthFlow` modes (M10)
+    so auth styles are configurable too, not just stacks.
