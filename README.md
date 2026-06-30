@@ -470,6 +470,9 @@ Remaining follow-ups (non-blocking, tracked):
   build-target concurrently** (web ∥ api — independent dirs/`node_modules`), then aggregates into
   one `BuildResult` (sum tokens/cost, max wall-clock). **The Executor seam is unchanged**, so
   BuildPhase/gates/verify/deploy are untouched. v1 = per-target parallelism on the SDK arm
-  (wall-clock ≈ slowest target, not the sum); intra-target task-slicing + per-target repair +
-  managed-arm parity are follow-ups. *Rejected: in-session Agent-SDK subagents — coordination
-  becomes model-driven/opaque and muddies the A/B; keep partitioning in deterministic code.*
+  (wall-clock ≈ slowest target, not the sum). **Approach scoped to the split, not "subagents bad":**
+  per-target is an *obvious, independent* split → deterministic code partitions + isolated
+  containers run concurrently (in-session subagents can't give N isolated build envs anyway). The
+  **Agent-SDK subagent / agent-team** pattern is the right tool for the **intra-target follow-up**
+  (coupled work, non-obvious split, shared context). Per-target repair + managed-arm parity are
+  also follow-ups.
