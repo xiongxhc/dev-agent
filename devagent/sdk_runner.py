@@ -8,6 +8,7 @@ controlled by the host's `docker run` flags, not here."""
 
 import argparse
 import json
+import os
 import traceback
 from pathlib import Path
 
@@ -72,6 +73,8 @@ async def run(max_turns: int) -> None:
         cwd="/out",
         max_turns=max_turns,
         setting_sources=[],
+        # build model is set per-run for the model-quality A/B; unset => the SDK default.
+        **({"model": os.environ["DEVAGENT_BUILD_MODEL"]} if os.environ.get("DEVAGENT_BUILD_MODEL") else {}),
     )
     prompt = build_prompt(scope, plan)
     repair_file = DEV / "repair.txt"

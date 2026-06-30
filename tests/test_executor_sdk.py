@@ -27,6 +27,34 @@ class _Proc:
     stderr = ""
 
 
+def _fake_ok(out):
+    def fake_run(argv, **kw):
+        fake_run.argv = argv
+        dev = out / ".devagent"
+        dev.mkdir(parents=True, exist_ok=True)
+        dev.joinpath("result.json").write_text(json.dumps({"ok_stream": True}))
+        (out / "web" / "dist").mkdir(parents=True, exist_ok=True)
+        (out / "web" / "dist" / "index.html").write_text("<html></html>")
+        return _Proc()
+    return fake_run
+
+
+def test_build_model_passed_as_env_when_set(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    fake = _fake_ok(out)
+    monkeypatch.setattr(executor_sdk.subprocess, "run", fake)
+    SdkExecutor(model="claude-haiku-4-5-20251001").build(_req(out))
+    assert "DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001" in fake.argv
+
+
+def test_build_model_env_omitted_when_unset(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    fake = _fake_ok(out)
+    monkeypatch.setattr(executor_sdk.subprocess, "run", fake)
+    SdkExecutor().build(_req(out))  # model=None (the default)
+    assert not any("DEVAGENT_BUILD_MODEL" in a for a in fake.argv)
+
+
 def test_success_when_stream_ok_and_dist_present(tmp_path, monkeypatch):
     out = tmp_path / "out"
 

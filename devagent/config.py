@@ -19,6 +19,8 @@ class Config:
                                  # prod via DEVAGENT_MAX_COST_USD (0/empty disables the cap).
     egress: bool = True  # route --build containers through the egress allowlist (DEVAGENT_EGRESS=0 to disable)
     executor: str = "sdk"  # the A/B build arm: "sdk" (Agent SDK, our Docker) | "managed" (Managed Agents)
+    build_model: str | None = None  # model for the SDK build executor; None = SDK default. The
+                                    # second A/B axis (model quality): set DEVAGENT_BUILD_MODEL per run.
 
     @classmethod
     def load(cls, env: dict | None = None) -> "Config":
@@ -33,4 +35,5 @@ class Config:
                           if env.get("DEVAGENT_MAX_COST_USD") else cls.max_cost_usd),
             egress=env.get("DEVAGENT_EGRESS", "1").lower() not in ("0", "false", "no"),
             executor=env.get("DEVAGENT_EXECUTOR", cls.executor).lower(),
+            build_model=env.get("DEVAGENT_BUILD_MODEL") or cls.build_model,
         )

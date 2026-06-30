@@ -26,7 +26,8 @@ class SdkExecutor:
     def __init__(self, image: str = DEFAULT_IMAGE, runner: Path = RUNNER,
                  max_turns: int = 40, timeout: int = 1200,
                  api_key_env: str = "ANTHROPIC_API_KEY",
-                 network: str | None = None, proxy_url: str | None = None):
+                 network: str | None = None, proxy_url: str | None = None,
+                 model: str | None = None):
         self.image = image
         self.runner = Path(runner)
         self.max_turns = max_turns
@@ -34,6 +35,7 @@ class SdkExecutor:
         self.api_key_env = api_key_env
         self.network = network        # egress-allowlist network (None = default bridge)
         self.proxy_url = proxy_url
+        self.model = model            # build model for the in-container Agent SDK (None = SDK default)
 
     def build(self, req: BuildRequest) -> BuildResult:
         out = Path(req.workdir).resolve()
@@ -53,6 +55,8 @@ class SdkExecutor:
             *egress.docker_flags(self.network, self.proxy_url),  # [] when egress disabled
             "-e", self.api_key_env,        # value via env, NOT argv (no secret in argv)
             "-e", "HOME=/home/node",
+            # build model (not a secret): inline so the run is reproducible from the ledger argv.
+            *(["-e", f"DEVAGENT_BUILD_MODEL={self.model}"] if self.model else []),
             "--user", "1000:1000",
             "-v", f"{out}:/out",
             "-v", f"{self.runner}:/runner.py:ro",

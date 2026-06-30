@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         if cfg.executor == "managed":
             executor = ManagedExecutor()
         else:
-            executor = SdkExecutor(network=network, proxy_url=proxy)
+            executor = SdkExecutor(network=network, proxy_url=proxy, model=cfg.build_model)
         # BuildPhase owns the repair loop: build -> rebuild-from-source verify -> repair
         # (cap 2), then emits the VerifyReport. VerifyGate is the trusted final check.
         phases.append(BuildPhase(

@@ -197,6 +197,12 @@ python -m devagent.cli run --answers answers.md examples/hello.md
 DEVAGENT_EXECUTOR=managed python -m devagent.cli run --build examples/hello.md
 # -> the A/B arm B: builds on Claude Managed Agents (hosted cloud sandbox), pulls the
 #    result back, then the SAME shared verify/acceptance/deploy/report runs locally.
+
+DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001 python -m devagent.cli run --build examples/hello.md
+# -> second A/B axis (model quality/cost): pins the SDK build executor's model. Unset =
+#    the Agent SDK default. The brain (scope/plan) model is separate: DEVAGENT_LLM_MODEL
+#    (default claude-sonnet-4-6). Use a cheap model (Haiku) for test builds, a stronger one
+#    for prod/quality. Cost is also hard-capped per run by DEVAGENT_MAX_COST_USD (default $10).
 ```
 
 `--build` is opt-in because it requires Docker (the M2 sandbox image) and spends build
