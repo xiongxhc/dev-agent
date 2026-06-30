@@ -11,6 +11,10 @@ from dataclasses import dataclass
 class Toolchain:
     image: str                                   # sandbox image carrying the toolchain
     egress_hosts: tuple[str, ...] = ()           # extra allowlist hosts beyond base npm+anthropic
+    dockerfile: str | None = None                # Dockerfile that BUILDS `image` (path relative to the
+                                                 # manifest dir) — lets a manifest ship a NEW toolchain as
+                                                 # data; `build.sh recipes` builds it (M11). None = prebuilt.
+    build_context: str | None = None             # docker build context (default: the Dockerfile's dir)
 
 
 @dataclass(frozen=True)
@@ -59,7 +63,8 @@ def recipe_from_dict(d: dict) -> Recipe:
     tc = d.get("toolchain") or {}
     if "image" not in tc:
         raise ValueError("recipe.toolchain.image is required")
-    toolchain = Toolchain(image=tc["image"], egress_hosts=tuple(tc.get("egress_hosts", ())))
+    toolchain = Toolchain(image=tc["image"], egress_hosts=tuple(tc.get("egress_hosts", ())),
+                          dockerfile=tc.get("dockerfile"), build_context=tc.get("build_context"))
 
     boot = None
     if d.get("boot"):

@@ -180,17 +180,37 @@ class BuildVerifier:
                             wall_clock_s=time.monotonic() - t0,
                             error="datastore did not become ready",
                         )
-                # Resolve <conn_env>=<url> for every backend that declares a datastore.
+                # Resolve service URLs for every backend that declares one. A datastore injects
+                # <conn_env>=<url>; a federated IdP (mock OIDC/LDAP container, declared as a
+                # service the same way) injects <idp_env>=<issuer-url>. Real interactive
+                # OAuth/SAML consent is NOT deterministically verifiable — it is flagged
+                # not-verified at scope time, never stood up here.
                 svc_by_name = {t["name"]: recipes.get(t["stack"]).service for t in service_targets}
                 for bt in targets:
                     if recipes.get(bt["stack"]).kind != "build":
                         continue
-                    ds = (bt.get("detail") or {}).get("datastore")
-                    if not ds or ds not in svc_by_name:
-                        continue
-                    conn_env = (bt.get("detail") or {}).get("conn_env", "DATABASE_URL")
-                    url = svc_by_name[ds].conn_url_template.format(host=ds, port=svc_by_name[ds].port)
-                    extra_env += ["-e", f"{conn_env}={url}"]
+                    detail = bt.get("detail") or {}
+                    for dep_key, env_key, env_default in (
+                        ("datastore", "conn_env", "DATABASE_URL"),
+                        ("idp", "idp_env", "OIDC_ISSUER"),
+                    ):
+                        dep = detail.get(dep_key)
+                        if not dep:
+                            continue
+                        if dep not in svc_by_name:
+                            # A declared dependency that resolves to no service is a scope
+                            # misconfiguration — fail with a clear message rather than silently
+                            # booting the app with the env var unset (an opaque runtime failure).
+                            return VerifyReport(
+                                build_ok=True, dist_present=True, exit_code=1,
+                                log_tail=f"{bt['name']}.detail.{dep_key}={dep!r} names no datastore/service target",
+                                wall_clock_s=time.monotonic() - t0,
+                                error=f"{dep_key} target {dep!r} is not a declared service",
+                            )
+                        env_name = detail.get(env_key, env_default)
+                        url = svc_by_name[dep].conn_url_template.format(
+                            host=dep, port=svc_by_name[dep].port)
+                        extra_env += ["-e", f"{env_name}={url}"]
             checks = self._acceptance(out, network=accept_net, extra_env=extra_env)
         finally:
             for cname, vol in started:

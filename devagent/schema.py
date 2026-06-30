@@ -10,7 +10,12 @@ enum); `ScopeGate` validates each target's stack against the recipe registry."""
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# Auth-style vocabulary the verify runner can execute. OPEN like the recipe registry: the
+# runner dispatches on this string (acceptance_runner._CRED_BUILDERS), so a new style is a
+# dispatch-table entry, never per-app code (M10 depth; M11 "declarative auth styles").
+KNOWN_AUTH_MODES = ("bearer", "cookie")
 
 AcceptanceKind = Literal[
     "route_status", "selector_present",   # frontend (HTTP / browser)
@@ -24,6 +29,8 @@ class AcceptanceCheck(BaseModel):
     """A single machine-checkable acceptance criterion. Required fields depend on `kind`
     (enforced below) so every check yields a deterministic bool with no model in the loop."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     kind: AcceptanceKind
     # HTTP checks (route_status / selector_present / api_json):
     route: str | None = None
@@ -34,7 +41,8 @@ class AcceptanceCheck(BaseModel):
     method: str = "GET"                         # api_json HTTP method
     body: dict | None = None                    # api_json request body
     verify_route: str | None = None             # persistence_survives_restart: GET path to read state back
-    auth: bool = False                          # send the target's AuthFlow credential on this check
+    auth: bool = False                          # send the target's default AuthFlow credential on this check
+    as_actor: str | None = Field(default=None, alias="as")  # authz: run this check AS this named actor
     # subprocess checks (command_exit / stdout_matches):
     argv: list[str] | None = None
     expected_exit: int = 0
@@ -63,27 +71,37 @@ class AcceptanceCheck(BaseModel):
 
 
 class AuthFlow(BaseModel):
-    """How the verify harness obtains a credential for auth-protected checks. Declared once
-    per target; the runner logs in ONCE and sends the token on every check marked `auth=True`.
-    Deterministic: the runner executes this flow, it never judges pass/fail with the model."""
+    """How the verify harness obtains a credential for auth-protected checks. The runner logs
+    in ONCE per flow and sends the credential on every check that names it. Deterministic: the
+    runner executes the flow, it never judges pass/fail with the model.
+
+    `mode` selects the credential style (bearer token vs captured session cookie). A single
+    flow can be the target's default (referenced by `auth=True` checks); a list of named
+    flows (`ArtifactSpec.actors`, each with a `name`/`role`) forms a permission matrix that
+    checks reference by `as: <name>`."""
 
     login_route: str                            # e.g. "/auth/login"
     login_method: str = "POST"
     login_body: dict = Field(default_factory=dict)   # credentials to POST at login
-    token_json_path: str                        # dotted path to the token in the login response, e.g. "token"
-    header: str = "Authorization"               # header the token rides in
-    scheme: str = "Bearer"                      # header value is f"{scheme} {token}".strip()
+    token_json_path: str = ""                   # bearer: dotted path to the token, e.g. "token" (unused for cookie)
+    header: str = "Authorization"               # bearer: header the token rides in
+    scheme: str = "Bearer"                      # bearer: header value is f"{scheme} {token}".strip()
+    mode: str = "bearer"                        # "bearer" | "cookie" — the credential style (KNOWN_AUTH_MODES)
+    name: str | None = None                     # actor name for an authz matrix (None = the target's default flow)
+    role: str | None = None                     # informational role label, surfaced to the build prompt
     register_route: str | None = None           # optional: create the user before logging in
     register_method: str = "POST"
     register_body: dict | None = None           # body to register with (defaults to login_body)
 
     @model_validator(mode="after")
-    def _routes_are_paths(self):
+    def _validate(self):
         for r in (self.login_route, self.register_route):
             if r is not None and not r.startswith("/"):
                 raise ValueError("AuthFlow routes must start with '/'")
-        if not self.token_json_path:
-            raise ValueError("AuthFlow requires token_json_path")
+        if self.mode not in KNOWN_AUTH_MODES:
+            raise ValueError(f"AuthFlow.mode {self.mode!r} must be one of {KNOWN_AUTH_MODES}")
+        if self.mode == "bearer" and not self.token_json_path:
+            raise ValueError("AuthFlow bearer mode requires token_json_path")
         return self
 
 
@@ -96,7 +114,8 @@ class ArtifactSpec(BaseModel):
     stack: str = Field(..., min_length=1)        # recipe name, e.g. "node-express"
     name: str = Field(..., min_length=1)         # target dir/name, e.g. "web", "api"
     detail: dict = Field(default_factory=dict)
-    auth: AuthFlow | None = None                 # set when any acceptance check needs a credential
+    auth: AuthFlow | None = None                 # the default flow (referenced by `auth=True` checks)
+    actors: list[AuthFlow] = Field(default_factory=list)  # named flows forming an authz permission matrix
     acceptance_checks: list[AcceptanceCheck] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -106,6 +125,17 @@ class ArtifactSpec(BaseModel):
                 "a check sets auth=True but the target declares no `auth` flow — "
                 "the runner would have no credential to send"
             )
+        named = [a.name for a in self.actors if a.name]
+        if any(a.name is None for a in self.actors):
+            raise ValueError("each actor in `actors` must declare a name")
+        if len(named) != len(set(named)):
+            raise ValueError("actors must have unique names")
+        actor_names = set(named)
+        for c in self.acceptance_checks:
+            if c.as_actor is not None and c.as_actor not in actor_names:
+                raise ValueError(
+                    f"a check runs `as: {c.as_actor}` but no actor with that name is declared in `actors`"
+                )
         return self
 
 

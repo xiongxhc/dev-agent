@@ -18,6 +18,7 @@ Playwright installed. Writes .devagent/acceptance.json.
 """
 
 import functools
+import http.cookiejar
 import http.server
 import json
 import os
@@ -197,10 +198,44 @@ def _serve(directory: Path) -> tuple[socketserver.TCPServer, str]:
     return httpd, f"http://127.0.0.1:{port}"
 
 
+def _cred_bearer(login_resp, jar, auth) -> tuple[dict | None, str | None]:
+    """Bearer style: read the token from the login JSON body and return the header dict."""
+    try:
+        payload = json.loads(login_resp.read().decode())
+    except Exception as e:  # noqa: BLE001
+        return None, f"login response not JSON: {e}"
+    found, token = _dig(payload, auth.get("token_json_path", ""))
+    if not found or not token:
+        return None, f"token not at json_path {auth.get('token_json_path')!r}"
+    value = f"{auth.get('scheme', 'Bearer')} {token}".strip()
+    return {auth.get("header", "Authorization"): value}, None
+
+
+def _cred_cookie(login_resp, jar, auth) -> tuple[dict | None, str | None]:
+    """Cookie/session style: replay the cookies the cookie jar captured during login as a Cookie
+    header. The jar is fed by an HTTPCookieProcessor opener, so cookies set on an intermediate
+    redirect (a 302 → dashboard login) are captured too — reading the final response's headers
+    alone would miss them."""
+    pairs = [f"{c.name}={c.value}" for c in jar]
+    if not pairs:
+        return None, "no Set-Cookie returned at login"
+    return {"Cookie": "; ".join(pairs)}, None
+
+
+# Auth-style dispatch table — adding a style is an entry here (data-not-code), matching the
+# open KNOWN_AUTH_MODES vocabulary in schema.py (M10 depth / M11 declarative auth styles).
+_CRED_BUILDERS = {"bearer": _cred_bearer, "cookie": _cred_cookie}
+
+
 def obtain_auth_header(base_url: str, auth: dict) -> tuple[dict | None, str | None]:
-    """Execute the target's AuthFlow: optional register, then login; extract the token and
-    build the header dict to send on auth checks. Returns (headers, None) on success or
-    (None, detail) on failure. Run ONCE per target before its checks — deterministic, no model."""
+    """Execute an AuthFlow: optional register, then login; build the credential header dict
+    per `mode` (bearer token or captured session cookie). Returns (headers, None) on success
+    or (None, detail) on failure. Run ONCE per flow before its checks — deterministic, no model.
+
+    Login (and register) go through a per-flow cookie-jar opener so session cookies are captured
+    even when login responds with a redirect."""
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
     # optional register — best effort: an "already exists" failure is fine, login is the gate.
     if auth.get("register_route"):
         rbody = auth.get("register_body") or auth.get("login_body")
@@ -209,44 +244,57 @@ def obtain_auth_header(base_url: str, auth: dict) -> tuple[dict | None, str | No
                                       method=auth.get("register_method", "POST"),
                                       headers={"Content-Type": "application/json"})
         try:
-            urllib.request.urlopen(rreq, timeout=10).close()
+            opener.open(rreq, timeout=10).close()
         except Exception:  # noqa: BLE001 — already-registered etc. is not fatal
             pass
+    mode = auth.get("mode", "bearer")
+    builder = _CRED_BUILDERS.get(mode)
+    if builder is None:
+        return None, f"unsupported auth mode {mode!r}"
     lbody = auth.get("login_body") or {}
     ldata = json.dumps(lbody).encode() if lbody is not None else None
     lreq = urllib.request.Request(base_url.rstrip("/") + auth["login_route"], data=ldata,
                                   method=auth.get("login_method", "POST"),
                                   headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(lreq, timeout=10) as r:
-            payload = json.loads(r.read().decode())
+        with opener.open(lreq, timeout=10) as r:
+            return builder(r, jar, auth)
     except Exception as e:  # noqa: BLE001
         return None, f"login failed: {e}"
-    found, token = _dig(payload, auth["token_json_path"])
-    if not found or not token:
-        return None, f"token not at json_path {auth['token_json_path']!r}"
-    value = f"{auth.get('scheme', 'Bearer')} {token}".strip()
-    return {auth.get("header", "Authorization"): value}, None
 
 
 def run_target_checks(target: dict, base_url: str, workdir: str, restart=None) -> list[dict]:
     """Dispatch each check in *target* by kind against *base_url* (HTTP) or *workdir* (command).
-    `restart` (set only for booted backends) lets a persistence check bounce the app. If the
-    target declares an `auth` flow, log in once and send the credential on checks marked auth."""
+    `restart` (set only for booted backends) lets a persistence check bounce the app.
+
+    Credentials: the target's default `auth` flow serves `auth=True` checks; each named flow in
+    `actors` serves checks that reference it via `as: <name>` (the authz permission matrix). Each
+    distinct flow logs in ONCE up front; a login failure fails only the checks that need it."""
     out = []
-    auth = target.get("auth")
-    auth_headers, auth_err = (None, None)
-    if auth:
-        auth_headers, auth_err = obtain_auth_header(base_url, auth)
+    creds: dict[str, tuple[dict | None, str | None]] = {}  # "" = default flow; "<name>" = actor
+    if target.get("auth"):
+        creds[""] = obtain_auth_header(base_url, target["auth"])
+    for a in target.get("actors") or []:
+        if a.get("name"):
+            creds[a["name"]] = obtain_auth_header(base_url, a)
     for c in target.get("acceptance_checks", []):
         k = c["kind"]
         hdrs = None
-        if c.get("auth"):
-            if auth_headers is None:
+        actor = c.get("as_actor") or c.get("as")
+        if actor is not None:
+            ah, aerr = creds.get(actor, (None, f"actor {actor!r} not declared"))
+            if ah is None:
                 out.append({"kind": k, "route": c.get("route"), "ok": False,
-                            "detail": f"auth required but {auth_err or 'no auth flow declared'}"})
+                            "detail": f"auth required but {aerr}"})
                 continue
-            hdrs = auth_headers
+            hdrs = ah
+        elif c.get("auth"):
+            ah, aerr = creds.get("", (None, "no auth flow declared"))
+            if ah is None:
+                out.append({"kind": k, "route": c.get("route"), "ok": False,
+                            "detail": f"auth required but {aerr or 'no auth flow declared'}"})
+                continue
+            hdrs = ah
         if k == "route_status":
             out.append(check_route_status(base_url, c["route"], c.get("expected_status", 200), headers=hdrs))
         elif k == "selector_present":

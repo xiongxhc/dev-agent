@@ -431,46 +431,55 @@ Remaining follow-ups (non-blocking, tracked):
   gate pattern), and fit its existing CI. Adds a JDK+Maven toolchain image and a brownfield
   detection path to the recipe registry. The realistic Acme backend case (new projects stay
   greenfield-modern; older projects are Java).
-- **M10** ⬜ — **Auth & access depth (model-declared, not hardcoded).** Today's `AuthFlow` only
-  models **bearer-token-in-header** auth. Widen the *vocabulary* (never per-app code) so the scope
-  model can declare richer auth and the runner executes whatever it declared:
-  - **Sessions / cookie auth** — `AuthFlow.mode = bearer|cookie`; the runner adds a cookie jar
-    (`http.cookiejar`) that captures `Set-Cookie` at login and replays `Cookie` on later requests.
-  - **Roles / permissions (authz)** — generalize the single flow → named **actors** (each with creds
-    + role) and let checks carry `as: <actor>` + `expected_status`, so the model declares a real
-    permission matrix (`as: admin → /admin → 200`; `as: member → /admin → 403`). The build prompt
-    gets the actors + matrix as the contract.
-  - **Federated / third-party (LDAP, OIDC, SAML)** — verify runs sealed (egress-locked, no real
-    external IdP, no human consent), so a *real* provider is never reachable **by design**. Handle it
-    via the existing **service-recipe seam** (like the postgres/mongo datastores): the model declares
-    an **IdP service dependency** (a test OpenLDAP / mock-OIDC container with seeded users); verify
-    stands it up on the per-run network and the app authenticates against *that*. Real interactive
-    OAuth/SAML consent is **not** deterministically verifiable — flag "not verified", don't fake a pass.
-- **M11** ◐ — **Declarative extensibility — add languages/recipes without editing dev-agent.**
-  - ✅ **declarative recipe loading** (2026-06-30): `recipe_from_dict` + `load_external_recipes`
-    parse `*.json` recipe manifests from `DEVAGENT_RECIPES_DIR` (each a recipe dict or a list:
-    `toolchain.image`, `build_cmd`, `artifact_glob`, `boot` cmd/port/health, `supported_checks`,
-    optional `service` spec) and merge them into `REGISTRY` at import — a manifest with a built-in's
-    name overrides it; a malformed manifest fails loudly (naming the file). Because the scope prompt
-    catalog iterates the registry, a dropped manifest is **immediately offered to the model** and the
-    whole pipeline (scope→plan→build→verify→deploy) dispatches on it with **no code change**. Proven
-    end-to-end: a `python-flask.json` registered and appeared in the scope catalog. The pipeline was
-    already recipe-dispatched/language-agnostic; this closes the "I had to touch the code" gap for
-    **stacks** (Java/Python/Rust/Go/TS frameworks).
-  - ⬜ **toolchain images:** a manifest *registers* a recipe, but a new toolchain it names (e.g. a
-    JDK+Maven or Rust image) must still be **built** (`sandbox/build.sh`). The bundled
-    `devagent-sandbox:m2` already carries node + python3, so Python/Node recipes need no new image.
-  - ⬜ **declarative auth styles:** the same data-not-code treatment for new `AuthFlow` modes (M10)
-    so auth styles are configurable too, not just stacks.
-- **M12** ⬜ *(planned — design [2026-06-30](../docs/planning/specs/2026-06-30-dev-agent-m12-parallel-team-build-design.md))* —
-  **Parallel / team build.** The pipeline already specs+plans before code (`scope`→`plan`), and
-  `PlanGate` enforces **pairwise-disjoint file ownership** *precisely so parallel build agents never
-  collide* — but `SdkExecutor` still runs a **single** agent sequentially. M12 uses the seam:
-  `SdkExecutor.build()` reads the plan's partition and runs **independent targets concurrently**
-  (web ∥ api, each its own isolated container/`node_modules`/build), aggregating into one
-  `BuildResult` (sum tokens/cost, max wall-clock); a large, coupled target can itself fan out to a
-  **lead agent + subagents** on its disjoint files. Match the tool to the split — obvious+independent
-  → code partitions isolated containers; coupled+non-obvious → an agent team with shared context.
-  The partition is read from the (gated) plan, not improvised live, and the outcome is gated
-  deterministically regardless. **The Executor seam is unchanged**, so BuildPhase/gates/verify/
-  deploy are untouched.
+- **M10** ✅ *(built + unit-verified 2026-06-30)* — **Auth & access depth (model-declared, not
+  hardcoded).** Widened the auth *vocabulary* (never per-app code) so the scope model declares
+  richer auth and the runner executes whatever it declared:
+  - ✅ **Sessions / cookie auth** — `AuthFlow.mode = bearer|cookie`; the runner captures `Set-Cookie`
+    at login and replays `Cookie` on later checks (`acceptance_runner._cred_cookie`). Cookie mode
+    needs no `token_json_path`.
+  - ✅ **Roles / permissions (authz)** — the single flow generalizes to named **actors**
+    (`ArtifactSpec.actors`, each an `AuthFlow` with a unique `name` + `role`); checks carry
+    `as: <actor>` + `expected_status`, so the model declares a real permission matrix
+    (`as: admin → /admin → 200`; `as: member → /admin → 403`). The runner logs in as each actor
+    once and asserts the status per actor; the build prompt gets the actor contracts as the matrix.
+  - ✅ **Federated / third-party (LDAP, OIDC, SAML)** — verify runs sealed, so a real provider is
+    unreachable **by design**. Handled via the **service-recipe seam**: the backend declares
+    `detail.idp` (a seeded mock-IdP **service** target) + `detail.idp_env`; verify stands it up on
+    the per-run network and injects `<idp_env>=<issuer-url>` so the app authenticates against *that*
+    (mirrors the datastore injection). Real interactive OAuth/SAML consent is **not** deterministically
+    verifiable — the scope prompt flags "not verified", never fakes a pass. *(Live bring-up of a
+    specific mock-IdP image is the natural next step; the seam + injection are unit-verified.)*
+- **M11** ✅ *(complete 2026-06-30)* — **Declarative extensibility — add languages/recipes without
+  editing dev-agent.**
+  - ✅ **declarative recipe loading**: `recipe_from_dict` + `load_external_recipes` parse `*.json`
+    recipe manifests from `DEVAGENT_RECIPES_DIR` (each a recipe dict or a list: `toolchain.image`,
+    `build_cmd`, `artifact_glob`, `boot`, `supported_checks`, optional `service` spec) and merge them
+    into `REGISTRY` at import — a manifest with a built-in's name overrides it; a malformed manifest
+    fails loudly (naming the file). Because the scope catalog iterates the registry, a dropped manifest
+    is **immediately offered to the model** and the whole pipeline dispatches on it with **no code
+    change**. Proven: a `python-flask.json` registered and appeared in the scope catalog.
+  - ✅ **toolchain images**: a manifest can now ship a NEW toolchain as data — `toolchain.dockerfile`
+    names a Dockerfile (relative to the recipes dir) that builds `toolchain.image`. `devagent.recipes.
+    toolchains.toolchain_build_specs` maps manifests → docker-build specs (deduped by image) and
+    `build_all` runs them; `sandbox/build.sh recipes` is the operator entrypoint. Prebuilt toolchains
+    (the bundled `devagent-sandbox:m2`, node + python3) declare no `dockerfile` and need no build.
+  - ✅ **declarative auth styles**: closed by M10 — the runner dispatches on `AuthFlow.mode` via the
+    `_CRED_BUILDERS` table against the open `KNOWN_AUTH_MODES` vocabulary, so an auth style is a
+    dispatch-table entry (data-not-code), exactly like a stack is a recipe.
+- **M12** ✅ *(built + unit-verified 2026-06-30 — design [2026-06-30](../docs/planning/specs/2026-06-30-dev-agent-m12-parallel-team-build-design.md))* —
+  **Parallel / team build.** `PlanGate` already enforces **pairwise-disjoint file ownership**
+  *precisely so parallel build agents never collide*. M12 uses the seam: a **fresh** build whose
+  plan **cleanly partitions** across its `kind=="build"` targets (every target owns ≥1 task, every
+  task in exactly one target) runs **one contained SDK session per target concurrently** (web ∥ api,
+  each its own container/`node_modules`/build, all mounting the shared `/out` — writes disjoint by
+  target dir). `SdkExecutor.build()` writes a per-target scope + plan slice, runs them on a worker
+  pool capped at `min(targets, DEVAGENT_BUILD_CONCURRENCY|3)`, and aggregates into one `BuildResult`
+  (tokens/cost **summed**, `wall_clock_s` = **max**, failures surfaced in target order). Any plan
+  that doesn't cleanly partition (a shared/root task, a cross-target task, a target with no tasks),
+  a **repair pass**, and single-target scopes all take the original **sequential** single session —
+  so the disjoint-`/out` invariant is *guaranteed*, never assumed. The full enriched scope is still
+  written to `.devagent/scope.json`, so **verify/acceptance/deploy and the repair loop are untouched**
+  — parallelism is internal to the Executor seam. *(Follow-up: a large, coupled single target fanning
+  out to a lead agent + subagents on its disjoint files — the intra-target agent-team pattern — needs
+  the in-container SDK's Task tool and a live run to verify; the concurrent-target capability is the
+  headline deliverable and is shipped.)*

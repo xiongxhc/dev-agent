@@ -165,3 +165,65 @@ def test_malformed_manifest_fails_loudly_with_filename(tmp_path):
 
 def test_missing_dir_is_empty_not_an_error(tmp_path):
     assert load_external_recipes(tmp_path / "nope") == {}
+
+
+# --- M11: declarative TOOLCHAIN images (build a new toolchain from a manifest) ---
+from devagent.recipes import toolchains
+
+
+def test_recipe_from_dict_parses_toolchain_dockerfile():
+    r = recipe_from_dict({
+        "name": "java-springboot", "type": "backend",
+        "toolchain": {"image": "devagent-jdk:m1", "dockerfile": "Dockerfile.jdk"},
+        "build_cmd": "mvn package", "artifact_glob": "target/app.jar",
+    })
+    assert r.toolchain.image == "devagent-jdk:m1"
+    assert r.toolchain.dockerfile == "Dockerfile.jdk"
+
+
+def test_toolchain_build_specs_maps_manifests_to_docker_builds(tmp_path):
+    (tmp_path / "Dockerfile.jdk").write_text("FROM eclipse-temurin:21\n")
+    (tmp_path / "java.json").write_text(json.dumps({
+        "name": "java-springboot", "type": "backend", "build_cmd": "mvn package",
+        "artifact_glob": "target/app.jar",
+        "toolchain": {"image": "devagent-jdk:m1", "dockerfile": "Dockerfile.jdk"},
+    }))
+    specs = toolchains.toolchain_build_specs(tmp_path)
+    assert len(specs) == 1
+    assert specs[0]["image"] == "devagent-jdk:m1"
+    assert specs[0]["dockerfile"] == str((tmp_path / "Dockerfile.jdk").resolve())
+    assert specs[0]["context"] == str(tmp_path.resolve())   # defaults to the Dockerfile's dir
+
+
+def test_prebuilt_toolchains_contribute_no_build_spec(tmp_path):
+    # node recipes use the bundled m2 image (no dockerfile) → nothing to build
+    (tmp_path / "flask.json").write_text(json.dumps({
+        "name": "python-flask", "type": "backend", "build_cmd": "pip install -r requirements.txt",
+        "artifact_glob": "app.py", "toolchain": {"image": "devagent-sandbox:m2"},
+    }))
+    assert toolchains.toolchain_build_specs(tmp_path) == []
+
+
+def test_build_all_runs_docker_build_per_declared_image(tmp_path):
+    (tmp_path / "Dockerfile.rust").write_text("FROM rust:1\n")
+    (tmp_path / "rust.json").write_text(json.dumps({
+        "name": "rust-axum", "type": "backend", "build_cmd": "cargo build", "artifact_glob": "app",
+        "toolchain": {"image": "devagent-rust:m1", "dockerfile": "Dockerfile.rust"},
+    }))
+    calls = []
+    built = toolchains.build_all(tmp_path, runner=lambda argv, **kw: calls.append(argv))
+    assert built == ["devagent-rust:m1"]
+    assert calls[0][:3] == ["docker", "build", "-f"]
+    assert "devagent-rust:m1" in calls[0]
+
+
+def test_one_dockerfile_backing_many_recipes_builds_once(tmp_path):
+    (tmp_path / "Dockerfile.jvm").write_text("FROM eclipse-temurin:21\n")
+    (tmp_path / "jvm.json").write_text(json.dumps([
+        {"name": "java-spring", "type": "backend", "build_cmd": "mvn package", "artifact_glob": "a.jar",
+         "toolchain": {"image": "devagent-jvm:m1", "dockerfile": "Dockerfile.jvm"}},
+        {"name": "kotlin-ktor", "type": "backend", "build_cmd": "gradle build", "artifact_glob": "b.jar",
+         "toolchain": {"image": "devagent-jvm:m1", "dockerfile": "Dockerfile.jvm"}},
+    ]))
+    specs = toolchains.toolchain_build_specs(tmp_path)
+    assert [s["image"] for s in specs] == ["devagent-jvm:m1"]   # deduped by image

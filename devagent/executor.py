@@ -67,6 +67,7 @@ def enrich_scope(scope) -> dict:
             "name": t.name, "type": t.type, "stack": t.stack,
             "detail": t.detail,
             "auth": t.auth.model_dump() if t.auth else None,
+            "actors": [a.model_dump() for a in t.actors],
             "acceptance_checks": [c.model_dump() for c in t.acceptance_checks],
             "kind": r.kind,
             "_scaffold_hint": r.scaffold_hint,

@@ -57,6 +57,22 @@ Rules:
   check that hits a protected route — the runner logs in ONCE and sends the token automatically.
   Leave `auth: false` (default) on checks that test the UNauthenticated case (e.g. a protected
   route returning 401 with no token). A persistence check on a protected route also needs `auth: true`.
+- Auth STYLE: set `auth.mode` to `bearer` (default — token in a header) or `cookie` (the login
+  response sets a session cookie the runner captures and replays). Cookie mode needs no
+  `token_json_path`. Same `auth: true` on checks either way.
+- ROLES / authorization: when the app has roles (admin vs member), declare an `actors` list on
+  the backend instead of (or alongside) a single `auth` — each actor is an auth flow with a
+  unique `name` and a `role` and its own credentials. Then write the permission matrix as
+  route_status checks carrying `as: <actor name>` and the `expected_status` that actor should
+  get — e.g. a route_status on /admin with `as: admin` and expected_status 200, plus another
+  route_status on /admin with `as: member` and expected_status 403. The runner logs in as each
+  actor once and asserts the status per actor.
+- FEDERATED / third-party identity (LDAP, OIDC, SAML): never point at a real provider — verify
+  runs sealed, so real interactive consent is NOT verifiable (flag it, never fake a pass).
+  Instead add a seeded MOCK IdP as a `datastore`-type service target (its `stack` a registered
+  IdP recipe), and on the dependent backend set `detail.idp` to that target's `name` and
+  `detail.idp_env` to the env var your code reads the issuer URL from (default `OIDC_ISSUER`).
+  Verify stands up the mock and the app authenticates against it.
 
 REQUEST:
 {request}

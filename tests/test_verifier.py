@@ -185,6 +185,58 @@ def test_verify_brings_up_datastore_and_injects_conn_env(tmp_path):
     assert not any("/out/db" in f for f in flat)
 
 
+def test_verify_injects_idp_issuer_env_for_federated_auth(tmp_path):
+    """A backend declaring detail.idp gets <idp_env>=<issuer-url> injected from the mock-IdP
+    service (the federated-auth seam reuses the datastore service mechanism — M10)."""
+    dev = tmp_path / ".devagent"
+    dev.mkdir(parents=True)
+    # reuse the postgres service recipe as a stand-in service; the injection is recipe-agnostic.
+    (dev / "scope.json").write_text(json.dumps({"targets": [
+        {"name": "api", "stack": "node-express", "kind": "build",
+         "detail": {"idp": "idp", "idp_env": "OIDC_ISSUER"}},
+        {"name": "idp", "stack": "postgres", "kind": "service", "detail": {}},
+    ]}))
+    (tmp_path / "api" / "dist").mkdir(parents=True)
+    (tmp_path / "api" / "dist" / "server.js").write_text("x")
+
+    def fake_run(argv, **kw):
+        if "/acceptance.py" in argv:
+            (tmp_path / ".devagent" / "acceptance.json").write_text(
+                '{"checks":[{"kind":"route_status","route":"/me","ok":true,"detail":""}],"all_pass":true}')
+        fake_run.calls.append(argv)
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})
+    fake_run.calls = []
+
+    BuildVerifier(runner=fake_run, network="devagent-egress",
+                  proxy_url="http://devagent-proxy:3128").verify(
+        VerifyRequest(workdir=str(tmp_path), run_id="r1"))
+    accept = next(" ".join(map(str, a)) for a in fake_run.calls if "/acceptance.py" in a)
+    assert "OIDC_ISSUER=postgresql://devagent:devagent@idp:5432/app" in accept
+
+
+def test_verify_fails_clearly_when_idp_dep_names_no_service(tmp_path):
+    """A backend declaring detail.idp pointing at a non-service target fails with a clear error
+    rather than silently booting the app with OIDC_ISSUER unset."""
+    dev = tmp_path / ".devagent"
+    dev.mkdir(parents=True)
+    (dev / "scope.json").write_text(json.dumps({"targets": [
+        {"name": "api", "stack": "node-express", "kind": "build",
+         "detail": {"idp": "ghost"}},                 # no service named "ghost"
+        {"name": "db", "stack": "postgres", "kind": "service", "detail": {}},
+    ]}))
+    (tmp_path / "api" / "dist").mkdir(parents=True)
+    (tmp_path / "api" / "dist" / "server.js").write_text("x")
+
+    def fake_run(argv, **kw):
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})
+
+    rep = BuildVerifier(runner=fake_run, network="devagent-egress",
+                        proxy_url="http://devagent-proxy:3128").verify(
+        VerifyRequest(workdir=str(tmp_path), run_id="r1"))
+    assert rep.ok is False
+    assert "ghost" in (rep.error or "") and "idp" in (rep.error or "")
+
+
 def test_verifier_loops_targets_and_aggregates(tmp_path, monkeypatch):
     # scope.json with two targets
     dev = tmp_path / ".devagent"

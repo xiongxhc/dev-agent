@@ -3,6 +3,8 @@
 #
 #   ./build.sh            # local: native-arch image loaded into THIS machine's docker (dev)
 #   ./build.sh multiarch  # deploy: linux/amd64 + linux/arm64, PUSHED to $REGISTRY
+#   ./build.sh recipes    # build operator toolchain images declared in $DEVAGENT_RECIPES_DIR
+#                         # manifests (M11 declarative toolchains; needs the devagent venv active)
 #
 # Why two modes: this Mac is arm64, but most servers are amd64 — an arm64-only image won't
 # run there. Multi-arch needs buildx's docker-container driver and (per a Docker limitation)
@@ -27,8 +29,14 @@ case "$MODE" in
       --platform linux/amd64,linux/arm64 \
       -f "$DIR/Dockerfile.m2" -t "$REGISTRY:m2" --push "$DIR"
     ;;
+  recipes)
+    : "${DEVAGENT_RECIPES_DIR:?set DEVAGENT_RECIPES_DIR to the dir of recipe manifests}"
+    # Build every toolchain image a manifest declares via toolchain.dockerfile (M11). Pure
+    # spec-mapping lives in devagent.recipes.toolchains; this just runs the docker builds.
+    python3 -m devagent.recipes.toolchains "$DEVAGENT_RECIPES_DIR"
+    ;;
   *)
-    echo "usage: $0 [local|multiarch]" >&2
+    echo "usage: $0 [local|multiarch|recipes]" >&2
     exit 2
     ;;
 esac
