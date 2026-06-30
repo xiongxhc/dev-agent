@@ -183,8 +183,10 @@ def main() -> None:
     handler = (lark.EventDispatcherHandler.builder("", "")
                .register_p2_im_message_receive_v1(_make_handler(api))
                .build())
+    _lvl = getattr(lark.LogLevel, os.environ.get("FEISHU_LOG_LEVEL", "INFO").upper(),
+                   lark.LogLevel.INFO)
     ws = lark.ws.Client(os.environ["FEISHU_APP_ID"], os.environ["FEISHU_APP_SECRET"],
-                        event_handler=handler, log_level=lark.LogLevel.INFO)
+                        event_handler=handler, log_level=_lvl)
     print("feishu bot: connecting (WebSocket long-connection)… drop a PRD in a DM or @mention me in a group.")
     ws.start()  # blocking
 
