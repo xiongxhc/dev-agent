@@ -53,3 +53,19 @@ def test_enrich_scope_tags_kind_and_handles_service_targets():
     assert by_name["api"]["kind"] == "build"
     assert by_name["db"]["kind"] == "service"
     assert by_name["db"]["_boot"] is None        # service has no boot
+
+
+def test_enrich_scope_carries_target_auth_flow():
+    # regression: the in-container acceptance runner reads enrich_scope()'s output, so a
+    # target's auth flow MUST survive serialization or auth:true checks fail "no auth flow".
+    from devagent.schema import AuthFlow
+    scope = ProjectScope(title="t", targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api",
+                     auth=AuthFlow(login_route="/auth/login", token_json_path="token",
+                                   login_body={"username": "u", "password": "p"}),
+                     acceptance_checks=[AcceptanceCheck(kind="api_json", route="/todos", auth=True)]),
+    ])
+    api = {t["name"]: t for t in enrich_scope(scope)["targets"]}["api"]
+    assert api["auth"]["login_route"] == "/auth/login"
+    assert api["auth"]["token_json_path"] == "token"
+    assert api["acceptance_checks"][0]["auth"] is True
