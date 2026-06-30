@@ -69,8 +69,13 @@ class FakeClient:
 
         class Events:
             def stream(self, session_id):
-                return _Stream([_Obj(type="agent.tool_use", name="bash"),
-                                _Obj(type="session.status_idle")])
+                return _Stream([
+                    _Obj(type="agent.tool_use", name="bash"),
+                    _Obj(type="agent.message",
+                         usage={"input_tokens": 1000, "output_tokens": 400,
+                                "cache_read_input_tokens": 200},
+                         total_cost_usd=0.03),
+                    _Obj(type="session.status_idle")])
 
             def send(self, session_id, events=None):
                 outer.calls["sent"].append(events)
@@ -162,3 +167,22 @@ def test_session_is_always_deleted(tmp_path):
     fake = FakeClient(_tar({"web/dist/index.html": "<html></html>"}))
     _exec(fake).build(_req(tmp_path / "out"))
     assert fake.calls["deleted"] == ["sesn_1"]  # cleanup ran (stops session-hour billing)
+
+
+def test_cost_fields_adds_session_hour_charge():
+    from devagent.managed_executor import SESSION_HR_USD, ManagedExecutor
+    # cumulative usage shape mirrors the Messages API; input = input + cache create + read
+    spent = {"usage": {"input_tokens": 100, "cache_read_input_tokens": 20, "output_tokens": 50},
+             "cost_usd": 0.10}
+    f = ManagedExecutor._cost_fields(spent, wall=3600.0)  # exactly one session hour
+    assert f["tokens_in"] == 120 and f["tokens_out"] == 50
+    assert f["cache_read_tokens"] == 20
+    assert abs(f["cost_usd"] - (0.10 + SESSION_HR_USD)) < 1e-9   # token cost + one session-hr
+
+
+def test_build_captures_managed_tokens_and_cost(tmp_path):
+    fake = FakeClient(_tar({"web/dist/index.html": "<html></html>"}))
+    res = _exec(fake).build(_req(tmp_path / "out"))
+    assert res.tokens_in == 1200 and res.tokens_out == 400   # 1000 + 200 cache-read, 400 out
+    assert res.cache_read_tokens == 200
+    assert res.cost_usd >= 0.03   # API-reported cost + the (tiny, real-time) session-hr charge

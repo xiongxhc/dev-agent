@@ -19,12 +19,15 @@ from pathlib import Path
 
 from . import recipes
 from .executor import BuildRequest, BuildResult, enrich_scope
-from .sdk_runner import build_prompt
+from .sdk_runner import build_prompt, input_output_tokens
 
 BETA = "managed-agents-2026-04-01"
 DEFAULT_MODEL = os.getenv("DEVAGENT_MANAGED_MODEL", "claude-opus-4-8")
 OUTPUTS = "/mnt/session/outputs"
 TARBALL = "app.tar.gz"
+# Managed Agents bills token rates PLUS a sandbox session-hour charge — the cost the SDK arm
+# does NOT have, and the whole reason the A/B cost comparison exists. Override per Anthropic's rate.
+SESSION_HR_USD = float(os.getenv("DEVAGENT_MANAGED_SESSION_HR_USD", "0.08"))
 
 SYSTEM = ("You are a senior web engineer who builds and ships production web apps autonomously "
           "in a sandbox, using the bash and file tools. You finish the whole task without asking "
@@ -79,12 +82,13 @@ class ManagedExecutor:
                 agent=agent.id, environment_id=env.id, title=f"build {req.run_id}")
             prompt = build_prompt(enriched, json.loads(req.plan.model_dump_json()))
             prompt += TARBALL_INSTRUCTION.format(outputs=OUTPUTS, tarball=TARBALL)
-            self._drain(client, session.id, prompt)
+            spent = self._drain(client, session.id, prompt)
 
             tar_bytes = self._fetch_tarball(client, session.id)
             wall = time.monotonic() - t0
+            cost = self._cost_fields(spent, wall)   # tokens + session-hr cost, for the A/B comparison
             if tar_bytes is None:
-                return BuildResult(repo_path=str(out), success=False, wall_clock_s=wall,
+                return BuildResult(repo_path=str(out), success=False, wall_clock_s=wall, **cost,
                                    error=f"{TARBALL} not produced under {OUTPUTS}")
             self._extract(tar_bytes, out)
             built = all(
@@ -92,9 +96,7 @@ class ManagedExecutor:
                 for t in req.scope.targets
             )
             return BuildResult(
-                repo_path=str(out), success=built, wall_clock_s=wall,
-                # NOTE: managed-agents token/cost accounting (incl. $/session-hr) is a TODO —
-                # needed for the M5 A/B cost comparison, not for the build itself.
+                repo_path=str(out), success=built, wall_clock_s=wall, **cost,
                 error=None if built else "no target artifacts produced")
         finally:
             if session is not None:
@@ -103,13 +105,44 @@ class ManagedExecutor:
                 except Exception:  # noqa: BLE001 — best-effort cleanup; never mask the result
                     pass
 
-    def _drain(self, client, session_id: str, prompt: str) -> None:
+    def _drain(self, client, session_id: str, prompt: str) -> dict:
+        """Stream until the session goes idle, accumulating the cost signals the events carry.
+        Defensive on field names (the managed-agents event schema isn't frozen): captures the
+        last `usage` seen (treated as cumulative, like the SDK's terminal ResultMessage) and any
+        reported cost_usd. Returns {usage, cost_usd}; the session-hr charge is added in build()."""
+        usage: dict = {}
+        cost_usd = None
         with client.beta.sessions.events.stream(session_id) as stream:
             client.beta.sessions.events.send(session_id, events=[{
                 "type": "user.message", "content": [{"type": "text", "text": prompt}]}])
             for event in stream:
+                u = getattr(event, "usage", None)
+                if u is not None:
+                    usage = u if isinstance(u, dict) else (getattr(u, "__dict__", None) or usage)
+                c = getattr(event, "total_cost_usd", None)
+                if c is None:
+                    c = getattr(event, "cost_usd", None)
+                if c is not None:
+                    cost_usd = c
                 if getattr(event, "type", None) == "session.status_idle":
                     break
+        return {"usage": usage, "cost_usd": cost_usd}
+
+    @staticmethod
+    def _cost_fields(spent: dict, wall: float) -> dict:
+        """BuildResult cost fields from drained usage + the wall-clock session-hour charge.
+        cost_usd = (token cost the API reported, if any) + wall-hours * SESSION_HR_USD."""
+        usage = spent.get("usage") or {}
+        if not isinstance(usage, dict):
+            usage = getattr(usage, "__dict__", None) or {}
+        tin, tout = input_output_tokens(usage)
+        session_cost = wall / 3600.0 * SESSION_HR_USD
+        return {
+            "tokens_in": tin,
+            "tokens_out": tout,
+            "cache_read_tokens": int(usage.get("cache_read_input_tokens") or 0),
+            "cost_usd": round((spent.get("cost_usd") or 0.0) + session_cost, 6),
+        }
 
     def _fetch_tarball(self, client, session_id: str):
         for _ in range(self.poll_attempts):

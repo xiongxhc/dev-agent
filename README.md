@@ -281,7 +281,7 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
 - **M3** ✅ — deploy → preview URL (local SPA preview container) + HTML run report. Verified
   end-to-end (served a real build, gate got 200, report generated). Cloud static-host deploy
   is a later pluggable adapter.
-- **M4** ◐ — `ManagedExecutor` (Managed Agents, arm B) behind the same Executor seam.
+- **M4** ✅ — `ManagedExecutor` (Managed Agents, arm B) behind the same Executor seam.
   - ✅ **built + unit-verified** (`managed_executor.py`): builds the app on **Claude Managed
     Agents** (a hosted cloud sandbox via `beta.{agents,environments,sessions,files}`, beta
     `managed-agents-2026-04-01`, billed token rates + $0.08/session-hr) instead of our Docker.
@@ -302,8 +302,13 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
     acceptance runner (SdkExecutor did; this didn't) — fixed + regression-tested. Note: the repair
     loop re-ran the managed build twice on that (spurious) failure, so a managed run is pricier
     than the sdk arm — capping/skipping repairs for the managed arm is worth considering.
-  - ⬜ remaining: capture managed token/cost (session-hr) into `BuildResult` for the A/B cost
-    comparison — **done as M5 prep** (small, self-contained; needed only for the cost comparison).
+  - ✅ **managed token/cost captured** (2026-06-30): `_drain` accumulates the events' `usage` +
+    any reported `cost_usd` (defensive on the not-yet-frozen event schema), and `_cost_fields` adds
+    the wall-clock **session-hour charge** (`wall/3600 * SESSION_HR_USD`, default $0.08,
+    `DEVAGENT_MANAGED_SESSION_HR_USD`) — the cost component the SDK arm lacks. Both success and
+    no-tarball `BuildResult`s now carry `tokens_in/out` + `cost_usd`, so the A/B cost comparison
+    (M5) has honest managed numbers. **M4 done** (still bears the earlier-noted managed-repair cost
+    caveat; capping managed repairs is an M5-time tuning call).
 - **Execution order: M6 → M5 → M7 → M8 → M9.** (M5 reorder decided 2026-06-24; the old monolithic
   M7 was split into M7/M8/M9 along the bind → CI → deploy seam on 2026-06-25.) M5's A/B was reordered to run *after*
   M6 so the eval measures the **real full-stack workload** (frontend + backend + CLI), not a
