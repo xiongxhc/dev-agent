@@ -462,3 +462,14 @@ Remaining follow-ups (non-blocking, tracked):
     `devagent-sandbox:m2` already carries node + python3, so Python/Node recipes need no new image.
   - ⬜ **declarative auth styles:** the same data-not-code treatment for new `AuthFlow` modes (M10)
     so auth styles are configurable too, not just stacks.
+- **M12** ⬜ *(planned — design [2026-06-30](../docs/planning/specs/2026-06-30-dev-agent-m12-parallel-team-build-design.md))* —
+  **Parallel / team build.** The pipeline already specs+plans before code (`scope`→`plan`), and
+  `PlanGate` enforces **pairwise-disjoint file ownership** *precisely so parallel build agents
+  never collide* — but `SdkExecutor` still runs a **single** agent sequentially. M12 exploits the
+  seam: `SdkExecutor.build()` partitions the scope and runs **one contained SDK session per
+  build-target concurrently** (web ∥ api — independent dirs/`node_modules`), then aggregates into
+  one `BuildResult` (sum tokens/cost, max wall-clock). **The Executor seam is unchanged**, so
+  BuildPhase/gates/verify/deploy are untouched. v1 = per-target parallelism on the SDK arm
+  (wall-clock ≈ slowest target, not the sum); intra-target task-slicing + per-target repair +
+  managed-arm parity are follow-ups. *Rejected: in-session Agent-SDK subagents — coordination
+  becomes model-driven/opaque and muddies the A/B; keep partitioning in deterministic code.*
