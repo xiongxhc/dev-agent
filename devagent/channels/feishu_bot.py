@@ -30,6 +30,10 @@ from . import feishu_app
 _ROOT = Path(__file__).resolve().parents[2]          # the dev-agent dir (holds devagent/)
 _MENTION = re.compile(r"@_user_\d+\s*")              # group @mention placeholders to strip
 _POLL_S = 1.0
+# Stable, browsable runs root (override with DEVAGENT_FEISHU_RUNS_DIR). Each build still gets a
+# unique subdir, but under a predictable path so you can `tail -f` the ledger and open the run
+# report — unlike a random system tempdir that's unfindable and OS-cleaned mid-preview.
+_RUNS_BASE = Path(os.environ.get("DEVAGENT_FEISHU_RUNS_DIR", Path.home() / "devagent-runs"))
 
 
 def _load_dotenv() -> None:
@@ -68,7 +72,8 @@ def _format_event(ev: dict) -> str | None:
 
 def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
     """Run the pipeline on *prd_text* and stream its ledger to *chat_id* until completion."""
-    runs = Path(tempfile.mkdtemp(prefix="feishu-run-"))
+    _RUNS_BASE.mkdir(parents=True, exist_ok=True)
+    runs = Path(tempfile.mkdtemp(prefix="feishu-run-", dir=str(_RUNS_BASE)))
     prd = runs / "prd.md"
     prd.write_text(prd_text, encoding="utf-8")
     feishu_app.send_text(api, chat_id, "🛠️ Got it — starting an autonomous build. Scoping your request…")
