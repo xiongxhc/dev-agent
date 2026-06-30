@@ -74,6 +74,17 @@ def test_node_express_supports_persistence_check():
     assert "persistence_survives_restart" in recipes.get("node-express").supported_checks
 
 
+def test_frontend_hint_enforces_design_floor():
+    # the frontend recipe is the ONLY design-guidance injection point (the build runs the Agent
+    # SDK with setting_sources=[], so host skills never reach it). Guard the key directives.
+    hint = recipes.get("node-vite-react").scaffold_hint.lower()
+    assert "contrast" in hint                       # the white-on-white-button class of bug
+    assert "white-on-white" in hint or "default" in hint
+    assert "focus" in hint                          # visible keyboard focus
+    assert "reduced-motion" in hint or "prefers-reduced-motion" in hint
+    assert "ai-default" in hint or "templated" in hint   # anti AI-smell
+
+
 def test_backend_hint_covers_persistence():
     hint = recipes.get("node-express").scaffold_hint.lower()
     assert "database_url" in hint or "conn" in hint
