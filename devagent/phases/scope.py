@@ -28,6 +28,13 @@ Rules:
 {checks}
   For api_json, `route` is the HTTP path and `json_path` is a dotted path into the JSON body
   (e.g. "0.id" or "data.count"). For route_status, assert a path returns a status.
+  Avoid two common bad checks:
+  (1) route_status is a GET — never point it at a POST-only route (login/register/create); a
+      GET there 404s. Check those with api_json + the right `method`, or assert the
+      UNauthenticated case (e.g. a protected route returns 401 with no token).
+  (2) A GET list endpoint may be EMPTY when checked — do not index a specific element
+      (json_path "0..."). Either omit json_path (presence-only), assert a stable top-level
+      field, or rely on a persistence_survives_restart check, which creates the record first.
 - If a fullstack app, point the frontend at the backend (note the base URL in the frontend
   target's detail).
 - If the request is genuinely underspecified (you cannot pick targets/stacks/checks with
