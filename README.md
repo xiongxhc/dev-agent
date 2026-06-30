@@ -464,15 +464,13 @@ Remaining follow-ups (non-blocking, tracked):
     so auth styles are configurable too, not just stacks.
 - **M12** ⬜ *(planned — design [2026-06-30](../docs/planning/specs/2026-06-30-dev-agent-m12-parallel-team-build-design.md))* —
   **Parallel / team build.** The pipeline already specs+plans before code (`scope`→`plan`), and
-  `PlanGate` enforces **pairwise-disjoint file ownership** *precisely so parallel build agents
-  never collide* — but `SdkExecutor` still runs a **single** agent sequentially. M12 exploits the
-  seam: `SdkExecutor.build()` partitions the scope and runs **one contained SDK session per
-  build-target concurrently** (web ∥ api — independent dirs/`node_modules`), then aggregates into
-  one `BuildResult` (sum tokens/cost, max wall-clock). **The Executor seam is unchanged**, so
-  BuildPhase/gates/verify/deploy are untouched. v1 = per-target parallelism on the SDK arm
-  (wall-clock ≈ slowest target, not the sum). **Approach scoped to the split, not "subagents bad":**
-  per-target is an *obvious, independent* split → deterministic code partitions + isolated
-  containers run concurrently (in-session subagents can't give N isolated build envs anyway). The
-  **Agent-SDK subagent / agent-team** pattern is the right tool for the **intra-target follow-up**
-  (coupled work, non-obvious split, shared context). Per-target repair + managed-arm parity are
-  also follow-ups.
+  `PlanGate` enforces **pairwise-disjoint file ownership** *precisely so parallel build agents never
+  collide* — but `SdkExecutor` still runs a **single** agent sequentially. M12 uses the seam:
+  `SdkExecutor.build()` reads the plan's partition and runs **independent targets concurrently**
+  (web ∥ api, each its own isolated container/`node_modules`/build), aggregating into one
+  `BuildResult` (sum tokens/cost, max wall-clock); a large, coupled target can itself fan out to a
+  **lead agent + subagents** on its disjoint files. Match the tool to the split — obvious+independent
+  → code partitions isolated containers; coupled+non-obvious → an agent team with shared context.
+  The partition is read from the (gated) plan, not improvised live, and the outcome is gated
+  deterministically regardless. **The Executor seam is unchanged**, so BuildPhase/gates/verify/
+  deploy are untouched.
