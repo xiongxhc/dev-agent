@@ -119,6 +119,103 @@ def test_route_status_fails_when_server_down(served):
     assert r["ok"] is False
 
 
+def _make_auth_server():
+    """A tiny API where /todos requires `Authorization: Bearer good-token`; /login mints it."""
+    store = {}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _json(self, code, obj):
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(obj).encode())
+
+        def _authed(self):
+            return self.headers.get("Authorization") == "Bearer good-token"
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(n)
+            if self.path == "/auth/register":
+                return self._json(200, {"id": 1, "username": "testuser"})
+            if self.path == "/auth/login":
+                return self._json(200, {"token": "good-token"})
+            if self.path == "/todos":
+                if not self._authed():
+                    return self._json(401, {"error": "unauthorized"})
+                new_id = str(len(store) + 1)
+                store[new_id] = {"title": "x"}
+                return self._json(200, {"id": new_id})
+            return self._json(404, {})
+
+        def do_GET(self):
+            if self.path == "/todos":
+                if not self._authed():
+                    return self._json(401, {"error": "unauthorized"})
+                return self._json(200, [{"id": k, **v} for k, v in store.items()])
+            return self._json(404, {})
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def test_obtain_auth_header_logs_in_and_extracts_token():
+    srv, base = _make_auth_server()
+    try:
+        headers, err = ar.obtain_auth_header(base, {
+            "login_route": "/auth/login", "login_body": {"username": "testuser", "password": "pw"},
+            "token_json_path": "token",
+        })
+        assert err is None
+        assert headers == {"Authorization": "Bearer good-token"}
+    finally:
+        srv.shutdown()
+
+
+def test_auth_check_passes_with_token_and_401s_without():
+    srv, base = _make_auth_server()
+    try:
+        target = {
+            "name": "api",
+            "auth": {"login_route": "/auth/login", "register_route": "/auth/register",
+                     "login_body": {"username": "testuser", "password": "pw"},
+                     "token_json_path": "token"},
+            "acceptance_checks": [
+                # protected route WITH auth -> the runner sends the token -> 200/ok
+                {"kind": "api_json", "route": "/todos", "method": "GET", "auth": True},
+                {"kind": "persistence_survives_restart", "route": "/todos", "method": "POST",
+                 "body": {"title": "x"}, "json_path": "id", "verify_route": "/todos", "auth": True},
+                # unauth case: a protected route returns 401 with NO token
+                {"kind": "route_status", "route": "/todos", "expected_status": 401},
+            ],
+        }
+        results = ar.run_target_checks(target, base, workdir="/tmp", restart=lambda: base)
+        by_kind = {(r["kind"], r.get("route")): r for r in results}
+        assert by_kind[("api_json", "/todos")]["ok"] is True
+        assert by_kind[("persistence_survives_restart", "/todos")]["ok"] is True
+        assert by_kind[("route_status", "/todos")]["ok"] is True   # 401 == want 401, no token sent
+    finally:
+        srv.shutdown()
+
+
+def test_auth_check_fails_cleanly_when_login_fails():
+    srv, base = _make_auth_server()
+    try:
+        target = {
+            "name": "api",
+            "auth": {"login_route": "/nope", "token_json_path": "token"},  # bad login route -> 404
+            "acceptance_checks": [{"kind": "api_json", "route": "/todos", "auth": True}],
+        }
+        results = ar.run_target_checks(target, base, workdir="/tmp")
+        assert results[0]["ok"] is False and "auth required" in results[0]["detail"]
+    finally:
+        srv.shutdown()
+
+
 def test_run_checks_dispatches_by_kind_and_flags_unknown(served):
     checks = [
         {"kind": "route_status", "route": "/", "expected_status": 200},

@@ -166,7 +166,7 @@ event `im.message.receive_v1` (long-connection mode), published, and added to a 
 | `executor_sdk.py` | `SdkExecutor` — arm A: contained Agent-SDK build (own disposable container); a repair pass is fed the prior verify diagnostics | **Agent SDK** |
 | `managed_executor.py` | `ManagedExecutor` — arm B: builds on **Claude Managed Agents** (hosted cloud sandbox), tars the result to `/mnt/session/outputs/`, pulls it back via the Files API | **Managed Agents** |
 | `verifier.py` | `BuildVerifier` — rebuild from source (`--frozen-lockfile`) **+ acceptance checks**; the trusted re-check (no API key) | no |
-| `acceptance_runner.py` | runs in-container: boots a static server on `dist/`, runs the spec's checks **kind-dispatched** (`route_status`=HTTP, `selector_present`=Playwright, lazy) | no |
+| `acceptance_runner.py` | runs in-container: boots a static server on `dist/`, runs the spec's checks **kind-dispatched** (`route_status`=HTTP, `selector_present`=Playwright, lazy). **Auth-aware:** if a target declares an `auth` flow (login route + creds + token path), it logs in once and sends the token on every check marked `auth: true` (so auth-gated routes can be checked) | no |
 | `egress.py` `egress_proxy.py` | egress allowlist: an `--internal` network + a tiny CONNECT proxy (in the M2 image, no extra dependency) so build/verify reach only api.anthropic.com + npm | no |
 | `deploy.py` `phases/deploy.py` `preview_server.py` | M3 deploy: a detached container serves `dist/` (SPA fallback) on a host port → preview URL; `DeployGate` proves it answers 200 | no |
 | `report.py` | M3 run report: a self-contained `report.html` (phases, gates, tokens, cost, acceptance, preview URL) from the ledger | no |
@@ -356,8 +356,16 @@ Remaining follow-ups (non-blocking, tracked):
   - ⬜ **live-validate the managed-datastore path** — run `examples/fullstack-persistent-shared.md`
     (`DEVAGENT_RUN_LIVE=1`); its shared-state PRD nudges the agent to pick Postgres/Mongo, so the
     sibling-container verify + deploy path gets live coverage (only SQLite is live-proven so far).
-  - ⬜ **`max_cost_usd` ceiling** — a per-run dollar guard (uses the SDK's exact `cost_usd`) as the
-    project-agnostic runaway bound, complementing the now-cache-read-excluded token ceiling.
+  - ✅ **`max_cost_usd` ceiling** — a per-run dollar guard (uses the SDK's exact `cost_usd`) as the
+    project-agnostic runaway bound, complementing the now-cache-read-excluded token ceiling. `Budget`
+    grows a `max_cost_usd`; `BuildPhase._build` calls `budget.add_cost(result.cost_usd)` so a doomed
+    repair loop aborts via `BudgetExceeded` on real spend. Default **$10** (`DEVAGENT_MAX_COST_USD`;
+    raise for prod, `0` disables).
+  - ✅ **auth-aware acceptance** — `AcceptanceCheck.auth` (bool) + an optional `ArtifactSpec.auth`
+    `AuthFlow` (login route/creds + `token_json_path`, optional register). The runner logs in once and
+    sends `Authorization: Bearer <token>` on `auth: true` checks; unauth checks (e.g. 401-without-token)
+    stay `auth: false`. Closes the gap where auth-protected apps failed acceptance because the harness
+    couldn't authenticate. The scope prompt instructs the model to declare the flow for protected routes.
   - ✅ **hardened `preview_server.py`** — was a single-threaded `TCPServer` that died on a hung/dropped
     client (container stayed `Up`, port unresponsive); now `ThreadingHTTPServer` + per-request error
     swallow + a supervisor loop that rebinds on any crash, and deploy runs preview/datastore containers

@@ -51,6 +51,20 @@ def test_wallclock_ceiling_raises():
     assert ei.value.kind == "seconds"
 
 
+def test_cost_ceiling_raises():
+    b = make_budget(max_cost_usd=10.0)
+    b.add_cost(6.0)   # under
+    with pytest.raises(BudgetExceeded) as ei:
+        b.add_cost(5.0)   # 11.0 > 10.0
+    assert ei.value.kind == "cost_usd"
+
+
+def test_no_cost_ceiling_by_default_never_raises_on_cost():
+    b = make_budget()  # max_cost_usd defaults to None
+    b.add_cost(9999.0)
+    b.tick()  # no raise
+
+
 def test_budget_is_shared_accumulates_across_calls():
     b = make_budget(max_tokens=300)
     b.add_tokens(100)

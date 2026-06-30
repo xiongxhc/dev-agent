@@ -1,6 +1,30 @@
 import pytest
 from pydantic import ValidationError
-from devagent.schema import AcceptanceCheck, ArtifactSpec, ProjectScope, RepoBinding
+from devagent.schema import AcceptanceCheck, ArtifactSpec, AuthFlow, ProjectScope, RepoBinding
+
+
+def test_auth_check_requires_an_auth_flow_on_the_target():
+    # a check marked auth=True but no `auth` flow declared -> invalid (runner would have no token)
+    with pytest.raises(ValidationError):
+        ArtifactSpec(type="backend", stack="node-express", name="api",
+                     acceptance_checks=[AcceptanceCheck(kind="api_json", route="/todos", auth=True)])
+    # with an auth flow declared, it validates
+    spec = ArtifactSpec(
+        type="backend", stack="node-express", name="api",
+        auth=AuthFlow(login_route="/auth/login", token_json_path="token",
+                      login_body={"username": "u", "password": "p"}),
+        acceptance_checks=[AcceptanceCheck(kind="api_json", route="/todos", auth=True)],
+    )
+    assert spec.auth.scheme == "Bearer" and spec.acceptance_checks[0].auth is True
+
+
+def test_authflow_routes_must_be_paths():
+    with pytest.raises(ValidationError):
+        AuthFlow(login_route="auth/login", token_json_path="token")  # missing leading /
+
+
+def test_acceptance_check_auth_defaults_false():
+    assert AcceptanceCheck(kind="route_status", route="/").auth is False
 
 
 def test_api_json_check_requires_route():

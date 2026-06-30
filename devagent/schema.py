@@ -34,6 +34,7 @@ class AcceptanceCheck(BaseModel):
     method: str = "GET"                         # api_json HTTP method
     body: dict | None = None                    # api_json request body
     verify_route: str | None = None             # persistence_survives_restart: GET path to read state back
+    auth: bool = False                          # send the target's AuthFlow credential on this check
     # subprocess checks (command_exit / stdout_matches):
     argv: list[str] | None = None
     expected_exit: int = 0
@@ -61,6 +62,31 @@ class AcceptanceCheck(BaseModel):
         return self
 
 
+class AuthFlow(BaseModel):
+    """How the verify harness obtains a credential for auth-protected checks. Declared once
+    per target; the runner logs in ONCE and sends the token on every check marked `auth=True`.
+    Deterministic: the runner executes this flow, it never judges pass/fail with the model."""
+
+    login_route: str                            # e.g. "/auth/login"
+    login_method: str = "POST"
+    login_body: dict = Field(default_factory=dict)   # credentials to POST at login
+    token_json_path: str                        # dotted path to the token in the login response, e.g. "token"
+    header: str = "Authorization"               # header the token rides in
+    scheme: str = "Bearer"                      # header value is f"{scheme} {token}".strip()
+    register_route: str | None = None           # optional: create the user before logging in
+    register_method: str = "POST"
+    register_body: dict | None = None           # body to register with (defaults to login_body)
+
+    @model_validator(mode="after")
+    def _routes_are_paths(self):
+        for r in (self.login_route, self.register_route):
+            if r is not None and not r.startswith("/"):
+                raise ValueError("AuthFlow routes must start with '/'")
+        if not self.token_json_path:
+            raise ValueError("AuthFlow requires token_json_path")
+        return self
+
+
 class ArtifactSpec(BaseModel):
     """One deliverable in a project. `type`/`stack` are OPEN strings (gated against the
     recipe registry by ScopeGate), so the model can classify any request without a frozen
@@ -70,7 +96,17 @@ class ArtifactSpec(BaseModel):
     stack: str = Field(..., min_length=1)        # recipe name, e.g. "node-express"
     name: str = Field(..., min_length=1)         # target dir/name, e.g. "web", "api"
     detail: dict = Field(default_factory=dict)
+    auth: AuthFlow | None = None                 # set when any acceptance check needs a credential
     acceptance_checks: list[AcceptanceCheck] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _auth_checks_have_a_flow(self):
+        if any(c.auth for c in self.acceptance_checks) and self.auth is None:
+            raise ValueError(
+                "a check sets auth=True but the target declares no `auth` flow — "
+                "the runner would have no credential to send"
+            )
+        return self
 
 
 class RepoBinding(BaseModel):

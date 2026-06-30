@@ -17,9 +17,11 @@ class Budget:
     max_tokens: int
     max_seconds: float
     max_retries: int
+    max_cost_usd: float | None = None  # hard $ ceiling on real spend; None = no cost cap
     clock: Callable[[], float] = time.monotonic  # injected for deterministic tests
     tokens: int = 0
     retries: int = 0
+    cost_usd: float = 0.0
     started_at: float = field(default=None)
 
     def __post_init__(self):
@@ -32,6 +34,11 @@ class Budget:
 
     def spend_retry(self) -> None:
         self.retries += 1
+        self.check()
+
+    def add_cost(self, usd: float | None) -> None:
+        if usd:
+            self.cost_usd += usd
         self.check()
 
     def tick(self) -> None:
@@ -49,5 +56,7 @@ class Budget:
             raise BudgetExceeded("tokens", self.max_tokens, self.tokens)
         if self.retries > self.max_retries:
             raise BudgetExceeded("retries", self.max_retries, self.retries)
+        if self.max_cost_usd is not None and self.cost_usd > self.max_cost_usd:
+            raise BudgetExceeded("cost_usd", self.max_cost_usd, self.cost_usd)
         if self.elapsed() > self.max_seconds:
             raise BudgetExceeded("seconds", self.max_seconds, self.elapsed())

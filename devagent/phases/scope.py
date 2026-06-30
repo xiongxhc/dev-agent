@@ -43,6 +43,13 @@ Rules:
   `json_path` to locate the created id in the response, and `verify_route` for the GET that
   must still return it after the API process restarts. A `datastore` target carries NO
   acceptance checks of its own.
+- If any route requires authentication (login/token), declare an `auth` flow on that backend
+  target: `auth.login_route` (+ `login_method`/`login_body` credentials) and `auth.token_json_path`
+  (the dotted path to the token in the login response, e.g. "token"); add `auth.register_route`
+  (+ `register_body`) if a user must be created first. Then set `auth: true` on every acceptance
+  check that hits a protected route — the runner logs in ONCE and sends the token automatically.
+  Leave `auth: false` (default) on checks that test the UNauthenticated case (e.g. a protected
+  route returning 401 with no token). A persistence check on a protected route also needs `auth: true`.
 
 REQUEST:
 {request}

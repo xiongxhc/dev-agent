@@ -80,6 +80,9 @@ class BuildPhase:
         # result.budget_tokens — expensive tokens only; cache-read is excluded (it's ~0.1x cost
         # and balloons on a legitimate agentic build, falsely tripping the runaway guard).
         ctx.budget.add_tokens(result.budget_tokens)
+        # Real-dollar ceiling: aborts a doomed repair loop on the SDK's exact cost_usd, the
+        # project-agnostic runaway bound that the cache-read-excluded token ceiling can miss.
+        ctx.budget.add_cost(result.cost_usd)
         return result
 
     @staticmethod

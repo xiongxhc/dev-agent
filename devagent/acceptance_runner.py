@@ -35,10 +35,11 @@ OUT = Path("/out")
 DEV = OUT / ".devagent"
 
 
-def check_route_status(base_url: str, route: str, expected_status: int) -> dict:
+def check_route_status(base_url: str, route: str, expected_status: int, headers=None) -> dict:
     url = base_url.rstrip("/") + route
+    req = urllib.request.Request(url, headers=headers or {})
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             code = r.status
     except urllib.error.HTTPError as e:
         code = e.code
@@ -91,11 +92,11 @@ def _contains_value(obj, target) -> bool:
     return str(obj) == str(target)
 
 
-def check_api_json(base_url, route, method, body, json_path, json_equals) -> dict:
+def check_api_json(base_url, route, method, body, json_path, json_equals, headers=None) -> dict:
     url = base_url.rstrip("/") + route
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             payload = json.loads(r.read().decode())
@@ -110,7 +111,7 @@ def check_api_json(base_url, route, method, body, json_path, json_equals) -> dic
 
 
 def check_persistence_survives_restart(base_url, route, method, body, json_path,
-                                       verify_route, restart) -> dict:
+                                       verify_route, restart, headers=None) -> dict:
     """Prove durable state: write a record, restart the APP (the datastore, if any, stays up),
     then read it back. `restart` is a callable returning the new base_url (same port) or None
     if the app did not become healthy again."""
@@ -119,7 +120,7 @@ def check_persistence_survives_restart(base_url, route, method, body, json_path,
     write_url = base_url.rstrip("/") + route
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(write_url, data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             created = json.loads(r.read().decode())
@@ -136,8 +137,9 @@ def check_persistence_survives_restart(base_url, route, method, body, json_path,
                 "detail": "app did not become healthy after restart"}
     # 3. read back — the created id must still be present
     read_url = new_base.rstrip("/") + verify_route
+    read_req = urllib.request.Request(read_url, headers=headers or {})
     try:
-        with urllib.request.urlopen(read_url, timeout=10) as r:
+        with urllib.request.urlopen(read_req, timeout=10) as r:
             payload = json.loads(r.read().decode())
     except Exception as e:  # noqa: BLE001
         return {"kind": kind, "route": route, "ok": False, "detail": f"read-back failed: {e}"}
@@ -195,19 +197,63 @@ def _serve(directory: Path) -> tuple[socketserver.TCPServer, str]:
     return httpd, f"http://127.0.0.1:{port}"
 
 
+def obtain_auth_header(base_url: str, auth: dict) -> tuple[dict | None, str | None]:
+    """Execute the target's AuthFlow: optional register, then login; extract the token and
+    build the header dict to send on auth checks. Returns (headers, None) on success or
+    (None, detail) on failure. Run ONCE per target before its checks — deterministic, no model."""
+    # optional register — best effort: an "already exists" failure is fine, login is the gate.
+    if auth.get("register_route"):
+        rbody = auth.get("register_body") or auth.get("login_body")
+        rdata = json.dumps(rbody).encode() if rbody is not None else None
+        rreq = urllib.request.Request(base_url.rstrip("/") + auth["register_route"], data=rdata,
+                                      method=auth.get("register_method", "POST"),
+                                      headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(rreq, timeout=10).close()
+        except Exception:  # noqa: BLE001 — already-registered etc. is not fatal
+            pass
+    lbody = auth.get("login_body") or {}
+    ldata = json.dumps(lbody).encode() if lbody is not None else None
+    lreq = urllib.request.Request(base_url.rstrip("/") + auth["login_route"], data=ldata,
+                                  method=auth.get("login_method", "POST"),
+                                  headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(lreq, timeout=10) as r:
+            payload = json.loads(r.read().decode())
+    except Exception as e:  # noqa: BLE001
+        return None, f"login failed: {e}"
+    found, token = _dig(payload, auth["token_json_path"])
+    if not found or not token:
+        return None, f"token not at json_path {auth['token_json_path']!r}"
+    value = f"{auth.get('scheme', 'Bearer')} {token}".strip()
+    return {auth.get("header", "Authorization"): value}, None
+
+
 def run_target_checks(target: dict, base_url: str, workdir: str, restart=None) -> list[dict]:
     """Dispatch each check in *target* by kind against *base_url* (HTTP) or *workdir* (command).
-    `restart` (set only for booted backends) lets a persistence check bounce the app."""
+    `restart` (set only for booted backends) lets a persistence check bounce the app. If the
+    target declares an `auth` flow, log in once and send the credential on checks marked auth."""
     out = []
+    auth = target.get("auth")
+    auth_headers, auth_err = (None, None)
+    if auth:
+        auth_headers, auth_err = obtain_auth_header(base_url, auth)
     for c in target.get("acceptance_checks", []):
         k = c["kind"]
+        hdrs = None
+        if c.get("auth"):
+            if auth_headers is None:
+                out.append({"kind": k, "route": c.get("route"), "ok": False,
+                            "detail": f"auth required but {auth_err or 'no auth flow declared'}"})
+                continue
+            hdrs = auth_headers
         if k == "route_status":
-            out.append(check_route_status(base_url, c["route"], c.get("expected_status", 200)))
+            out.append(check_route_status(base_url, c["route"], c.get("expected_status", 200), headers=hdrs))
         elif k == "selector_present":
             out.append(check_selector_present(base_url, c["route"], c["selector"]))
         elif k == "api_json":
             out.append(check_api_json(base_url, c["route"], c.get("method", "GET"),
-                                      c.get("body"), c.get("json_path"), c.get("json_equals")))
+                                      c.get("body"), c.get("json_path"), c.get("json_equals"), headers=hdrs))
         elif k == "persistence_survives_restart":
             if restart is None:
                 out.append({"kind": k, "ok": False,
@@ -215,7 +261,7 @@ def run_target_checks(target: dict, base_url: str, workdir: str, restart=None) -
             else:
                 out.append(check_persistence_survives_restart(
                     base_url, c["route"], c.get("method", "POST"), c.get("body"),
-                    c.get("json_path"), c.get("verify_route"), restart))
+                    c.get("json_path"), c.get("verify_route"), restart, headers=hdrs))
         elif k in ("command_exit", "stdout_matches"):
             out.append(check_command(workdir, c["argv"], c.get("expected_exit", 0), c.get("pattern")))
         else:

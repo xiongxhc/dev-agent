@@ -85,7 +85,8 @@ def main(argv: list[str] | None = None) -> int:
     orch = Orchestrator(
         phases=phases,
         gates=gates,
-        budget=Budget(cfg.max_tokens, cfg.max_seconds, cfg.max_retries),
+        budget=Budget(cfg.max_tokens, cfg.max_seconds, cfg.max_retries,
+                      max_cost_usd=cfg.max_cost_usd),
         ledger=ledger,
         sandbox=NullSandbox(),  # brain phases run on host; SdkExecutor contains its own
     )
