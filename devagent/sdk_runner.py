@@ -56,6 +56,22 @@ def build_prompt(scope: dict, plan: dict) -> str:
             f"Run `{t['build_cmd']}` in ./{t['name']} until it succeeds and "
             f"`{t['artifact_glob']}` exists."
         )
+        if t.get("acceptance_checks"):
+            lines.append("This target is VERIFIED by these machine checks — build to satisfy them EXACTLY "
+                         "(same routes, methods, and JSON shapes):")
+            lines.append(json.dumps(t["acceptance_checks"], indent=2))
+        auth = t.get("auth")
+        if auth:
+            reg_body = auth.get("register_body") or auth.get("login_body")
+            lines.append(
+                "AUTH CONTRACT — the verifier authenticates with this EXACT flow; your endpoints "
+                "MUST honor it: it POSTs "
+                f"{json.dumps(reg_body)} to {auth.get('register_route') or '(no register)'} to create the "
+                f"user, then POSTs {json.dumps(auth.get('login_body'))} to {auth['login_route']} and reads the "
+                f"token at response path '{auth['token_json_path']}'. Accept EXACTLY these fields — do NOT "
+                "require any others (e.g. do not require an email if none is sent). Protected routes accept "
+                f"`{auth.get('header', 'Authorization')}: {auth.get('scheme', 'Bearer')} <token>`."
+            )
         lines.append("")
     lines.append("BUILD PLAN — ordered tasks, each owns specific files; implement every task:")
     lines.append(json.dumps(plan, indent=2))

@@ -44,3 +44,24 @@ def test_prompt_covers_each_target_with_its_recipe_hint():
     assert "Scaffold a Vite" in p and "Scaffold an Express" in p
     assert "dist/index.html" in p
     assert "dist/server.js" in p
+
+
+def test_prompt_surfaces_auth_contract_and_checks_to_the_builder():
+    from devagent.sdk_runner import build_prompt
+
+    scope = {"title": "App", "targets": [{
+        "type": "backend", "stack": "node-express", "name": "api", "detail": {},
+        "_scaffold_hint": "Scaffold an Express", "build_cmd": "pnpm build", "artifact_glob": "dist/server.js",
+        "auth": {"login_route": "/auth/login", "login_body": {"username": "testuser", "password": "pw"},
+                 "register_route": "/auth/register", "register_body": {"username": "testuser", "password": "pw"},
+                 "token_json_path": "token", "header": "Authorization", "scheme": "Bearer"},
+        "acceptance_checks": [{"kind": "api_json", "route": "/todos", "auth": True}],
+    }]}
+    plan = {"tasks": [{"id": "t1", "description": "d", "owned_files": ["api/src/index.ts"]}]}
+    p = build_prompt(scope, plan)
+    # the builder must see the exact credentials + token path the verifier will use
+    assert "AUTH CONTRACT" in p
+    assert "/auth/login" in p and "/auth/register" in p
+    assert "testuser" in p and "token" in p
+    assert "do NOT" in p and "email" in p          # the explicit no-extra-fields guard
+    assert '"route": "/todos"' in p                # acceptance checks surfaced too
