@@ -367,11 +367,20 @@ Remaining follow-ups (non-blocking, tracked):
     grows a `max_cost_usd`; `BuildPhase._build` calls `budget.add_cost(result.cost_usd)` so a doomed
     repair loop aborts via `BudgetExceeded` on real spend. Default **$10** (`DEVAGENT_MAX_COST_USD`;
     raise for prod, `0` disables).
-  - ✅ **auth-aware acceptance** — `AcceptanceCheck.auth` (bool) + an optional `ArtifactSpec.auth`
-    `AuthFlow` (login route/creds + `token_json_path`, optional register). The runner logs in once and
-    sends `Authorization: Bearer <token>` on `auth: true` checks; unauth checks (e.g. 401-without-token)
-    stay `auth: false`. Closes the gap where auth-protected apps failed acceptance because the harness
-    couldn't authenticate. The scope prompt instructs the model to declare the flow for protected routes.
+  - ✅ **auth-aware acceptance** *(live-verified 2026-06-30)* — `AcceptanceCheck.auth` (bool) + an
+    optional `ArtifactSpec.auth` `AuthFlow` (login route/creds + `token_json_path`, optional register).
+    The runner logs in once and sends `Authorization: Bearer <token>` on `auth: true` checks; unauth
+    checks (e.g. 401-without-token) stay `auth: false`. Three seams kept consistent so the *model*
+    declares the contract and deterministic code executes it: (1) the **scope prompt** declares the flow
+    + marks protected checks; (2) `enrich_scope` carries the flow into the in-container scope the runner
+    reads; (3) the **build prompt** surfaces the exact register/login bodies + token path as a hard
+    contract so the built app implements matching auth (no invented `email` field). **Live-proven:** the
+    full todo+login+logout PRD built, logged in, and passed `/auth/me` + auth-gated
+    `persistence_survives_restart`, then deployed — **$0.15 on Haiku**.
+  - ✅ **configurable build model** (`DEVAGENT_BUILD_MODEL`) — the SDK build executor's model is now a
+    per-run knob (unset = SDK default), the second A/B axis (model quality/cost) orthogonal to the
+    executor arm. Cheap model (Haiku) for test builds, stronger for prod. Brain model stays separate
+    (`DEVAGENT_LLM_MODEL`).
   - ✅ **hardened `preview_server.py`** — was a single-threaded `TCPServer` that died on a hung/dropped
     client (container stayed `Up`, port unresponsive); now `ThreadingHTTPServer` + per-request error
     swallow + a supervisor loop that rebinds on any crash, and deploy runs preview/datastore containers
@@ -414,3 +423,27 @@ Remaining follow-ups (non-blocking, tracked):
   gate pattern), and fit its existing CI. Adds a JDK+Maven toolchain image and a brownfield
   detection path to the recipe registry. The realistic Acme backend case (new projects stay
   greenfield-modern; older projects are Java).
+- **M10** ⬜ — **Auth & access depth (model-declared, not hardcoded).** Today's `AuthFlow` only
+  models **bearer-token-in-header** auth. Widen the *vocabulary* (never per-app code) so the scope
+  model can declare richer auth and the runner executes whatever it declared:
+  - **Sessions / cookie auth** — `AuthFlow.mode = bearer|cookie`; the runner adds a cookie jar
+    (`http.cookiejar`) that captures `Set-Cookie` at login and replays `Cookie` on later requests.
+  - **Roles / permissions (authz)** — generalize the single flow → named **actors** (each with creds
+    + role) and let checks carry `as: <actor>` + `expected_status`, so the model declares a real
+    permission matrix (`as: admin → /admin → 200`; `as: member → /admin → 403`). The build prompt
+    gets the actors + matrix as the contract.
+  - **Federated / third-party (LDAP, OIDC, SAML)** — verify runs sealed (egress-locked, no real
+    external IdP, no human consent), so a *real* provider is never reachable **by design**. Handle it
+    via the existing **service-recipe seam** (like the postgres/mongo datastores): the model declares
+    an **IdP service dependency** (a test OpenLDAP / mock-OIDC container with seeded users); verify
+    stands it up on the per-run network and the app authenticates against *that*. Real interactive
+    OAuth/SAML consent is **not** deterministically verifiable — flag "not verified", don't fake a pass.
+- **M11** ⬜ — **Declarative extensibility — add languages/recipes without editing dev-agent.** The
+  operator must be able to support a new stack (Java, **Python**, **Rust**, Go, more TS frameworks)
+  *and* new auth styles **without changing dev-agent's code each time** — recipes are the seam, but
+  today they're Python objects in `recipes.REGISTRY` (a code edit per stack). Make recipes
+  **declarative/loadable** (a config/manifest or drop-in plugin dir: toolchain image, `build_cmd`,
+  `artifact_glob`, boot cmd/health, `supported_checks`, optional service spec) so a new language or
+  framework is *data*, not a patch. The pipeline is already recipe-dispatched and language-agnostic by
+  design; this closes the last "I had to touch the code" gap and is what makes "different projects,
+  different languages, different purposes" self-serve.
