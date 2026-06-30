@@ -386,11 +386,14 @@ Remaining follow-ups (non-blocking, tracked):
     swallow + a supervisor loop that rebinds on any crash, and deploy runs preview/datastore containers
     with `--restart unless-stopped`.
 
-- **Feishu channel** ⬜ *(NEXT — channel adapter; design [2026-06-23](../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md))* —
-  a Feishu group bot where members drop a PRD → autonomous build → **preview URL + report posted
-  back in-thread**, with **live phase-by-phase progress** streamed as the run executes; plus a
-  converse path (status/follow-ups). Needs an **inbound event subscription** + an `enqueue_run` seam
-  — today's `channels/feishu.py` is **outbound-only**.
+- **Feishu channel** ✅ *(shipped + live-verified 2026-06-30; design [2026-06-23](../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md))* —
+  a **single Feishu app bot** (`channels/feishu_bot.py` + `feishu_app.py`) where a member drops a PRD
+  into a DM (or @mentions the bot in a group) → autonomous build → **preview URL + report posted
+  back in-thread**, with **live phase-by-phase progress** streamed from the ledger as the run executes.
+  Inbound is an `im.message.receive_v1` event subscription over a WebSocket long-connection (no public
+  URL); outbound replies via the app message API. **Live-proven:** a chat message drove a full
+  scope→plan→build→deploy run with progress streamed back. (The older `channels/feishu.py` group-webhook
+  is outbound-only and now superseded.)
 
 - **M5** ⬜ *(after M6)* — **eval corpus + the A/B test** (the two empirical unknowns: quality,
   cost), run on the **full-stack** corpus M6 enables. Lean first cut: ~5 fixtures (easy→hard),
