@@ -400,11 +400,17 @@ Remaining follow-ups (non-blocking, tracked):
   scope→plan→build→deploy run with progress streamed back. (The older `channels/feishu.py` group-webhook
   is outbound-only and now superseded.)
 
-- **M5** ⬜ *(after M6)* — **eval corpus + the A/B test** (the two empirical unknowns: quality,
-  cost), run on the **full-stack** corpus M6 enables. Lean first cut: ~5 fixtures (easy→hard),
-  N=2/arm, deterministic acceptance + blinded per-criterion LLM judge, dual cost normalization
-  (model-token vs all-in incl. session-hr). PRD-only; reference-URL clones + SSIM deferred
-  (URL intake doesn't exist yet).
+- **M5** ◐ *(harness built + unit-verified 2026-07-01 — design [2026-07-01](../docs/planning/specs/2026-07-01-dev-agent-m5-eval-ab-test-design.md))* —
+  **eval corpus + the A/B test** (the two empirical unknowns: quality, cost). `devagent eval
+  <corpus>` freezes scope+plan ONCE per fixture (both arms build byte-identical bytes — the
+  fairness rule), builds each arm **N=2×**, and scores each run on three axes: **deterministic
+  acceptance** (from `VerifyReport` — authoritative), a **blinded per-criterion LLM judge**
+  (spec-completeness / code-quality / craft, arm label stripped), and **dual-normalized cost**
+  (model-token vs all-in incl. session-hr). Resumable under `runs/eval/<id>/`; the managed arm
+  degrades gracefully when its API is unreachable. Corpus is a JSON manifest (`examples/corpus.json`:
+  5 fixtures easy→hard incl. an auth/roles one). ✅ **harness + judge + report unit-verified**
+  (fakes, no Docker/tokens); ⬜ **the live corpus run** (real builds, real tokens — the actual A/B
+  numbers) is a manual kickoff. Reference-URL clones + SSIM deferred (no URL intake yet).
 - **M7** ⬜ — **Git destination binding (where output lands).** Every run **binds to a target git
   repo *before* execution**, confirmed with the operator **per trigger** (comms over **Feishu**):
   - **Where code lives:** dev-agent *itself* lives in the operator's **GitHub** (this repo). The

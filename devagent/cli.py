@@ -6,6 +6,7 @@ Produced artifacts (scope.json / plan.json) are written to runs/<id>/ for inspec
 
 import argparse
 import json
+import os
 import sys
 import time
 import uuid
@@ -33,6 +34,38 @@ def _new_run_id() -> str:
     return f"run-{int(time.time())}-{uuid.uuid4().hex[:8]}"
 
 
+def _eval(args) -> int:
+    """M5 A/B eval: freeze scope+plan per fixture, build each arm N times, score, tabulate.
+    Resumable under runs/eval/<id>/. Real builds — needs Docker + tokens."""
+    from .eval.corpus import load_corpus
+    from .eval.report import write_report as write_eval_report
+    from .eval.runner import (EvalRunner, build_default_brain_fn, build_default_build_fn,
+                              build_default_judge_fn, default_arm_available)
+
+    if not Path(args.corpus).is_file():
+        print(f"error: corpus manifest not found: {args.corpus}", file=sys.stderr)
+        return 2
+    cfg = Config.load()
+    corpus = load_corpus(args.corpus)
+    eval_id = args.id or f"eval-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    eval_dir = cfg.runs_dir / "eval" / eval_id
+    session_hr = float(os.environ.get("DEVAGENT_SESSION_HR_USD", 2.0))
+
+    n_builds = len(corpus.fixtures) * len([a for a in corpus.arms if default_arm_available(a)]) * corpus.n
+    print(f"eval {eval_id}: {len(corpus.fixtures)} fixtures × {corpus.arms} × N={corpus.n} "
+          f"= up to {n_builds} real contained builds (resumable under {eval_dir})")
+
+    runner = EvalRunner(
+        eval_dir, corpus,
+        brain_fn=build_default_brain_fn(cfg), build_fn=build_default_build_fn(cfg),
+        judge_fn=build_default_judge_fn(), session_hr_usd=session_hr,
+        arm_available=default_arm_available)
+    result = runner.run()
+    jp, hp = write_eval_report(eval_dir, result)
+    print(f"  -> eval report: {hp}\n  -> eval json:   {jp}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="devagent")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -41,7 +74,15 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--build", action="store_true",
                        help="run the contained build phase (SdkExecutor; needs Docker + spends tokens)")
     run_p.add_argument("--answers", help="answers file for a prior clarification round")
+
+    eval_p = sub.add_parser("eval", help="A/B eval: run a fixture corpus across build arms (M5)")
+    eval_p.add_argument("corpus", help="path to a corpus manifest (JSON)")
+    eval_p.add_argument("--id", default=None, help="eval id / resume dir name (default: timestamped)")
+
     args = parser.parse_args(argv)
+
+    if args.cmd == "eval":
+        return _eval(args)
 
     if not Path(args.input).is_file():
         print(f"error: input file not found: {args.input}", file=sys.stderr)
