@@ -559,3 +559,11 @@ Remaining follow-ups (non-blocking, tracked):
     resume pattern); resume a days-long run after crash; global run envelope.
   - **M19** — **Mutable contracts (→ C).** Versioned `SystemDesign`; a sub-build renegotiates,
     the orchestrator re-plans affected nodes. Unlocks robust brownfield (M9).
+
+- **M22** ⬜ — **Eval as change-gate (extends M5 — no scheduled burn).** Two halves: (a) **free
+  telemetry** — aggregate pass-rate / retries / cost-per-phase from real run ledgers
+  (`ledger.jsonl` already records it; zero new tokens); (b) **change-triggered corpus replay** —
+  before merging prompt/pipeline/model changes, replay the M5 corpus (or a subset) and diff
+  deterministic acceptance + cost against a stored baseline. Policy: an eval run must answer a
+  live decision (SDK-vs-managed backend, model-tier per phase, prompt regression) — never runs
+  on a schedule. First action is the pending **M5 live corpus run** to establish the baseline.
