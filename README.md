@@ -309,6 +309,30 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
     no-tarball `BuildResult`s now carry `tokens_in/out` + `cost_usd`, so the A/B cost comparison
     (M5) has honest managed numbers. **M4 done** (still bears the earlier-noted managed-repair cost
     caveat; capping managed repairs is an M5-time tuning call).
+  - **When the managed arm actually matters (the case for keeping it).** On the current setup — a
+    local Docker-capable host, one operator, cost-sensitive — the **sdk arm is the right default**
+    and managed's session-hr premium isn't worth it. Managed earns its place precisely when the
+    pipeline stops running on a machine you control with Docker:
+    - **CI / the ops platform (M7–M8).** Builds triggered inside GitLab CI or on the Rancher/k8s
+      ops platform need **docker-in-docker / privileged containers** for the sdk arm — often
+      disallowed or a security no-go on shared runners. The managed arm builds in Anthropic's cloud;
+      the CI job just orchestrates and pulls the tarball. This is where M8 (CI/CD + deploy) is headed.
+    - **Concurrency beyond the host.** The sdk parallel build (M12) is capped at
+      `min(targets, 3)` because each target is a container + chromium on *our* box; a busy Feishu bot
+      (many PRDs / many targets) makes the host the bottleneck. Managed offloads concurrency to the
+      cloud.
+    - **A shared service, not a laptop.** As a team service, managed keeps it near-stateless — no
+      per-host Docker/capacity provisioning, no sandbox image shipped to every host.
+    - **Toolchains not baked into our image.** An exotic runtime means building a new
+      `devagent-sandbox` image (M11 toolchain images); managed's `agent_toolset` + unrestricted-net
+      cloud env may already cover it — less image maintenance.
+    - **Untrusted build steps off our infra.** The build runs generated code + `pnpm install` from
+      the net; on a production host, running that in Anthropic's sandbox instead of ours can be
+      preferable.
+
+    **Plan:** keep the managed arm in the seam (already built, zero ongoing cost), run the M5 A/B
+    **once** for a baseline quality/cost data point, then default routine runs to **sdk-only**
+    (`"arms": ["sdk"]` in the corpus). Revisit when M8 puts builds in CI / the ops platform.
 - **Execution order: M6 → M5 → M7 → M8 → M9.** (M5 reorder decided 2026-06-24; the old monolithic
   M7 was split into M7/M8/M9 along the bind → CI → deploy seam on 2026-06-25.) M5's A/B was reordered to run *after*
   M6 so the eval measures the **real full-stack workload** (frontend + backend + CLI), not a
@@ -489,3 +513,20 @@ Remaining follow-ups (non-blocking, tracked):
   out to a lead agent + subagents on its disjoint files — the intra-target agent-team pattern — needs
   the in-container SDK's Task tool and a live run to verify; the concurrent-target capability is the
   headline deliverable and is shipped.)*
+- **M13** ⬜ — **Team rollout (multi-user service, ~10 users).** Foreseen: dev-agent stops being
+  "the thing on one operator's Mac" and is given to a team of ~10. That crosses the threshold where
+  the managed arm actually matters (see M4's "When the managed arm actually matters" note) — several people dropping PRDs at once makes a single host
+  the bottleneck (the sdk parallel build is capped at `min(targets, 3)` because each target is a
+  container + chromium on *our* box), and running it as a shared service means no machine to babysit.
+  Concretely, this milestone is about:
+  - **Concurrency & capacity** — many simultaneous builds without a single host melting: either
+    offload to the **managed arm** (cloud build, no local Docker pressure), a build queue/worker pool,
+    or per-user resource caps. Decide from the M5 A/B numbers + observed load.
+  - **Per-user isolation** — runs, previews, and (M7) repo bindings scoped per user; the Feishu bot
+    already keys on `chat_id`, so identity is there — extend it to per-user runs dirs, quotas, and
+    cost ceilings (`DEVAGENT_MAX_COST_USD` per user, not global).
+  - **Shared deployment** — dev-agent runs as a service (likely in CI / the ops platform, i.e. after
+    M8), not a laptop process — which is itself the strongest case for the managed arm (no
+    docker-in-docker on shared runners).
+  - **Not needed until the team actually gets it** — captured now so the managed arm, per-user
+    scoping, and the M5 baseline are lined up before rollout, not scrambled for after.
