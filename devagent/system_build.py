@@ -5,7 +5,7 @@ without Docker/tokens; the defaults do the real thing. Nothing in M14-M17 is mod
 
 from pathlib import Path
 
-from .tree import NodeResult, SUCCEEDED, FAILED
+from .tree import NodeResult, SUCCEEDED, FAILED, topo_order
 
 
 def make_run_node(run_dir, budget, ledger, build_service=None):
@@ -54,3 +54,42 @@ def _real_build_service(node, svc_dir, budget, ledger) -> str:
     orch = Orchestrator(phases=phases, gates=gates, budget=budget, ledger=ledger,
                         sandbox=NullSandbox())
     return orch.run()
+
+
+def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_target=None):
+    """Return bring_up(design) -> (base_urls, teardown). Starts each built service on a fresh
+    per-run docker network (reusing deploy helpers) and collects {service_id -> base_url};
+    teardown() tears the network down. Deploy helpers are injectable for tests."""
+    from . import deploy
+    en = ensure_network or deploy.ensure_network
+    ss = start_service or deploy.start_service
+    st = start_target or deploy.start_target
+    run_dir = Path(run_dir)
+
+    def bring_up(design):
+        net = "devagent-sys"
+        en(net)
+        base_urls = {}
+        by_id = {s.id: s for s in design.services}
+        for sid in topo_order(design):
+            node = by_id[sid]
+            out_dir = str(run_dir / "services" / node.name / "out")
+            if node.kind in ("datastore", "service"):
+                ss(node.name, network=net)               # datastore: no base_url exposed
+            else:
+                url = st(out_dir, {"name": node.name}, network=net)
+                if url:
+                    base_urls[sid] = url
+
+        def teardown():
+            try:
+                deploy.ensure_network  # noop import guard
+                import subprocess
+                subprocess.run(["docker", "network", "rm", net],
+                               capture_output=True, check=False)
+            except Exception:
+                pass
+
+        return base_urls, teardown
+
+    return bring_up
