@@ -3,6 +3,7 @@ multi-container bring-up -> cross-service E2E (M17). The two side-effecting piec
 service; bring the services up) are injected callables so the orchestration is unit-testable
 without Docker/tokens; the defaults do the real thing. Nothing in M14-M17 is modified."""
 
+import subprocess
 from pathlib import Path
 
 from .tree import NodeResult, SUCCEEDED, FAILED, topo_order
@@ -59,7 +60,8 @@ def _real_build_service(node, svc_dir, budget, ledger) -> str:
 def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_target=None):
     """Return bring_up(design) -> (base_urls, teardown). Starts each built service on a fresh
     per-run docker network (reusing deploy helpers) and collects {service_id -> base_url};
-    teardown() tears the network down. Deploy helpers are injectable for tests."""
+    teardown() removes every container this call started plus the network. Deploy helpers are
+    injectable for tests."""
     from . import deploy
     en = ensure_network or deploy.ensure_network
     ss = start_service or deploy.start_service
@@ -67,24 +69,37 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
     run_dir = Path(run_dir)
 
     def bring_up(design):
-        net = "devagent-sys"
+        net = f"devagent-sys-{run_dir.name}"              # per-run: never shared across builds
         en(net)
         base_urls = {}
+        started = []  # container names this call actually started, for teardown
         by_id = {s.id: s for s in design.services}
         for sid in topo_order(design):
             node = by_id[sid]
             out_dir = str(run_dir / "services" / node.name / "out")
             if node.kind in ("datastore", "service"):
-                ss(node.name, network=net)               # datastore: no base_url exposed
+                container = ss(node, network=net)          # datastore: no base_url exposed
+                if container:
+                    started.append(container)
             else:
-                url = st(out_dir, {"name": node.name}, network=net)
+                url = st(out_dir, node, network=net)
                 if url:
                     base_urls[sid] = url
+                    # start_target returns a URL, not the container name — but deploy.py
+                    # names every container it starts devagent-preview-<target.name>.
+                    started.append(f"devagent-preview-{node.name}")
 
         def teardown():
+            # Containers run --restart unless-stopped, so `docker network rm` alone leaves
+            # them attached and fails silently. Remove containers first, then the network.
+            # check=False and try/except so this never raises (tests call it without docker).
+            for container in started:
+                try:
+                    subprocess.run(["docker", "rm", "-f", container],
+                                   capture_output=True, check=False)
+                except Exception:
+                    pass
             try:
-                deploy.ensure_network  # noop import guard
-                import subprocess
                 subprocess.run(["docker", "network", "rm", net],
                                capture_output=True, check=False)
             except Exception:
