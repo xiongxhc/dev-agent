@@ -110,3 +110,16 @@ def test_ledger_records_node_events():
     TreeOrchestrator(run_node=lambda n, dz: NodeResult(n.id, SUCCEEDED), ledger=L()).run(d)
     kinds = [e.get("event") for e in events]
     assert "system_build_start" in kinds and "node" in kinds and "system_build_end" in kinds
+
+
+def test_run_node_exception_becomes_failed_and_run_continues():
+    d = _design(("api", []), ("worker", []))
+    def run_node(n, dz):
+        if n.id == "api":
+            raise RuntimeError("boom")
+        return NodeResult(n.id, SUCCEEDED)
+    res = TreeOrchestrator(run_node=run_node).run(d)
+    assert res.results["api"].status == FAILED           # crash -> FAILED, not an aborted run
+    assert "boom" in res.results["api"].detail
+    assert res.results["worker"].status == SUCCEEDED      # independent node still ran
+    assert res.status == FAILED
