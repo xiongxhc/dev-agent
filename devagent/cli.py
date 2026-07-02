@@ -34,6 +34,21 @@ def _new_run_id() -> str:
     return f"run-{int(time.time())}-{uuid.uuid4().hex[:8]}"
 
 
+def build_pipeline_phases(input_path, *, build=False, out_dir=None, run_id=None,
+                          executor=None, verifier=None, answers_path=None):
+    """The scope->plan[->build->deploy] phase list + gate map. Shared by `run` and the M20
+    `build-system` per-service sub-runs so both assemble the pipeline identically."""
+    phases = [ScopePhase(input_path, answers_path=answers_path), PlanPhase()]
+    gates = {"scope": ScopeGate(), "plan": PlanGate()}
+    if build:
+        phases.append(BuildPhase(executor=executor, workdir=str(out_dir), run_id=run_id,
+                                 verifier=verifier, max_repairs=2))
+        gates["build"] = VerifyGate()
+        phases.append(DeployPhase(workdir=str(out_dir)))
+        gates["deploy"] = DeployGate()
+    return phases, gates
+
+
 def _eval(args) -> int:
     """M5 A/B eval: freeze scope+plan per fixture, build each arm N times, score, tabulate.
     Resumable under runs/eval/<id>/. Real builds — needs Docker + tokens."""
@@ -94,34 +109,28 @@ def main(argv: list[str] | None = None) -> int:
     ledger = Ledger(run_dir)
     ledger.append({"event": "input", "path": args.input})
 
-    phases = [ScopePhase(args.input, answers_path=args.answers), PlanPhase()]
-    gates = {"scope": ScopeGate(), "plan": PlanGate()}
+    # SdkExecutor self-contains its own disposable Docker container, so the
+    # orchestrator's NullSandbox still suffices for the host-side brain phases.
+    out_dir = run_dir / "out"
+    # Egress allowlist for OUR containers (verify always; the sdk build too). The managed
+    # arm builds on Anthropic's cloud sandbox, so it doesn't use our network — but verify
+    # still re-checks the pulled output in our egress-contained container.
+    network = proxy = None
+    if args.build and cfg.egress:
+        network, proxy = egress.ensure()
+        ledger.append({"event": "egress", "network": network, "proxy": proxy})
+    # The A/B seam: pick the build arm. Everything downstream (verify/acceptance/repair) is shared.
+    executor = None
     if args.build:
-        # SdkExecutor self-contains its own disposable Docker container, so the
-        # orchestrator's NullSandbox still suffices for the host-side brain phases.
-        out_dir = run_dir / "out"
-        # Egress allowlist for OUR containers (verify always; the sdk build too). The managed
-        # arm builds on Anthropic's cloud sandbox, so it doesn't use our network — but verify
-        # still re-checks the pulled output in our egress-contained container.
-        network = proxy = None
-        if cfg.egress:
-            network, proxy = egress.ensure()
-            ledger.append({"event": "egress", "network": network, "proxy": proxy})
-        # The A/B seam: pick the build arm. Everything downstream (verify/acceptance/repair) is shared.
         ledger.append({"event": "executor", "kind": cfg.executor})
         if cfg.executor == "managed":
             executor = ManagedExecutor()
         else:
             executor = SdkExecutor(network=network, proxy_url=proxy, model=cfg.build_model)
-        # BuildPhase owns the repair loop: build -> rebuild-from-source verify -> repair
-        # (cap 2), then emits the VerifyReport. VerifyGate is the trusted final check.
-        phases.append(BuildPhase(
-            executor=executor, workdir=str(out_dir), run_id=run_id,
-            verifier=BuildVerifier(network=network, proxy_url=proxy), max_repairs=2))
-        gates["build"] = VerifyGate()
-        # Deploy the built app to a local preview server -> URL (gated on it actually answering).
-        phases.append(DeployPhase(workdir=str(out_dir)))
-        gates["deploy"] = DeployGate()
+    verifier = BuildVerifier(network=network, proxy_url=proxy) if args.build else None
+    phases, gates = build_pipeline_phases(
+        args.input, build=args.build, out_dir=out_dir, run_id=run_id,
+        executor=executor, verifier=verifier, answers_path=args.answers)
 
     orch = Orchestrator(
         phases=phases,
