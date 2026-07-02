@@ -233,6 +233,20 @@ def find_cycle(deps: dict) -> str | None:
     return None
 
 
+class IntegrationCheck(BaseModel):
+    """A cross-service E2E step (M17): hit `service`'s `route` and assert the outcome. Unlike
+    an AcceptanceCheck (scoped to one built target), this names WHICH service in the system to
+    address, so a flow can span services (frontend -> api -> db)."""
+
+    service: str = Field(..., min_length=1)   # a SystemDesign service id
+    route: str = Field(..., min_length=1)
+    method: str = "GET"
+    body: dict | None = None
+    json_path: str | None = None
+    json_equals: object = None
+    expected_status: int = 200
+
+
 class SystemDesign(BaseModel):
     """The confirmed system architecture the long-horizon builder consumes: a DAG of services
     plus the contracts between them. Emitted once by the Architect phase (M14)."""
@@ -240,6 +254,7 @@ class SystemDesign(BaseModel):
     title: str = Field(..., min_length=1)
     services: list[ServiceNode] = Field(..., min_length=1)
     contracts: list[Contract] = Field(default_factory=list)
+    integration_checks: list[IntegrationCheck] = Field(default_factory=list)
     version: int = 1
 
     @model_validator(mode="after")
@@ -284,4 +299,13 @@ class SystemDesign(BaseModel):
         cyc = find_cycle({s.id: list(s.depends_on) for s in self.services})
         if cyc is not None:
             raise ValueError(f"dependency cycle through service {cyc!r}")
+        return self
+
+    @model_validator(mode="after")
+    def _integration_checks_name_known_services(self):
+        ids = {s.id for s in self.services}
+        for c in self.integration_checks:
+            if c.service not in ids:
+                raise ValueError(
+                    f"integration_check names unknown service {c.service!r}")
         return self
