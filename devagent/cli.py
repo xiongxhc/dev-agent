@@ -35,10 +35,13 @@ def _new_run_id() -> str:
     return f"run-{int(time.time())}-{uuid.uuid4().hex[:8]}"
 
 
-def build_pipeline_phases(input_path, *, build=False, out_dir=None, run_id=None,
+def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None, run_id=None,
                           executor=None, verifier=None, answers_path=None):
-    """The scope->plan[->build->deploy] phase list + gate map. Shared by `run` and the M20
-    `build-system` per-service sub-runs so both assemble the pipeline identically."""
+    """The scope->plan[->build[->deploy]] phase list + gate map. Shared by `run` and the M20
+    `build-system` per-service sub-runs so both assemble the pipeline identically. Sub-runs
+    pass deploy=False: previews are pointless there, and their fixed devagent-preview-<name>
+    container names collide across concurrent sibling builds — system bring-up starts the
+    real containers instead (M21)."""
     phases = [ScopePhase(input_path, answers_path=answers_path), PlanPhase()]
     gates = {"scope": ScopeGate(), "plan": PlanGate()}
     if build:
@@ -47,9 +50,10 @@ def build_pipeline_phases(input_path, *, build=False, out_dir=None, run_id=None,
         phases.append(BuildPhase(executor=executor, workdir=str(out_dir), run_id=run_id,
                                  verifier=verifier, max_repairs=2))
         gates["build"] = VerifyGate()
-        # Deploy the built app to a local preview server -> URL (gated on it actually answering).
-        phases.append(DeployPhase(workdir=str(out_dir)))
-        gates["deploy"] = DeployGate()
+        if deploy:
+            # Deploy the built app to a local preview server -> URL (gated on it actually answering).
+            phases.append(DeployPhase(workdir=str(out_dir)))
+            gates["deploy"] = DeployGate()
     return phases, gates
 
 

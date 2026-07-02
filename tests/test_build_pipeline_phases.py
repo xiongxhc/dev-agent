@@ -14,3 +14,13 @@ def test_build_phases_include_build_and_deploy():
         "prd.md", build=True, out_dir="/tmp/out", run_id="r1", executor=_Ex(), verifier=None)
     assert [p.name for p in phases] == ["scope", "plan", "build", "deploy"]
     assert set(gates) == {"scope", "plan", "build", "deploy"}
+
+
+def test_build_deploy_false_omits_deploy():
+    class _Ex:  # stand-in executor
+        def build(self, req): ...
+    phases, gates = build_pipeline_phases(
+        "prd.md", build=True, deploy=False, out_dir="/tmp/out", run_id="r1",
+        executor=_Ex(), verifier=None)
+    assert [p.name for p in phases] == ["scope", "plan", "build"]
+    assert set(gates) == {"scope", "plan", "build"}

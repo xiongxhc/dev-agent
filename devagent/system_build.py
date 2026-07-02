@@ -57,7 +57,7 @@ def _real_build_service(node, svc_dir, budget, ledger) -> str:
                 else SdkExecutor(network=network, proxy_url=proxy, model=cfg.build_model))
     verifier = BuildVerifier(network=network, proxy_url=proxy)
     phases, gates = build_pipeline_phases(
-        str(Path(svc_dir) / "prd.md"), build=True, out_dir=out_dir,
+        str(Path(svc_dir) / "prd.md"), build=True, deploy=False, out_dir=out_dir,
         run_id=f"svc-{node.name}", executor=executor, verifier=verifier)
     orch = Orchestrator(phases=phases, gates=gates, budget=budget, ledger=ledger,
                         sandbox=NullSandbox())
