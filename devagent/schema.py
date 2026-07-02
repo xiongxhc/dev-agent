@@ -178,3 +178,67 @@ class Plan(BaseModel):
                     )
                 seen[f] = t.id
         return tasks
+
+
+class Contract(BaseModel):
+    """One interface a service implements. Frozen at architect time (M14): consumers build
+    against it read-only and `version` is always 1. M19 makes `version` mutable (renegotiation)."""
+
+    id: str = Field(..., min_length=1)
+    kind: Literal["openapi", "db_schema", "auth_token", "event"]
+    producer: str = Field(..., min_length=1)   # service id that implements it
+    spec: dict = Field(default_factory=dict)   # the interface: OpenAPI paths / DDL / token claims
+    version: int = 1
+
+
+class ServiceNode(BaseModel):
+    """One independently-buildable service in the system DAG. `depends_on` are the DAG edges;
+    `provides`/`consumes` name the contract ids wiring producers to consumers. M15's recursive
+    orchestrator walks this to build each service as an isolated sub-run into services/<name>/."""
+
+    id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)       # repo subdir: services/<name>/
+    kind: str = Field(..., min_length=1)       # maps to ArtifactSpec.type (frontend/backend/...)
+    stack: str = Field(..., min_length=1)      # recipe name
+    prd_slice: str = Field(..., min_length=1)  # the architect's PRD slice for THIS service
+    depends_on: list[str] = Field(default_factory=list)
+    provides: list[str] = Field(default_factory=list)
+    consumes: list[str] = Field(default_factory=list)
+
+
+class SystemDesign(BaseModel):
+    """The confirmed system architecture the long-horizon builder consumes: a DAG of services
+    plus the contracts between them. Emitted once by the Architect phase (M14)."""
+
+    title: str = Field(..., min_length=1)
+    services: list[ServiceNode] = Field(..., min_length=1)
+    contracts: list[Contract] = Field(default_factory=list)
+    version: int = 1
+
+    @model_validator(mode="after")
+    def _wiring_resolves(self):
+        service_ids = [s.id for s in self.services]
+        if len(service_ids) != len(set(service_ids)):
+            raise ValueError("service ids must be unique")
+        contract_ids = [c.id for c in self.contracts]
+        if len(contract_ids) != len(set(contract_ids)):
+            raise ValueError("contract ids must be unique")
+        sids, cids = set(service_ids), set(contract_ids)
+        provides_by = {s.id: set(s.provides) for s in self.services}
+        for c in self.contracts:
+            if c.producer not in sids:
+                raise ValueError(f"contract {c.id!r} names unknown producer {c.producer!r}")
+            if c.id not in provides_by[c.producer]:
+                raise ValueError(
+                    f"contract {c.id!r} producer {c.producer!r} does not list it in `provides`")
+        for s in self.services:
+            for d in s.depends_on:
+                if d not in sids:
+                    raise ValueError(f"service {s.id!r} depends_on unknown service {d!r}")
+            for cid in s.provides:
+                if cid not in cids:
+                    raise ValueError(f"service {s.id!r} provides unknown contract {cid!r}")
+            for cid in s.consumes:
+                if cid not in cids:
+                    raise ValueError(f"service {s.id!r} consumes unknown contract {cid!r}")
+        return self
