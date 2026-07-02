@@ -15,3 +15,33 @@ def test_build_system_writes_report_and_returns_status(tmp_path, monkeypatch):
     assert rc == 0
     reports = list((tmp_path / "runs").rglob("system-report.json"))
     assert reports and json.loads(reports[0].read_text())["status"] == "succeeded"
+
+
+def test_build_system_non_succeeded_report_returns_1(tmp_path, monkeypatch):
+    prd = tmp_path / "prd.md"; prd.write_text("A todo system.")
+    from devagent.system_build import SystemReport
+    from devagent.tree import NodeResult, FAILED
+    def fake_build_system(prd_path, **kw):
+        return SystemReport("Todo", {"api": NodeResult("api", FAILED, "aborted_budget")},
+                            False, None, "build_failed")
+    monkeypatch.setattr(cli, "build_system", fake_build_system, raising=False)
+    monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path / "runs"))
+    rc = cli.main(["build-system", str(prd)])
+    assert rc == 1
+
+
+def test_build_system_report_includes_integration_steps(tmp_path, monkeypatch):
+    prd = tmp_path / "prd.md"; prd.write_text("A todo system.")
+    from devagent.system_build import SystemReport
+    from devagent.tree import NodeResult, SUCCEEDED
+    from devagent.integration import IntegrationReport
+    steps = [{"service": "api", "route": "/api/todos", "ok": True, "detail": ""}]
+    def fake_build_system(prd_path, **kw):
+        return SystemReport("Todo", {"api": NodeResult("api", SUCCEEDED)}, True,
+                            IntegrationReport(steps=steps), "succeeded")
+    monkeypatch.setattr(cli, "build_system", fake_build_system, raising=False)
+    monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path / "runs"))
+    rc = cli.main(["build-system", str(prd)])
+    assert rc == 0
+    reports = list((tmp_path / "runs").rglob("system-report.json"))
+    assert json.loads(reports[0].read_text())["integration"] == steps

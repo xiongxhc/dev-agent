@@ -42,9 +42,12 @@ def build_pipeline_phases(input_path, *, build=False, out_dir=None, run_id=None,
     phases = [ScopePhase(input_path, answers_path=answers_path), PlanPhase()]
     gates = {"scope": ScopeGate(), "plan": PlanGate()}
     if build:
+        # BuildPhase owns the repair loop: build -> rebuild-from-source verify -> repair
+        # (cap 2), then emits the VerifyReport. VerifyGate is the trusted final check.
         phases.append(BuildPhase(executor=executor, workdir=str(out_dir), run_id=run_id,
                                  verifier=verifier, max_repairs=2))
         gates["build"] = VerifyGate()
+        # Deploy the built app to a local preview server -> URL (gated on it actually answering).
         phases.append(DeployPhase(workdir=str(out_dir)))
         gates["deploy"] = DeployGate()
     return phases, gates
@@ -90,6 +93,7 @@ def _build_system(args) -> int:
     run_id = _new_run_id()
     run_dir = cfg.runs_dir / run_id
     ledger = Ledger(run_dir)
+    ledger.append({"event": "input", "path": args.input})
     budget = Budget(cfg.max_tokens, cfg.max_seconds, cfg.max_retries, max_cost_usd=cfg.max_cost_usd)
     report = build_system(
         args.input, budget=budget, ledger=ledger,
@@ -97,10 +101,14 @@ def _build_system(args) -> int:
         bring_up=make_bring_up(run_dir))
     (run_dir / "system-report.json").write_text(json.dumps({
         "title": report.title, "status": report.status, "build_ok": report.build_ok,
-        "services": {k: v.status for k, v in report.node_results.items()},
+        "services": {k: {"status": v.status, "detail": v.detail}
+                    for k, v in report.node_results.items()},
+        "integration": [dict(s) for s in report.integration.steps] if report.integration else None,
     }, indent=2))
     print(f"{run_id} {report.status}")
-    print(f"  -> services: " + ", ".join(f"{k}={v.status}" for k, v in report.node_results.items()))
+    print(f"  -> services: " + ", ".join(
+        f"{k}={v.status}" if v.status == "succeeded" else f"{k}={v.status} ({v.detail})"
+        for k, v in report.node_results.items()))
     print(f"  -> report: {run_dir / 'system-report.json'}")
     return 0 if report.status == "succeeded" else 1
 

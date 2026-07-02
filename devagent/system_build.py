@@ -4,10 +4,15 @@ service; bring the services up) are injected callables so the orchestration is u
 without Docker/tokens; the defaults do the real thing. Nothing in M14-M17 is modified."""
 
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from .tree import NodeResult, SUCCEEDED, FAILED, topo_order
+
+# egress.ensure() is an unlocked check-then-act on the shared devagent-proxy container;
+# serialize it across concurrent per-service build worker threads.
+_egress_lock = threading.Lock()
 
 
 def make_run_node(run_dir, budget, ledger, build_service=None):
@@ -46,7 +51,8 @@ def _real_build_service(node, svc_dir, budget, ledger) -> str:
     out_dir = Path(svc_dir) / "out"
     network = proxy = None
     if cfg.egress:
-        network, proxy = egress.ensure()
+        with _egress_lock:
+            network, proxy = egress.ensure()
     executor = (ManagedExecutor() if cfg.executor == "managed"
                 else SdkExecutor(network=network, proxy_url=proxy, model=cfg.build_model))
     verifier = BuildVerifier(network=network, proxy_url=proxy)
@@ -74,21 +80,6 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
         en(net)
         base_urls = {}
         started = []  # container names this call actually started, for teardown
-        by_id = {s.id: s for s in design.services}
-        for sid in topo_order(design):
-            node = by_id[sid]
-            out_dir = str(run_dir / "services" / node.name / "out")
-            if node.kind in ("datastore", "service"):
-                container = ss(node, network=net)          # datastore: no base_url exposed
-                if container:
-                    started.append(container)
-            else:
-                url = st(out_dir, node, network=net)
-                if url:
-                    base_urls[sid] = url
-                    # start_target returns a URL, not the container name — but deploy.py
-                    # names every container it starts devagent-preview-<target.name>.
-                    started.append(f"devagent-preview-{node.name}")
 
         def teardown():
             # Containers run --restart unless-stopped, so `docker network rm` alone leaves
@@ -105,6 +96,27 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
                                capture_output=True, check=False)
             except Exception:
                 pass
+
+        by_id = {s.id: s for s in design.services}
+        try:
+            for sid in topo_order(design):
+                node = by_id[sid]
+                out_dir = str(run_dir / "services" / node.name / "out")
+                if node.kind in ("datastore", "service"):
+                    container = ss(node, network=net)      # datastore: no base_url exposed
+                    if container:
+                        started.append(container)
+                else:
+                    url = st(out_dir, node, network=net)
+                    if url:
+                        base_urls[sid] = url
+                        # start_target returns a URL, not the container name — but deploy.py
+                        # names every container it starts devagent-preview-<target.name>.
+                        started.append(f"devagent-preview-{node.name}")
+        except Exception:
+            # A mid-loop crash must not leak already-started containers or the per-run network.
+            teardown()
+            raise
 
         return base_urls, teardown
 
@@ -140,6 +152,14 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
             return SystemReport(getattr(design, "title", "?"), {}, False, None, "design_failed")
     else:
         design = architect(prd_path)
+
+    # SystemDesign only guarantees unique ids; per-service dirs/containers key on `node.name`.
+    names = [s.name for s in design.services]
+    if len(names) != len(set(names)):
+        dups = sorted({n for n in names if names.count(n) > 1})
+        if ledger is not None:
+            ledger.append({"event": "design_duplicate_names", "names": dups})
+        return SystemReport(design.title, {}, False, None, "design_failed")
 
     # Build every service (M15).
     sysres = TreeOrchestrator(run_node=run_node, ledger=ledger).run(design)

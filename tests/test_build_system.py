@@ -1,4 +1,4 @@
-from devagent.schema import Contract, IntegrationCheck, ServiceNode, SystemDesign
+from devagent.schema import IntegrationCheck, ServiceNode, SystemDesign
 from devagent.tree import NodeResult, SUCCEEDED, FAILED
 from devagent.integration import IntegrationReport
 from devagent.system_build import build_system, SystemReport
@@ -54,3 +54,25 @@ def test_integration_failure_reports_and_tears_down():
         integration_runner=lambda c, u: IntegrationReport(
             steps=[{"service": "api", "route": "/api/todos", "ok": False, "detail": "500"}]))
     assert rep.status == "integration_failed" and torn["down"]
+
+
+def _design_dup_names():         # unique ids, colliding names — dirs/containers key on name
+    return SystemDesign(
+        title="Todo system",
+        services=[ServiceNode(id="api1", name="api", kind="backend", stack="node-express",
+                              prd_slice="x"),
+                 ServiceNode(id="api2", name="api", kind="backend", stack="node-express",
+                            prd_slice="y")])
+
+
+def test_duplicate_service_names_is_design_failed():
+    called = {"run_node": False, "bring_up": False}
+    def run_node(n, d):
+        called["run_node"] = True; return NodeResult(n.id, SUCCEEDED)
+    def bring_up(design):
+        called["bring_up"] = True; return {}, (lambda: None)
+    rep = build_system(
+        "prd.md", budget=None, ledger=None,
+        run_node=run_node, bring_up=bring_up, architect=lambda _prd: _design_dup_names())
+    assert rep.status == "design_failed"
+    assert not called["run_node"] and not called["bring_up"]

@@ -203,6 +203,12 @@ DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001 python -m devagent.cli run --buil
 #    the Agent SDK default. The brain (scope/plan) model is separate: DEVAGENT_LLM_MODEL
 #    (default claude-sonnet-4-6). Use a cheap model (Haiku) for test builds, a stronger one
 #    for prod/quality. Cost is also hard-capped per run by DEVAGENT_MAX_COST_USD (default $10).
+
+python -m devagent.cli build-system <prd.md>              # M20: multi-service system from one PRD
+# -> designs a multi-service system from a PRD (Architect -> SystemDesign), builds each
+#    service through the full scope->plan->build->verify->deploy pipeline under one shared
+#    budget, brings every service up together on a per-run docker network, runs cross-service
+#    E2E, and writes runs/<id>/system-report.json
 ```
 
 `--build` is opt-in because it requires Docker (the M2 sandbox image) and spends build
