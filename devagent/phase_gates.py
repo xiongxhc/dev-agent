@@ -188,6 +188,12 @@ class ArchitectGate:
         design: SystemDesign = result.output_artifact
         if not design.services:
             return GateResult(False, "system design has no services")
+        ids = {s.id for s in design.services}
+        for s in design.services:
+            for d in s.depends_on:
+                if d not in ids:
+                    return GateResult(
+                        False, f"service {s.id!r} depends_on unknown service {d!r}")
         graph = {s.id: list(s.depends_on) for s in design.services}
         color = {sid: 0 for sid in graph}
 

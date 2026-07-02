@@ -36,3 +36,33 @@ def test_fails_on_wrong_artifact_type():
 
 def test_gate_name_is_stable():
     assert ArchitectGate().name == "system_design_buildable"
+
+
+def test_fails_on_dependency_cycle():
+    # model_construct bypasses schema validation to simulate a validator miss;
+    # the gate must catch the cycle and fail cleanly, not crash.
+    a = ServiceNode(id="a", name="a", kind="backend", stack="node-express",
+                    prd_slice="x", depends_on=["b"])
+    b = ServiceNode(id="b", name="b", kind="backend", stack="node-express",
+                    prd_slice="y", depends_on=["a"])
+    design = SystemDesign.model_construct(title="t", services=[a, b], contracts=[], version=1)
+    r = ArchitectGate().check(_result(design))
+    assert not r.ok and "cycle" in r.reason.lower()
+
+
+def test_fails_when_consumed_contract_not_provided_by_a_dependency():
+    web = ServiceNode(id="web", name="web", kind="frontend", stack="node-vite-react",
+                      prd_slice="x", depends_on=["api"], consumes=["api.openapi"])
+    api = ServiceNode(id="api", name="api", kind="backend", stack="node-express",
+                      prd_slice="y")  # provides nothing
+    design = SystemDesign.model_construct(title="t", services=[web, api], contracts=[], version=1)
+    r = ArchitectGate().check(_result(design))
+    assert not r.ok
+
+
+def test_fails_on_unresolved_dependency():
+    web = ServiceNode(id="web", name="web", kind="frontend", stack="node-vite-react",
+                      prd_slice="x", depends_on=["ghost"])
+    design = SystemDesign.model_construct(title="t", services=[web], contracts=[], version=1)
+    r = ArchitectGate().check(_result(design))
+    assert not r.ok and "ghost" in r.reason
