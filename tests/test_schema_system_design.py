@@ -67,3 +67,10 @@ def test_rejects_depends_on_unknown_service():
         SystemDesign(title="t",
             services=[ServiceNode(id="web", name="web", kind="frontend",
                                   stack="node-vite-react", prd_slice="x", depends_on=["ghost"])])
+
+
+def test_rejects_consumes_of_unknown_contract():
+    with pytest.raises(ValidationError):
+        SystemDesign(title="t",
+            services=[ServiceNode(id="web", name="web", kind="frontend",
+                                  stack="node-vite-react", prd_slice="x", consumes=["ghost"])])
