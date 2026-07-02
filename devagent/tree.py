@@ -46,8 +46,12 @@ def topo_order(design: SystemDesign) -> list[str]:
                 placed.add(sid)
                 progress = True
         if not progress:
+            unplaced = [s for s in decl if s not in placed]
+            if not unplaced:  # all unique ids placed but decl longer => duplicate ids
+                dups = sorted({s for s in decl if decl.count(s) > 1})
+                raise ValueError(f"topo_order: duplicate service ids {dups}")
             raise ValueError(
-                f"topo_order: unresolved or cyclic dependencies among {sorted(set(decl) - placed)}")
+                f"topo_order: unresolved or cyclic dependencies among {sorted(set(unplaced))}")
     return done
 
 
@@ -62,6 +66,18 @@ class TreeOrchestrator:
         self.concurrency = concurrency
         self.ledger = ledger
 
+    @staticmethod
+    def _cap_from_env() -> int:
+        raw = os.getenv("DEVAGENT_BUILD_CONCURRENCY")
+        try:
+            return int(raw) if raw else 3
+        except ValueError:
+            return 3  # malformed env must never crash the build
+
+    def _resolve_cap(self) -> int:
+        # `is not None` (not `or`) so an explicit concurrency=0 is honored, not swallowed
+        return self.concurrency if self.concurrency is not None else self._cap_from_env()
+
     def _log(self, event):
         if self.ledger is not None:
             self.ledger.append(event)
@@ -73,7 +89,7 @@ class TreeOrchestrator:
         results: dict[str, NodeResult] = {}
         self._log({"event": "system_build_start", "order": order})
         remaining = set(order)
-        cap = self.concurrency or int(os.getenv("DEVAGENT_BUILD_CONCURRENCY", "3"))
+        cap = self._resolve_cap()
         while remaining:
             # A node is ready when every dependency already has a result.
             ready = [sid for sid in order
@@ -98,10 +114,14 @@ class TreeOrchestrator:
                             nr = fut.result()
                         except Exception as e:  # a run_node crash is a node failure, not a run crash
                             nr = NodeResult(sid, FAILED, repr(e))
+                        if not isinstance(nr, NodeResult):
+                            nr = NodeResult(sid, FAILED,
+                                            f"run_node returned {type(nr).__name__}, not NodeResult")
                         results[sid] = nr
                         self._log({"event": "node", "node": sid,
                                    "status": nr.status, "detail": nr.detail})
                         remaining.discard(sid)
-        status = SUCCEEDED if all(r.status == SUCCEEDED for r in results.values()) else FAILED
+        status = (SUCCEEDED if results and all(r.status == SUCCEEDED for r in results.values())
+                  else FAILED)
         self._log({"event": "system_build_end", "status": status})
         return SystemBuildResult(results=results, status=status, order=order)

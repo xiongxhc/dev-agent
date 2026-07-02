@@ -123,3 +123,37 @@ def test_run_node_exception_becomes_failed_and_run_continues():
     assert "boom" in res.results["api"].detail
     assert res.results["worker"].status == SUCCEEDED      # independent node still ran
     assert res.status == FAILED
+
+
+def test_malformed_concurrency_env_does_not_crash(monkeypatch):
+    monkeypatch.setenv("DEVAGENT_BUILD_CONCURRENCY", "")   # empty -> must fall back, not crash
+    d = _design(("a", []), ("b", []))
+    res = TreeOrchestrator(run_node=lambda n, dz: NodeResult(n.id, SUCCEEDED)).run(d)
+    assert res.status == SUCCEEDED
+
+
+def test_run_node_returning_non_noderesult_becomes_failed():
+    d = _design(("a", []))
+    res = TreeOrchestrator(run_node=lambda n, dz: None).run(d)   # bad seam return, not a raise
+    assert res.results["a"].status == FAILED
+    assert res.status == FAILED                                   # run still returns a result, no crash
+
+
+def test_concurrency_zero_is_honored_serial():
+    d = _design(("a", []), ("b", []))
+    res = TreeOrchestrator(run_node=lambda n, dz: NodeResult(n.id, SUCCEEDED), concurrency=0).run(d)
+    assert res.status == SUCCEEDED                                # 0 honored (serial), not swallowed to 3
+
+
+def test_empty_design_is_failed_not_vacuously_succeeded():
+    empty = SystemDesign.model_construct(title="t", services=[], contracts=[], version=1)
+    res = TreeOrchestrator(run_node=lambda n, dz: NodeResult(n.id, SUCCEEDED)).run(empty)
+    assert res.status == FAILED
+
+
+def test_topo_order_duplicate_ids_reports_duplicates():
+    a1 = ServiceNode(id="a", name="a1", kind="backend", stack="node-express", prd_slice="x")
+    a2 = ServiceNode(id="a", name="a2", kind="backend", stack="node-express", prd_slice="y")
+    dup = SystemDesign.model_construct(title="t", services=[a1, a2], contracts=[], version=1)
+    with pytest.raises(ValueError, match="duplicate"):
+        topo_order(dup)
