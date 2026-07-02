@@ -222,3 +222,48 @@ class ArchitectGate:
                         False,
                         f"service {s.id!r} consumes {cid!r} not provided by any dependency")
         return GateResult(True)
+
+
+@dataclass
+class ContractConformanceGate:
+    """Passes iff every service that PROVIDES an openapi contract actually serves it. Reuses
+    acceptance_runner's HTTP checks (injectable for tests) against the running services' base
+    URLs. Only `openapi` contracts are checked in M16 (other kinds deferred). Runs after
+    VerifyGate, on the same VerifyReport, once the services are up (base_urls supplied by the
+    caller / M15's sub-run)."""
+
+    design: SystemDesign
+    base_urls: dict                         # service_id -> base_url of the running service
+    check_route_status: object = None       # injectable; defaults to acceptance_runner's
+    check_api_json: object = None
+    name: str = "contract_conformance"
+
+    def check(self, result) -> GateResult:
+        fail = _precheck(result, VerifyReport)
+        if fail:
+            return fail
+        from .acceptance_runner import check_api_json as _caj, check_route_status as _crs
+        from .contract_utils import openapi_to_checks
+        crs = self.check_route_status or _crs
+        caj = self.check_api_json or _caj
+        provided: dict = {}
+        for c in self.design.contracts:
+            if c.kind == "openapi":
+                provided.setdefault(c.producer, []).append(c)
+        failures: list[str] = []
+        for sid, contracts in provided.items():
+            base = self.base_urls.get(sid)
+            if not base:
+                failures.append(f"service {sid!r}: no base_url to check conformance")
+                continue
+            for c in contracts:
+                for chk in openapi_to_checks(c):
+                    if chk["kind"] == "route_status":
+                        r = crs(base, chk["route"], chk.get("expected_status", 200))
+                    else:
+                        r = caj(base, chk["route"], chk.get("method", "GET"), None, None, None)
+                    if not r.get("ok"):
+                        failures.append(f"{sid} {c.id} {chk['route']}: {r.get('detail', 'failed')}")
+        if failures:
+            return GateResult(False, "; ".join(failures))
+        return GateResult(True)
