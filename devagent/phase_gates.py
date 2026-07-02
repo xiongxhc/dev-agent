@@ -10,7 +10,7 @@ from pathlib import Path
 from . import recipes
 from .executor import BuildResult
 from .gates import GateResult
-from .schema import Plan, ProjectScope
+from .schema import Plan, ProjectScope, SystemDesign
 from .verifier import VerifyReport
 
 
@@ -169,4 +169,52 @@ class ScopeGate:
                 if chk.kind not in r.supported_checks:
                     return GateResult(False,
                         f"target {t.name!r}: check kind {chk.kind!r} unsupported by {t.stack!r}")
+        return GateResult(True)
+
+
+@dataclass
+class ArchitectGate:
+    """Passes iff the SystemDesign is buildable as a tree: >=1 service, an acyclic dependency
+    graph, and every consumed contract provided by a declared dependency. The schema validator
+    already guarantees these (so generate_structured raises on a malformed emit); this gate is
+    the defense-in-depth re-check at the phase boundary, exactly like PlanGate."""
+
+    name: str = "system_design_buildable"
+
+    def check(self, result) -> GateResult:
+        fail = _precheck(result, SystemDesign)
+        if fail:
+            return fail
+        design: SystemDesign = result.output_artifact
+        if not design.services:
+            return GateResult(False, "system design has no services")
+        graph = {s.id: list(s.depends_on) for s in design.services}
+        color = {sid: 0 for sid in graph}
+
+        def visit(n):
+            color[n] = 1
+            for m in graph[n]:
+                if color[m] == 1:
+                    return m
+                if color[m] == 0:
+                    cyc = visit(m)
+                    if cyc:
+                        return cyc
+            color[n] = 2
+            return None
+
+        for sid in graph:
+            if color[sid] == 0:
+                cyc = visit(sid)
+                if cyc:
+                    return GateResult(False, f"dependency cycle through service {cyc!r}")
+        provides_by = {s.id: set(s.provides) for s in design.services}
+        for s in design.services:
+            deps_provide = set().union(*(provides_by[d] for d in s.depends_on)) \
+                if s.depends_on else set()
+            for cid in s.consumes:
+                if cid not in deps_provide:
+                    return GateResult(
+                        False,
+                        f"service {s.id!r} consumes {cid!r} not provided by any dependency")
         return GateResult(True)
