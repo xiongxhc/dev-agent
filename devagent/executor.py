@@ -25,6 +25,7 @@ class BuildRequest:
     run_id: str
     budget: Any = None    # shared Budget instance (token/wall-clock/retry ceilings)
     repair_context: str | None = None  # verify diagnostics for a repair pass (None = fresh build)
+    consumed_contracts: tuple = ()     # M21: contract-spec dicts this service consumes (M16 seam)
 
 
 @dataclass
@@ -81,3 +82,12 @@ def enrich_scope(scope, consumed_by_target: dict | None = None) -> dict:
             "_consumed_contracts": consumed_by_target.get(t.name, []),
         })
     return {"title": scope.title, "targets": targets}
+
+
+def broadcast_consumed(scope, consumed_contracts) -> dict | None:
+    """M21: a sub-run builds exactly ONE service, so its consumed contracts apply to every
+    target of its scope. Targets are LLM-named (not pinned to the design's node name), so
+    broadcasting per-target is the only stable keying for enrich_scope's consumed_by_target."""
+    if not consumed_contracts:
+        return None
+    return {t.name: list(consumed_contracts) for t in scope.targets}

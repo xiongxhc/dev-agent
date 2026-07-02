@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from . import recipes
-from .executor import BuildRequest, BuildResult, enrich_scope
+from .executor import BuildRequest, BuildResult, broadcast_consumed, enrich_scope
 from .sdk_runner import build_prompt, input_output_tokens
 
 BETA = "managed-agents-2026-04-01"
@@ -65,7 +65,7 @@ class ManagedExecutor:
         # crashes on a missing scope and the run fails even though the app is fine).
         dev = out / ".devagent"
         dev.mkdir(parents=True, exist_ok=True)
-        enriched = enrich_scope(req.scope)
+        enriched = enrich_scope(req.scope, broadcast_consumed(req.scope, req.consumed_contracts))
         (dev / "scope.json").write_text(json.dumps(enriched))
         (dev / "plan.json").write_text(req.plan.model_dump_json())
         client = self._get_client()

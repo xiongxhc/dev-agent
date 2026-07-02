@@ -36,19 +36,21 @@ def _new_run_id() -> str:
 
 
 def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None, run_id=None,
-                          executor=None, verifier=None, answers_path=None):
+                          executor=None, verifier=None, answers_path=None, consumed_contracts=()):
     """The scope->plan[->build[->deploy]] phase list + gate map. Shared by `run` and the M20
     `build-system` per-service sub-runs so both assemble the pipeline identically. Sub-runs
     pass deploy=False: previews are pointless there, and their fixed devagent-preview-<name>
     container names collide across concurrent sibling builds — system bring-up starts the
-    real containers instead (M21)."""
+    real containers instead (M21). `consumed_contracts` (M21) are the node's consumed
+    contract-spec dicts, forwarded into BuildPhase -> BuildRequest -> enrich_scope."""
     phases = [ScopePhase(input_path, answers_path=answers_path), PlanPhase()]
     gates = {"scope": ScopeGate(), "plan": PlanGate()}
     if build:
         # BuildPhase owns the repair loop: build -> rebuild-from-source verify -> repair
         # (cap 2), then emits the VerifyReport. VerifyGate is the trusted final check.
         phases.append(BuildPhase(executor=executor, workdir=str(out_dir), run_id=run_id,
-                                 verifier=verifier, max_repairs=2))
+                                 verifier=verifier, max_repairs=2,
+                                 consumed_contracts=consumed_contracts))
         gates["build"] = VerifyGate()
         if deploy:
             # Deploy the built app to a local preview server -> URL (gated on it actually answering).

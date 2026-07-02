@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import egress, recipes
-from .executor import BuildRequest, BuildResult, enrich_scope
+from .executor import BuildRequest, BuildResult, broadcast_consumed, enrich_scope
 from .schema import Plan, ProjectScope
 
 RUNNER = Path(__file__).parent / "sdk_runner.py"
@@ -53,7 +53,8 @@ class SdkExecutor:
         dev = out / ".devagent"
         dev.mkdir(parents=True, exist_ok=True)
         # Always write the FULL enriched scope+plan — verify/acceptance run the whole project.
-        (dev / "scope.json").write_text(json.dumps(enrich_scope(req.scope)))
+        (dev / "scope.json").write_text(
+            json.dumps(enrich_scope(req.scope, broadcast_consumed(req.scope, req.consumed_contracts))))
         (dev / "plan.json").write_text(req.plan.model_dump_json())
         repair = dev / "repair.txt"
         if req.repair_context:
@@ -80,7 +81,8 @@ class SdkExecutor:
                 bdir.mkdir(parents=True, exist_ok=True)
                 (bdir / "result.json").unlink(missing_ok=True)   # never read a prior run's result
                 sub = ProjectScope(title=req.scope.title, targets=[bt])
-                (bdir / "scope.json").write_text(json.dumps(enrich_scope(sub)))
+                (bdir / "scope.json").write_text(
+                    json.dumps(enrich_scope(sub, broadcast_consumed(sub, req.consumed_contracts))))
                 (bdir / "plan.json").write_text(Plan(tasks=slices[bt.name]).model_dump_json())
             cap = self._concurrency(len(build_targets))
             with ThreadPoolExecutor(max_workers=cap) as ex:

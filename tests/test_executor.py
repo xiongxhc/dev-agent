@@ -69,3 +69,20 @@ def test_enrich_scope_carries_target_auth_flow():
     assert api["auth"]["login_route"] == "/auth/login"
     assert api["auth"]["token_json_path"] == "token"
     assert api["acceptance_checks"][0]["auth"] is True
+
+
+def test_broadcast_consumed_empty_is_none():
+    from devagent.executor import broadcast_consumed
+    scope = ProjectScope(title="t", targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api")])
+    assert broadcast_consumed(scope, ()) is None
+
+
+def test_broadcast_consumed_maps_every_target():
+    from devagent.executor import broadcast_consumed
+    scope = ProjectScope(title="t", targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api"),
+        ArtifactSpec(type="frontend", stack="node-vite-react", name="web")])
+    spec = {"paths": {"/api/todos": {"get": {}}}}
+    m = broadcast_consumed(scope, (spec,))
+    assert m == {"api": [spec], "web": [spec]}
