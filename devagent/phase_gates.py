@@ -10,6 +10,7 @@ from pathlib import Path
 from . import recipes
 from .executor import BuildResult
 from .gates import GateResult
+from .integration import IntegrationReport
 from .schema import find_cycle, Plan, ProjectScope, SystemDesign
 from .verifier import VerifyReport
 
@@ -265,4 +266,24 @@ class ContractConformanceGate:
                         failures.append(f"{sid} {c.id} {chk['route']}: {r.get('detail', 'failed')}")
         if failures:
             return GateResult(False, "; ".join(failures))
+        return GateResult(True)
+
+
+@dataclass
+class IntegrationGate:
+    """Passes iff the cross-service E2E report ran ≥1 step and every step passed (the M17
+    litmus). Mirrors DeployGate — a deterministic verdict over the IntegrationRunner's output."""
+
+    name: str = "integration_e2e"
+
+    def check(self, result) -> GateResult:
+        fail = _precheck(result, IntegrationReport)
+        if fail:
+            return fail
+        rep: IntegrationReport = result.output_artifact
+        if not rep.steps:
+            return GateResult(False, "no integration checks ran")
+        failed = [f"{s['service']} {s['route']}: {s['detail']}" for s in rep.steps if not s["ok"]]
+        if failed:
+            return GateResult(False, f"integration checks failed: {', '.join(failed)}")
         return GateResult(True)
