@@ -17,7 +17,7 @@ def test_build_system_writes_report_and_returns_status(tmp_path, monkeypatch):
     assert reports and json.loads(reports[0].read_text())["status"] == "succeeded"
 
 
-def test_build_system_non_succeeded_report_returns_1(tmp_path, monkeypatch):
+def test_build_system_non_succeeded_report_returns_1(tmp_path, monkeypatch, capsys):
     prd = tmp_path / "prd.md"; prd.write_text("A todo system.")
     from devagent.system_build import SystemReport
     from devagent.tree import NodeResult, FAILED
@@ -28,6 +28,11 @@ def test_build_system_non_succeeded_report_returns_1(tmp_path, monkeypatch):
     monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path / "runs"))
     rc = cli.main(["build-system", str(prd)])
     assert rc == 1
+    reports = list((tmp_path / "runs").rglob("system-report.json"))
+    services = json.loads(reports[0].read_text())["services"]
+    assert services["api"]["status"] == "failed"
+    assert services["api"]["detail"] == "aborted_budget"
+    assert "aborted_budget" in capsys.readouterr().out
 
 
 def test_build_system_report_includes_integration_steps(tmp_path, monkeypatch):
