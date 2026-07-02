@@ -27,6 +27,7 @@ from .phases.plan import PlanPhase
 from .phases.scope import ScopePhase
 from .report import write_report
 from .sandbox import NullSandbox
+from .system_build import build_system, make_run_node, make_bring_up
 from .verifier import BuildVerifier
 
 
@@ -81,6 +82,29 @@ def _eval(args) -> int:
     return 0
 
 
+def _build_system(args) -> int:
+    if not Path(args.input).is_file():
+        print(f"error: input file not found: {args.input}", file=sys.stderr)
+        return 2
+    cfg = Config.load()
+    run_id = _new_run_id()
+    run_dir = cfg.runs_dir / run_id
+    ledger = Ledger(run_dir)
+    budget = Budget(cfg.max_tokens, cfg.max_seconds, cfg.max_retries, max_cost_usd=cfg.max_cost_usd)
+    report = build_system(
+        args.input, budget=budget, ledger=ledger,
+        run_node=make_run_node(run_dir, budget, ledger),
+        bring_up=make_bring_up(run_dir))
+    (run_dir / "system-report.json").write_text(json.dumps({
+        "title": report.title, "status": report.status, "build_ok": report.build_ok,
+        "services": {k: v.status for k, v in report.node_results.items()},
+    }, indent=2))
+    print(f"{run_id} {report.status}")
+    print(f"  -> services: " + ", ".join(f"{k}={v.status}" for k, v in report.node_results.items()))
+    print(f"  -> report: {run_dir / 'system-report.json'}")
+    return 0 if report.status == "succeeded" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="devagent")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -94,10 +118,16 @@ def main(argv: list[str] | None = None) -> int:
     eval_p.add_argument("corpus", help="path to a corpus manifest (JSON)")
     eval_p.add_argument("--id", default=None, help="eval id / resume dir name (default: timestamped)")
 
+    bs_p = sub.add_parser("build-system", help="M20: design + build a multi-service system from a PRD")
+    bs_p.add_argument("input", help="path to a PRD/requirement file")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "eval":
         return _eval(args)
+
+    if args.cmd == "build-system":
+        return _build_system(args)
 
     if not Path(args.input).is_file():
         print(f"error: input file not found: {args.input}", file=sys.stderr)
