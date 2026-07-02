@@ -25,16 +25,14 @@ def _design():
 def test_passes_when_provided_contract_conforms():
     gate = ContractConformanceGate(
         design=_design(), base_urls={"api": "http://x"},
-        check_route_status=lambda *a, **k: {"ok": True},
-        check_api_json=lambda *a, **k: {"ok": True})
+        check_route_status=lambda *a, **k: {"ok": True})
     assert gate.check(_result()).ok
 
 
 def test_fails_when_a_contract_route_missing():
     gate = ContractConformanceGate(
         design=_design(), base_urls={"api": "http://x"},
-        check_route_status=lambda *a, **k: {"ok": False, "detail": "404"},
-        check_api_json=lambda *a, **k: {"ok": True})
+        check_route_status=lambda *a, **k: {"ok": False, "detail": "404"})
     r = gate.check(_result())
     assert not r.ok and "/api/todos" in r.reason
 
@@ -42,8 +40,7 @@ def test_fails_when_a_contract_route_missing():
 def test_fails_when_producer_has_no_base_url():
     gate = ContractConformanceGate(
         design=_design(), base_urls={},
-        check_route_status=lambda *a, **k: {"ok": True},
-        check_api_json=lambda *a, **k: {"ok": True})
+        check_route_status=lambda *a, **k: {"ok": True})
     assert not gate.check(_result()).ok
 
 

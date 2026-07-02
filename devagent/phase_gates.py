@@ -236,17 +236,15 @@ class ContractConformanceGate:
     design: SystemDesign
     base_urls: dict                         # service_id -> base_url of the running service
     check_route_status: object = None       # injectable; defaults to acceptance_runner's
-    check_api_json: object = None
     name: str = "contract_conformance"
 
     def check(self, result) -> GateResult:
         fail = _precheck(result, VerifyReport)
         if fail:
             return fail
-        from .acceptance_runner import check_api_json as _caj, check_route_status as _crs
+        from .acceptance_runner import check_route_status as _crs
         from .contract_utils import openapi_to_checks
         crs = self.check_route_status or _crs
-        caj = self.check_api_json or _caj
         provided: dict = {}
         for c in self.design.contracts:
             if c.kind == "openapi":

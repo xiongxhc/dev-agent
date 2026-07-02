@@ -1,8 +1,8 @@
 """M17 — cross-service integration verification. IntegrationRunner sequences a SystemDesign's
 declared E2E flows against a {service -> base_url} map (each step addresses a named service, so
-a flow can span services: frontend -> api -> db). The HTTP caller is injectable (tests pass a
-fake); the default reuses acceptance_runner's check_api_json. Actual container bring-up that
-supplies base_urls is deferred (needs Docker) and reuses the verifier's per-run-network pattern."""
+a flow can span services: frontend -> api -> db). Both HTTP callers are injectable (tests pass
+fakes); the defaults reuse acceptance_runner. Actual container bring-up that supplies base_urls
+is deferred (needs Docker) and reuses the verifier's per-run-network pattern."""
 
 from dataclasses import dataclass, field
 
@@ -21,13 +21,22 @@ class IntegrationReport:
 
 
 class IntegrationRunner:
-    def __init__(self, check_fn=None):
-        self.check_fn = check_fn      # (base_url, route, method, body, json_path, json_equals) -> {"ok",...}
+    """Sequences a SystemDesign's declared E2E flows against a {service -> base_url} map. A
+    check WITH a json_path is a JSON assertion (check_api_json); a check WITHOUT one asserts the
+    route simply responds with its expected_status (check_route_status) — so a non-JSON route
+    (an HTML frontend at '/') passes. Both HTTP callers are injectable (tests pass fakes); the
+    defaults reuse acceptance_runner. Container bring-up that supplies base_urls is deferred."""
+
+    def __init__(self, route_status_fn=None, api_json_fn=None):
+        self.route_status_fn = route_status_fn   # (base_url, route, expected_status) -> {"ok",...}
+        self.api_json_fn = api_json_fn           # (base_url, route, method, body, json_path, json_equals) -> {"ok",...}
 
     def run(self, checks: list[IntegrationCheck], base_urls: dict) -> IntegrationReport:
-        fn = self.check_fn
-        if fn is None:
-            from .acceptance_runner import check_api_json as fn  # noqa: F811
+        rs, aj = self.route_status_fn, self.api_json_fn
+        if rs is None or aj is None:
+            from .acceptance_runner import check_api_json, check_route_status
+            rs = rs or check_route_status
+            aj = aj or check_api_json
         steps = []
         for c in checks:
             base = base_urls.get(c.service)
@@ -35,7 +44,10 @@ class IntegrationRunner:
                 steps.append({"service": c.service, "route": c.route, "ok": False,
                               "detail": f"no base_url for service {c.service!r}"})
                 continue
-            r = fn(base, c.route, c.method, c.body, c.json_path, c.json_equals)
+            if c.json_path is not None:
+                r = aj(base, c.route, c.method, c.body, c.json_path, c.json_equals)
+            else:
+                r = rs(base, c.route, c.expected_status)
             steps.append({"service": c.service, "route": c.route,
                           "ok": bool(r.get("ok")), "detail": r.get("detail", "")})
         return IntegrationReport(steps=steps)
