@@ -15,6 +15,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -105,13 +106,17 @@ def _wait_service_ready(container: str, ready_cmd, timeout_s: float) -> bool:
     return False
 
 
-def start_service(target, image: str = DEFAULT_IMAGE, network: str | None = None) -> str | None:
+def start_service(target, image: str = DEFAULT_IMAGE, network: str | None = None,
+                  alias: str | None = None, container_name: str | None = None) -> str | None:
     """Start a datastore sibling container for preview; return its container name or None.
-    A named volume at the engine's data dir makes the data survive `docker restart`."""
+    A named volume at the engine's data dir makes the data survive `docker restart`.
+    alias/container_name (M21) let system bring-up namespace intra-node datastores per
+    service node; defaults preserve the single-run preview naming."""
     from .recipes import get as get_recipe
 
     svc = get_recipe(target.stack).service
-    container_name = f"devagent-preview-{target.name}"
+    container_name = container_name or f"devagent-preview-{target.name}"
+    alias = alias or target.name
     vol = f"{container_name}-data"
     env_flags = []
     for k, v in svc.env:
@@ -123,7 +128,7 @@ def start_service(target, image: str = DEFAULT_IMAGE, network: str | None = None
     subprocess.run(["docker", "volume", "rm", vol], capture_output=True, text=True)
     argv = ["docker", "run", "-d", "--restart", "unless-stopped", "--name", container_name]
     if network:
-        argv += ["--network", network, "--network-alias", target.name]
+        argv += ["--network", network, "--network-alias", alias]
     argv += [*env_flags, "-v", f"{vol}:{svc.volume_path}", svc.image]
     proc = subprocess.run(argv, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -134,7 +139,8 @@ def start_service(target, image: str = DEFAULT_IMAGE, network: str | None = None
 
 
 def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE,
-                 network: str | None = None, env: dict | None = None) -> str | None:
+                 network: str | None = None, env: dict | None = None,
+                 alias: str | None = None, container_name: str | None = None) -> str | None:
     """Start one target for local preview; return its URL or None on failure.
 
     Backend targets (recipe has a BootSpec) run detached via `docker run -d` on a free host
@@ -147,7 +153,8 @@ def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE,
     out = Path(out_dir).resolve()
     recipe = get_recipe(target.stack)
     boot = recipe.boot
-    container_name = f"devagent-preview-{target.name}"
+    container_name = container_name or f"devagent-preview-{target.name}"
+    alias = alias or target.name
 
     if boot is not None:
         # --- backend: run the built service detached ---
@@ -157,7 +164,7 @@ def start_target(out_dir: str, target, image: str = DEFAULT_IMAGE,
         env_flags = []
         for k, v in (env or {}).items():
             env_flags += ["-e", f"{k}={v}"]
-        net_flags = ["--network", network, "--network-alias", target.name] if network else []
+        net_flags = ["--network", network, "--network-alias", alias] if network else []
         argv = [
             "docker", "run", "-d", "--restart", "unless-stopped", "--name", container_name,
             "-p", f"{host_port}:{boot.port}",
@@ -235,3 +242,104 @@ class DeployGate:
         if not _probe(art.url):
             return GateResult(False, f"preview did not return 200: {art.url}")
         return GateResult(True)
+
+
+@dataclass
+class WiredTargets:
+    urls: dict            # target name -> URL
+    health_paths: dict    # target name -> health path
+    services: dict        # datastore target name -> container name
+    containers: list      # every container started, in start order (caller-side teardown)
+    failed: list          # target names that failed to start
+    primary_url: str      # frontend-first primary entry point ("" if none)
+
+
+def wire_targets(targets, workdir, *, network=None, alias_prefix="", extra_env=None,
+                 frontend_api_base=None, start_target_fn=None, start_service_fn=None) -> WiredTargets:
+    """One service's target set -> running, wired containers (M21: extracted from DeployPhase
+    so system bring-up reuses the exact intra-scope wiring: datastores first, conn-env
+    injection for backends, frontend dist/config.json -> apiBase).
+
+    alias_prefix namespaces container names + network aliases (and the conn-URL hosts, which
+    must match the aliases) so two nodes' same-named internal targets can't collide on a
+    shared network; with the default "" every call is byte-identical to the pre-M21
+    DeployPhase loop. extra_env seeds each backend's env (a target's own detail wiring wins).
+    frontend_api_base supplies apiBase when this scope has no internal backend."""
+    from .recipes import get as get_recipe
+
+    st = start_target_fn or start_target
+    ss = start_service_fn or start_service
+
+    datastores = [t for t in targets if get_recipe(t.stack).kind == "service"]
+    backends = [t for t in targets
+                if get_recipe(t.stack).kind == "build" and t.type != "frontend"]
+    frontends = [t for t in targets if t.type == "frontend"]
+
+    urls: dict = {}
+    health_paths: dict = {}
+    services: dict = {}
+    containers: list = []
+    failed: list = []
+
+    def _naming(t):
+        # Pass the namespacing kwargs only when actually namespacing, so prefix="" callers
+        # (DeployPhase, pre-M21 test fakes) see the exact legacy call shapes.
+        if not alias_prefix:
+            return {}
+        return {"alias": f"{alias_prefix}{t.name}",
+                "container_name": f"devagent-preview-{alias_prefix}{t.name}"}
+
+    # 1. datastores first
+    for t in datastores:
+        cname = ss(t, network=network, **_naming(t))
+        if cname:
+            services[t.name] = cname
+            containers.append(cname)
+        else:
+            failed.append(t.name)
+
+    # 2. backends — seed extra_env, then the target's own declared datastore wiring wins
+    svc_recipe = {t.name: get_recipe(t.stack).service for t in datastores}
+    for t in backends:
+        env: dict = dict(extra_env or {})
+        ds = (t.detail or {}).get("datastore")
+        if ds and ds in svc_recipe:
+            conn_env = (t.detail or {}).get("conn_env", "DATABASE_URL")
+            env[conn_env] = svc_recipe[ds].conn_url_template.format(
+                host=f"{alias_prefix}{ds}", port=svc_recipe[ds].port)
+        url = st(workdir, t, network=network, env=env or None, **_naming(t))
+        if url:
+            urls[t.name] = url
+            recipe = get_recipe(t.stack)
+            health_paths[t.name] = recipe.boot.health_path if recipe.boot else "/"
+            containers.append(f"devagent-preview-{alias_prefix}{t.name}")
+        else:
+            failed.append(t.name)
+
+    # 3. frontends — wired via dist/config.json to the first backend (or the caller's apiBase)
+    backend_url = next(iter(urls.values()), "") if urls else (frontend_api_base or "")
+    for t in frontends:
+        if backend_url:
+            dist_dir = Path(workdir) / t.name / "dist"
+            if dist_dir.exists():
+                (dist_dir / "config.json").write_text(
+                    json.dumps({"apiBase": backend_url}), encoding="utf-8")
+            else:
+                print(f"warning: frontend {t.name} has no dist/ — skipping config.json "
+                      "(apiBase wiring lost)", file=sys.stderr)
+        url = st(workdir, t, **_naming(t))
+        if url:
+            urls[t.name] = url
+            health_paths[t.name] = "/"
+            containers.append(f"devagent-preview-{alias_prefix}{t.name}")
+        else:
+            failed.append(t.name)
+
+    primary_url = ""
+    for t in frontends + backends:
+        if t.name in urls:
+            primary_url = urls[t.name]
+            break
+
+    return WiredTargets(urls=urls, health_paths=health_paths, services=services,
+                        containers=containers, failed=failed, primary_url=primary_url)

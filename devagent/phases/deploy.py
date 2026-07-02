@@ -12,10 +12,6 @@ M7 extension: when datastores are present, they start first (start_service), a s
 is created, backends join the network and receive conn-env (DATABASE_URL etc.), then frontends
 are wired via /config.json as before."""
 
-import json
-import sys
-from pathlib import Path
-
 from .. import deploy
 from .. import recipes as recipes_mod
 from .base import PhaseContext, PhaseResult
@@ -42,15 +38,6 @@ class DeployPhase:
 
         targets = list(scope.targets)
         datastores = [t for t in targets if recipes_mod.get(t.stack).kind == "service"]
-        backends = [t for t in targets
-                    if recipes_mod.get(t.stack).kind == "build" and t.type != "frontend"]
-        frontends = [t for t in targets if t.type == "frontend"]
-
-        urls: dict[str, str] = {}
-        health_paths: dict[str, str] = {}
-        services: dict[str, str] = {}
-        failed: list[str] = []
-
         network = None
         if datastores:
             network = PREVIEW_NETWORK
@@ -58,59 +45,15 @@ class DeployPhase:
             # Reclaim orphaned preview datastore volumes from dropped/renamed targets (design §6).
             deploy.sweep_preview_volumes({t.name for t in datastores})
 
-        # 1. datastores first
-        for t in datastores:
-            cname = self.start_service(t, network=network)
-            if cname:
-                services[t.name] = cname
-            else:
-                failed.append(t.name)
+        wired = deploy.wire_targets(targets, self.workdir, network=network,
+                                    start_target_fn=self.start_target,
+                                    start_service_fn=self.start_service)
 
-        # 2. backends — inject the resolved connection URL for any declared datastore
-        svc_recipe = {t.name: recipes_mod.get(t.stack).service for t in datastores}
-        for t in backends:
-            env: dict = {}
-            ds = (t.detail or {}).get("datastore")
-            if ds and ds in svc_recipe:
-                conn_env = (t.detail or {}).get("conn_env", "DATABASE_URL")
-                env[conn_env] = svc_recipe[ds].conn_url_template.format(
-                    host=ds, port=svc_recipe[ds].port)
-            url = self.start_target(self.workdir, t, network=network, env=env or None)
-            if url:
-                urls[t.name] = url
-                recipe = recipes_mod.get(t.stack)
-                health_paths[t.name] = recipe.boot.health_path if recipe.boot else "/"
-            else:
-                failed.append(t.name)
-
-        # 3. frontends — wired to the first backend via /config.json (unchanged)
-        backend_url = next(iter(urls.values()), "") if urls else ""
-        for t in frontends:
-            if backend_url:
-                dist_dir = Path(self.workdir) / t.name / "dist"
-                if dist_dir.exists():
-                    (dist_dir / "config.json").write_text(
-                        json.dumps({"apiBase": backend_url}), encoding="utf-8")
-                else:
-                    print(f"warning: frontend {t.name} has no dist/ — skipping config.json "
-                          "(apiBase wiring lost)", file=sys.stderr)
-            url = self.start_target(self.workdir, t)
-            if url:
-                urls[t.name] = url
-                health_paths[t.name] = "/"
-            else:
-                failed.append(t.name)
-
-        primary_url = ""
-        for t in frontends + backends:
-            if t.name in urls:
-                primary_url = urls[t.name]
-                break
-
-        result = deploy.DeployResult(url=primary_url, urls=urls, health_paths=health_paths,
-                                     services=services)
-        all_ok = not failed and bool(urls)
-        output = primary_url if all_ok else f"deploy failed for: {', '.join(failed)}"
+        result = deploy.DeployResult(url=wired.primary_url, urls=wired.urls,
+                                     health_paths=wired.health_paths, services=wired.services)
+        all_ok = not wired.failed and bool(wired.urls)
+        output = wired.primary_url if all_ok else f"deploy failed for: {', '.join(wired.failed)}"
         return PhaseResult(name=self.name, exit_code=0 if all_ok else 1, output=output,
-                           meta={"url": primary_url, "urls": urls, "services": services},
+                           meta={"url": wired.primary_url, "urls": wired.urls,
+                                 "services": wired.services},
                            output_artifact=result)
