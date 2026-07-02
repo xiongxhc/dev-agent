@@ -4,6 +4,7 @@ service; bring the services up) are injected callables so the orchestration is u
 without Docker/tokens; the defaults do the real thing. Nothing in M14-M17 is modified."""
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from .tree import NodeResult, SUCCEEDED, FAILED, topo_order
@@ -108,3 +109,52 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
         return base_urls, teardown
 
     return bring_up
+
+
+@dataclass
+class SystemReport:
+    title: str
+    node_results: dict           # node_id -> NodeResult
+    build_ok: bool
+    integration: object          # IntegrationReport | None
+    status: str                  # design_failed | build_failed | integration_failed | succeeded
+
+
+def build_system(prd_path, *, budget, ledger, run_node, bring_up,
+                 architect=None, integration_runner=None) -> SystemReport:
+    """Deterministic system-build orchestration. `run_node`, `bring_up`, `architect`, and
+    `integration_runner` are injected (defaults do the real thing) so this is unit-testable
+    without Docker/tokens."""
+    from .tree import TreeOrchestrator
+    from .integration import IntegrationRunner
+    from .phase_gates import ArchitectGate, IntegrationGate
+    from .phases.base import PhaseContext, PhaseResult
+
+    # Architect -> SystemDesign, gated.
+    if architect is None:
+        from .phases.architect import ArchitectPhase
+        ctx = PhaseContext(sandbox=None, budget=budget, ledger=ledger)
+        res = ArchitectPhase(prd_path).run(ctx)
+        design = res.output_artifact
+        if not ArchitectGate().check(res).ok:
+            return SystemReport(getattr(design, "title", "?"), {}, False, None, "design_failed")
+    else:
+        design = architect(prd_path)
+
+    # Build every service (M15).
+    sysres = TreeOrchestrator(run_node=run_node, ledger=ledger).run(design)
+    build_ok = sysres.status == "succeeded"
+    if not build_ok:
+        return SystemReport(design.title, sysres.results, False, None, "build_failed")
+
+    # Bring up + cross-service E2E (M17), teardown always.
+    base_urls, teardown = bring_up(design)
+    try:
+        runner = integration_runner or IntegrationRunner().run
+        report = runner(design.integration_checks, base_urls)
+        ok = IntegrationGate().check(
+            PhaseResult(name="integration", exit_code=0, output_artifact=report)).ok
+    finally:
+        teardown()
+    return SystemReport(design.title, sysres.results, True, report,
+                        "succeeded" if ok else "integration_failed")
