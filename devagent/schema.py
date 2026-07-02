@@ -242,3 +242,31 @@ class SystemDesign(BaseModel):
                 if cid not in cids:
                     raise ValueError(f"service {s.id!r} consumes unknown contract {cid!r}")
         return self
+
+    @model_validator(mode="after")
+    def _acyclic_and_consumes_resolve(self):
+        provides_by = {s.id: set(s.provides) for s in self.services}
+        for s in self.services:
+            deps_provide = set().union(*(provides_by[d] for d in s.depends_on)) \
+                if s.depends_on else set()
+            for cid in s.consumes:
+                if cid not in deps_provide:
+                    raise ValueError(
+                        f"service {s.id!r} consumes contract {cid!r} but no service in its "
+                        f"`depends_on` provides it")
+        graph = {s.id: list(s.depends_on) for s in self.services}
+        color = {sid: 0 for sid in graph}  # 0=unvisited, 1=in-progress, 2=done
+
+        def visit(n):
+            color[n] = 1
+            for m in graph[n]:
+                if color[m] == 1:
+                    raise ValueError(f"dependency cycle through service {m!r}")
+                if color[m] == 0:
+                    visit(m)
+            color[n] = 2
+
+        for sid in graph:
+            if color[sid] == 0:
+                visit(sid)
+        return self

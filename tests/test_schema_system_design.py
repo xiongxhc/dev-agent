@@ -74,3 +74,31 @@ def test_rejects_consumes_of_unknown_contract():
         SystemDesign(title="t",
             services=[ServiceNode(id="web", name="web", kind="frontend",
                                   stack="node-vite-react", prd_slice="x", consumes=["ghost"])])
+
+
+def test_rejects_consume_not_provided_by_a_dependency():
+    # web consumes api.openapi but does NOT depend_on api -> unresolved
+    with pytest.raises(ValidationError):
+        SystemDesign(title="t",
+            services=[
+                ServiceNode(id="api", name="api", kind="backend", stack="node-express",
+                            prd_slice="x", provides=["api.openapi"]),
+                ServiceNode(id="web", name="web", kind="frontend", stack="node-vite-react",
+                            prd_slice="y", consumes=["api.openapi"]),  # no depends_on=["api"]
+            ],
+            contracts=[Contract(id="api.openapi", kind="openapi", producer="api")])
+
+
+def test_rejects_dependency_cycle():
+    with pytest.raises(ValidationError):
+        SystemDesign(title="t", services=[
+            ServiceNode(id="a", name="a", kind="backend", stack="node-express",
+                        prd_slice="x", depends_on=["b"]),
+            ServiceNode(id="b", name="b", kind="backend", stack="node-express",
+                        prd_slice="y", depends_on=["a"]),
+        ])
+
+
+def test_valid_consumer_producer_with_dependency_passes():
+    d = _api_web_design()  # web depends_on api AND consumes api.openapi -> resolves
+    assert "api" in d.services[1].depends_on
