@@ -565,6 +565,12 @@ Remaining follow-ups (non-blocking, tracked):
   - **M19** — **Mutable contracts (→ C).** Versioned `SystemDesign`; a sub-build renegotiates,
     the orchestrator re-plans affected nodes. Unlocks robust brownfield (M9).
 
+- **M20** ✅ — **system-build wiring.** `devagent build-system <prd.md>` runs end-to-end:
+  Architect → per-service sub-builds (M15 tree, one shared Budget) → docker bring-up on a
+  per-run `devagent-sys-<run_id>` network → cross-service E2E (M17) →
+  `runs/<id>/system-report.json`, with teardown on every path (including exceptions). Design:
+  [2026-07-02](../docs/planning/specs/2026-07-02-dev-agent-system-build-wiring-design.md).
+
 - **M21** ✅ — system-build live path: datastore nodes from recipe images (no LLM build),
   deploy-less sub-runs (no preview collisions), consumed-contract injection into sub-builds,
   bring-up wired from each sub-run's scope.json via the extracted `deploy.wire_targets`

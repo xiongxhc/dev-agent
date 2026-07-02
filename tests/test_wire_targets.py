@@ -1,7 +1,7 @@
 import json
 
 from devagent.deploy import wire_targets
-from devagent.schema import ArtifactSpec, ProjectScope
+from devagent.schema import ArtifactSpec
 
 
 def _targets():

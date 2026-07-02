@@ -10,7 +10,10 @@ frontend's URL (or first URL if no frontend) as the primary entry point.
 
 M7 extension: when datastores are present, they start first (start_service), a shared network
 is created, backends join the network and receive conn-env (DATABASE_URL etc.), then frontends
-are wired via /config.json as before."""
+are wired via /config.json as before.
+
+M21: the wiring loop itself moved to deploy.wire_targets (reused by system bring-up); this
+phase delegates to it and maps the WiredTargets into DeployResult/PhaseResult."""
 
 from .. import deploy
 from .. import recipes as recipes_mod
