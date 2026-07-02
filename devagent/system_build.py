@@ -3,7 +3,6 @@ multi-container bring-up -> cross-service E2E (M17). The two side-effecting piec
 service; bring the services up) are injected callables so the orchestration is unit-testable
 without Docker/tokens; the defaults do the real thing. Nothing in M14-M17 is modified."""
 
-import os
 from pathlib import Path
 
 from .tree import NodeResult, SUCCEEDED, FAILED

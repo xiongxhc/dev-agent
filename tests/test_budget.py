@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from devagent.budget import Budget, BudgetExceeded
@@ -71,3 +73,22 @@ def test_budget_is_shared_accumulates_across_calls():
     b.add_tokens(100)
     with pytest.raises(BudgetExceeded):
         b.add_tokens(150)
+
+
+def test_add_tokens_is_thread_safe_under_concurrent_sub_builds():
+    # M20: one Budget is shared across concurrent per-service sub-builds; concurrent
+    # add_tokens calls must not race and under-count spend.
+    n_threads, adds_per_thread = 8, 1000
+    b = make_budget(max_tokens=n_threads * adds_per_thread * 10)  # high ceiling, no raises
+
+    def worker():
+        for _ in range(adds_per_thread):
+            b.add_tokens(1)
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert b.tokens == n_threads * adds_per_thread

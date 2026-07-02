@@ -1,6 +1,7 @@
 """Token + wall-clock + retry accounting. Hard ceilings, raised in code — never
 prompt-enforced. One Budget instance is shared across all phases of a run."""
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -23,23 +24,29 @@ class Budget:
     retries: int = 0
     cost_usd: float = 0.0
     started_at: float = field(default=None)
+    _lock: threading.Lock = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if self.started_at is None:
             self.started_at = self.clock()
+        # M20: one Budget is shared across concurrent per-service sub-builds; guard mutations.
+        self._lock = threading.Lock()
 
     def add_tokens(self, n: int) -> None:
-        self.tokens += n
-        self.check()
+        with self._lock:
+            self.tokens += n
+            self.check()
 
     def spend_retry(self) -> None:
-        self.retries += 1
-        self.check()
+        with self._lock:
+            self.retries += 1
+            self.check()
 
     def add_cost(self, usd: float | None) -> None:
-        if usd:
-            self.cost_usd += usd
-        self.check()
+        with self._lock:
+            if usd:
+                self.cost_usd += usd
+            self.check()
 
     def tick(self) -> None:
         """Re-check time/retry/token ceilings without changing anything."""
