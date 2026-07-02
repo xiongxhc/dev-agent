@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .tree import NodeResult, SUCCEEDED, FAILED, topo_order
+from . import recipes
 
 # egress.ensure() is an unlocked check-then-act on the shared devagent-proxy container;
 # serialize it across concurrent per-service build worker threads.
@@ -27,6 +28,11 @@ def make_run_node(run_dir, budget, ledger, build_service=None):
         svc_dir = run_dir / "services" / node.name
         svc_dir.mkdir(parents=True, exist_ok=True)
         (svc_dir / "prd.md").write_text(node.prd_slice)
+        if recipes.get(node.stack).kind == "service":
+            # Datastore-style nodes have no buildable artifact — bring-up starts them straight
+            # from the recipe image. ArchitectGate already guarantees the stack is registered.
+            return NodeResult(node.id, SUCCEEDED,
+                              "service node: started from recipe image at bring-up")
         try:
             status = bs(node, design, str(svc_dir), budget, ledger)
         except Exception as e:  # a sub-run crash is a node failure, not a system-build crash
@@ -107,7 +113,7 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
             for sid in topo_order(design):
                 node = by_id[sid]
                 out_dir = str(run_dir / "services" / node.name / "out")
-                if node.kind in ("datastore", "service"):
+                if recipes.get(node.stack).kind == "service":
                     container = ss(node, network=net)      # datastore: no base_url exposed
                     if container:
                         started.append(container)

@@ -38,6 +38,20 @@ def test_run_node_exception_becomes_failed(tmp_path):
     assert res.status == FAILED and "kaboom" in res.detail
 
 
+def test_run_node_service_kind_skips_build(tmp_path):
+    calls = []
+    def fake_build_service(node, design, svc_dir, budget, ledger):
+        calls.append(node.id)
+        return "succeeded"
+    d = SystemDesign(title="t", services=[
+        ServiceNode(id="db", name="db", kind="datastore", stack="postgres", prd_slice="a db")])
+    rn = make_run_node(tmp_path, budget=object(), ledger=None, build_service=fake_build_service)
+    res = rn(d.services[0], d)
+    assert res.status == SUCCEEDED and calls == []
+    assert "recipe image" in res.detail
+    assert (tmp_path / "services" / "db" / "prd.md").read_text() == "a db"
+
+
 def test_real_build_service_deployless_and_contract_injected(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from devagent import cli, orchestrator, system_build
