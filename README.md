@@ -530,3 +530,26 @@ Remaining follow-ups (non-blocking, tracked):
     docker-in-docker on shared runners).
   - **Not needed until the team actually gets it** — captured now so the managed arm, per-user
     scoping, and the M5 baseline are lined up before rollout, not scrambled for after.
+- **M14–M19** ⬜ — **Long-horizon multi-service builder** (design
+  [2026-07-02](../docs/planning/specs/2026-07-02-dev-agent-long-horizon-builder-design.md)).
+  One PRD → dev-agent **designs the services itself** and builds a whole system over a
+  long-horizon (hours→days) autonomous run — **N bounded sub-builds under a durable
+  architecture**, not one flat mega-build (budget was never the blocker; flat plans lose
+  coherence long before tokens run out). Recursive-pipeline spine (**A**) shaped so mutable
+  contracts (**C**) is additive; autonomous with hard self-verification gates now →
+  fully-autonomous report-at-end as the north star. Depends on **M7** (durable repo
+  accretion); composes with **M9** (brownfield reuses M19's contract renegotiation).
+  - **M14** — **Architect phase.** PRD → `SystemDesign` (service DAG + **frozen** contracts +
+    data model + auth model), gated (`ArchitectGate`: schema-valid, acyclic, contracts resolve).
+  - **M15** — **Recursive orchestrator.** Flat `list[Phase]` → **tree**; each service node runs
+    the existing `scope→plan→build→verify` pipeline as an isolated sub-run (per-node budget,
+    dependency ordering, sibling concurrency — M12's parallelism lifted to service granularity).
+  - **M16** — **Contract injection + conformance.** Freeze OpenAPI/DB-schema/auth-token, inject
+    read-only into each sub-build; `ContractConformanceGate` (the frozen→mutable seam:
+    fail-stop in A, `ContractChangeRequest` in M19/C).
+  - **M17** — **Integration verification** *(the litmus)*. Generated `docker-compose.yml`; bring
+    the 3–5 services up together; cross-service E2E gate (frontend → real API → real DB → auth).
+  - **M18** — **Checkpoint/resume + cost governance.** Durable tree state (reuse the M5 eval
+    resume pattern); resume a days-long run after crash; global run envelope.
+  - **M19** — **Mutable contracts (→ C).** Versioned `SystemDesign`; a sub-build renegotiates,
+    the orchestrator re-plans affected nodes. Unlocks robust brownfield (M9).
