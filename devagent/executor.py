@@ -53,9 +53,12 @@ class Executor(Protocol):
     def build(self, req: BuildRequest) -> BuildResult: ...
 
 
-def enrich_scope(scope) -> dict:
+def enrich_scope(scope, consumed_by_target: dict | None = None) -> dict:
     """Bake recipe-derived fields into a JSON-serializable scope dict that the in-container
-    build prompt + acceptance runner consume (they stay registry-free)."""
+    build prompt + acceptance runner consume (they stay registry-free). `consumed_by_target`
+    (M16) maps a target name -> list of consumed contract-spec dicts, injected read-only into
+    that target's build prompt; absent/empty means no cross-service contracts (default)."""
+    consumed_by_target = consumed_by_target or {}
     targets = []
     for t in scope.targets:
         r = recipes.get(t.stack)
@@ -75,5 +78,6 @@ def enrich_scope(scope) -> dict:
             "artifact_glob": r.artifact_glob,
             "_boot": boot,
             "_static_dir": static_dir,
+            "_consumed_contracts": consumed_by_target.get(t.name, []),
         })
     return {"title": scope.title, "targets": targets}

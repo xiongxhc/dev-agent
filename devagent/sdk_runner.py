@@ -79,6 +79,11 @@ def build_prompt(scope: dict, plan: dict) -> str:
             lines.append("This target is VERIFIED by these machine checks — build to satisfy them EXACTLY "
                          "(same routes, methods, and JSON shapes):")
             lines.append(json.dumps(t["acceptance_checks"], indent=2))
+        if t.get("_consumed_contracts"):
+            lines.append(
+                "CONSUMED CONTRACTS (read-only — this service calls other services; build against "
+                "these interfaces EXACTLY, do not redefine them):")
+            lines.append(json.dumps(t["_consumed_contracts"], indent=2))
         if t.get("auth"):
             lines.append(_auth_contract_line(t["auth"]))
         actors = t.get("actors") or []
