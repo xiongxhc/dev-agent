@@ -102,3 +102,10 @@ def test_rejects_dependency_cycle():
 def test_valid_consumer_producer_with_dependency_passes():
     d = _api_web_design()  # web depends_on api AND consumes api.openapi -> resolves
     assert "api" in d.services[1].depends_on
+
+
+def test_rejects_self_dependency_cycle():
+    with pytest.raises(ValidationError):
+        SystemDesign(title="t",
+            services=[ServiceNode(id="a", name="a", kind="backend",
+                                  stack="node-express", prd_slice="x", depends_on=["a"])])

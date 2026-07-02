@@ -206,6 +206,33 @@ class ServiceNode(BaseModel):
     consumes: list[str] = Field(default_factory=list)
 
 
+def find_cycle(deps: dict) -> str | None:
+    """Return a service id participating in a dependency cycle, or None if acyclic.
+    Iterative DFS (no recursion-depth limit). `deps` maps each id -> list of its
+    dependency ids; callers must pass a complete map (every referenced id is a key)."""
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {n: WHITE for n in deps}
+    for root in deps:
+        if color[root] != WHITE:
+            continue
+        stack = [(root, iter(deps[root]))]
+        color[root] = GRAY
+        while stack:
+            node, it = stack[-1]
+            nxt = next(it, None)
+            while nxt is not None and color[nxt] == BLACK:
+                nxt = next(it, None)
+            if nxt is None:
+                color[node] = BLACK
+                stack.pop()
+            elif color[nxt] == GRAY:
+                return nxt
+            else:  # WHITE
+                color[nxt] = GRAY
+                stack.append((nxt, iter(deps[nxt])))
+    return None
+
+
 class SystemDesign(BaseModel):
     """The confirmed system architecture the long-horizon builder consumes: a DAG of services
     plus the contracts between them. Emitted once by the Architect phase (M14)."""
@@ -254,19 +281,7 @@ class SystemDesign(BaseModel):
                     raise ValueError(
                         f"service {s.id!r} consumes contract {cid!r} but no service in its "
                         f"`depends_on` provides it")
-        graph = {s.id: list(s.depends_on) for s in self.services}
-        color = {sid: 0 for sid in graph}  # 0=unvisited, 1=in-progress, 2=done
-
-        def visit(n):
-            color[n] = 1
-            for m in graph[n]:
-                if color[m] == 1:
-                    raise ValueError(f"dependency cycle through service {m!r}")
-                if color[m] == 0:
-                    visit(m)
-            color[n] = 2
-
-        for sid in graph:
-            if color[sid] == 0:
-                visit(sid)
+        cyc = find_cycle({s.id: list(s.depends_on) for s in self.services})
+        if cyc is not None:
+            raise ValueError(f"dependency cycle through service {cyc!r}")
         return self

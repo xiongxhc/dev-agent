@@ -10,7 +10,7 @@ from pathlib import Path
 from . import recipes
 from .executor import BuildResult
 from .gates import GateResult
-from .schema import Plan, ProjectScope, SystemDesign
+from .schema import find_cycle, Plan, ProjectScope, SystemDesign
 from .verifier import VerifyReport
 
 
@@ -188,32 +188,30 @@ class ArchitectGate:
         design: SystemDesign = result.output_artifact
         if not design.services:
             return GateResult(False, "system design has no services")
+        sids = [s.id for s in design.services]
+        if len(sids) != len(set(sids)):
+            dup = next(x for x in sids if sids.count(x) > 1)
+            return GateResult(False, f"duplicate service id {dup!r}")
+        cids = [c.id for c in design.contracts]
+        if len(cids) != len(set(cids)):
+            dup = next(x for x in cids if cids.count(x) > 1)
+            return GateResult(False, f"duplicate contract id {dup!r}")
         ids = {s.id for s in design.services}
         for s in design.services:
             for d in s.depends_on:
                 if d not in ids:
                     return GateResult(
                         False, f"service {s.id!r} depends_on unknown service {d!r}")
-        graph = {s.id: list(s.depends_on) for s in design.services}
-        color = {sid: 0 for sid in graph}
-
-        def visit(n):
-            color[n] = 1
-            for m in graph[n]:
-                if color[m] == 1:
-                    return m
-                if color[m] == 0:
-                    cyc = visit(m)
-                    if cyc:
-                        return cyc
-            color[n] = 2
-            return None
-
-        for sid in graph:
-            if color[sid] == 0:
-                cyc = visit(sid)
-                if cyc:
-                    return GateResult(False, f"dependency cycle through service {cyc!r}")
+        for s in design.services:
+            if not recipes.is_registered(s.stack):
+                return GateResult(False, f"service {s.id!r}: no recipe for stack {s.stack!r}")
+            if recipes.get(s.stack).type != s.kind:
+                return GateResult(False,
+                    f"service {s.id!r}: recipe {s.stack!r} is type "
+                    f"{recipes.get(s.stack).type!r}, not {s.kind!r}")
+        cyc = find_cycle({s.id: list(s.depends_on) for s in design.services})
+        if cyc is not None:
+            return GateResult(False, f"dependency cycle through service {cyc!r}")
         provides_by = {s.id: set(s.provides) for s in design.services}
         for s in design.services:
             deps_provide = set().union(*(provides_by[d] for d in s.depends_on)) \

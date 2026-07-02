@@ -66,3 +66,27 @@ def test_fails_on_unresolved_dependency():
     design = SystemDesign.model_construct(title="t", services=[web], contracts=[], version=1)
     r = ArchitectGate().check(_result(design))
     assert not r.ok and "ghost" in r.reason
+
+
+def test_fails_on_unregistered_stack():
+    svc = ServiceNode(id="api", name="api", kind="backend", stack="totally-fake-stack",
+                      prd_slice="x")
+    design = SystemDesign(title="t", services=[svc])
+    r = ArchitectGate().check(_result(design))
+    assert not r.ok and "recipe" in r.reason.lower()
+
+
+def test_fails_on_kind_recipe_type_mismatch():
+    # node-express is a backend recipe; declaring kind=frontend must fail
+    svc = ServiceNode(id="web", name="web", kind="frontend", stack="node-express",
+                      prd_slice="x")
+    r = ArchitectGate().check(_result(SystemDesign(title="t", services=[svc])))
+    assert not r.ok
+
+
+def test_fails_on_duplicate_service_ids():
+    a = ServiceNode(id="api", name="api1", kind="backend", stack="node-express", prd_slice="x")
+    b = ServiceNode(id="api", name="api2", kind="backend", stack="node-express", prd_slice="y")
+    design = SystemDesign.model_construct(title="t", services=[a, b], contracts=[], version=1)
+    r = ArchitectGate().check(_result(design))
+    assert not r.ok and "duplicate" in r.reason.lower()
