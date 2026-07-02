@@ -29,12 +29,24 @@ def test_contracts_for_node_empty_when_none_consumed():
     assert contracts_for_node(api, d) == []
 
 
-def test_openapi_to_checks_maps_get_and_nonget():
+def test_openapi_to_checks_get_only_non_templated():
     c = Contract(id="c", kind="openapi", producer="api",
-                 spec={"paths": {"/api/todos": {"get": {}, "post": {}}}})
+                 spec={"paths": {"/api/todos": {"get": {}, "post": {}},
+                                 "/api/todos/{id}": {"get": {}},
+                                 "/api/health": {"get": {}, "parameters": []}}})
     checks = openapi_to_checks(c)
-    assert {"kind": "route_status", "route": "/api/todos", "expected_status": 200} in checks
-    assert {"kind": "api_json", "route": "/api/todos", "method": "POST"} in checks
+    routes = {(ch["route"], ch["kind"]) for ch in checks}
+    assert ("/api/todos", "route_status") in routes         # GET kept
+    assert ("/api/health", "route_status") in routes        # GET kept; `parameters` key ignored
+    assert all(ch["kind"] == "route_status" for ch in checks)      # no non-GET, no api_json
+    assert not any(ch["route"] == "/api/todos/{id}" for ch in checks)   # templated skipped
+    assert sum(1 for ch in checks if ch["route"] == "/api/todos") == 1  # POST produced no check
+
+
+def test_openapi_to_checks_guards_non_dict_path_item():
+    c = Contract(id="c", kind="openapi", producer="api",
+                 spec={"paths": {"/x": "not-a-dict", "/y": {"get": {}}}})
+    assert [ch["route"] for ch in openapi_to_checks(c)] == ["/y"]   # non-dict skipped, no crash
 
 
 def test_openapi_to_checks_ignores_non_openapi():

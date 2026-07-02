@@ -258,10 +258,9 @@ class ContractConformanceGate:
                 continue
             for c in contracts:
                 for chk in openapi_to_checks(c):
-                    if chk["kind"] == "route_status":
-                        r = crs(base, chk["route"], chk.get("expected_status", 200))
-                    else:
-                        r = caj(base, chk["route"], chk.get("method", "GET"), None, None, None)
+                    if chk["kind"] != "route_status":
+                        continue  # M16 conformance is GET-only; never issue mutating requests
+                    r = crs(base, chk["route"], chk.get("expected_status", 200))
                     if not r.get("ok"):
                         failures.append(f"{sid} {c.id} {chk['route']}: {r.get('detail', 'failed')}")
         if failures:
