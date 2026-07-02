@@ -3,10 +3,12 @@ multi-container bring-up -> cross-service E2E (M17). The two side-effecting piec
 service; bring the services up) are injected callables so the orchestration is unit-testable
 without Docker/tokens; the defaults do the real thing. Nothing in M14-M17 is modified."""
 
+import json
 import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 from .tree import NodeResult, SUCCEEDED, FAILED, topo_order
 from . import recipes
@@ -76,10 +78,13 @@ def _real_build_service(node, design, svc_dir, budget, ledger) -> str:
 
 
 def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_target=None):
-    """Return bring_up(design) -> (base_urls, teardown). Starts each built service on a fresh
-    per-run docker network (reusing deploy helpers) and collects {service_id -> base_url};
-    teardown() removes every container this call started plus the network. Deploy helpers are
-    injectable for tests."""
+    """Return bring_up(design) -> (base_urls, teardown). Starts each service on a fresh
+    per-run docker network and collects {service_id -> base_url}. Build-kind nodes are driven
+    from the sub-run's persisted out/.devagent/scope.json — the targets ACTUALLY built (scope
+    names are LLM-chosen, not node.name) — wired via deploy.wire_targets exactly as a
+    single-run DeployPhase would, namespaced per node. Service-kind nodes start straight from
+    their recipe image. teardown() removes every started container (+ its data volume) and
+    the network. Deploy helpers are injectable for tests."""
     from . import deploy
     en = ensure_network or deploy.ensure_network
     ss = start_service or deploy.start_service
@@ -94,11 +99,14 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
 
         def teardown():
             # Containers run --restart unless-stopped, so `docker network rm` alone leaves
-            # them attached and fails silently. Remove containers first, then the network.
+            # them attached and fails silently. Remove containers first (plus their per-run
+            # -data volumes, which would otherwise accumulate run over run), then the network.
             # check=False and try/except so this never raises (tests call it without docker).
             for container in started:
                 try:
                     subprocess.run(["docker", "rm", "-f", container],
+                                   capture_output=True, check=False)
+                    subprocess.run(["docker", "volume", "rm", f"{container}-data"],
                                    capture_output=True, check=False)
                 except Exception:
                     pass
@@ -112,18 +120,36 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
         try:
             for sid in topo_order(design):
                 node = by_id[sid]
-                out_dir = str(run_dir / "services" / node.name / "out")
                 if recipes.get(node.stack).kind == "service":
-                    container = ss(node, network=net)      # datastore: no base_url exposed
+                    container = ss(node, network=net)      # design-level datastore: alias node.name
                     if container:
                         started.append(container)
-                else:
-                    url = st(out_dir, node, network=net)
-                    if url:
-                        base_urls[sid] = url
-                        # start_target returns a URL, not the container name — but deploy.py
-                        # names every container it starts devagent-preview-<target.name>.
-                        started.append(f"devagent-preview-{node.name}")
+                    continue
+
+                out_dir = run_dir / "services" / node.name / "out"
+                scope_path = out_dir / ".devagent" / "scope.json"
+                if not scope_path.is_file():
+                    continue        # nothing built -> absent from base_urls -> E2E fails its steps
+                targets = [SimpleNamespace(name=t["name"], type=t["type"], stack=t["stack"],
+                                           detail=t.get("detail") or {})
+                           for t in json.loads(scope_path.read_text())["targets"]]
+
+                deps = [by_id[d] for d in node.depends_on]
+                extra_env = None
+                svc_deps = [d for d in deps if recipes.get(d.stack).kind == "service"]
+                if svc_deps:
+                    dsvc = recipes.get(svc_deps[0].stack).service
+                    extra_env = {"DATABASE_URL": dsvc.conn_url_template.format(
+                        host=svc_deps[0].name, port=dsvc.port)}
+                api_base = next((base_urls[d.id] for d in deps if d.id in base_urls), None)
+
+                wired = deploy.wire_targets(targets, str(out_dir), network=net,
+                                            alias_prefix=f"{node.name}-",
+                                            extra_env=extra_env, frontend_api_base=api_base,
+                                            start_target_fn=st, start_service_fn=ss)
+                started.extend(wired.containers)
+                if wired.primary_url:
+                    base_urls[sid] = wired.primary_url
         except Exception:
             # A mid-loop crash must not leak already-started containers or the per-run network.
             teardown()

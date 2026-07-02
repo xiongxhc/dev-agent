@@ -206,9 +206,14 @@ DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001 python -m devagent.cli run --buil
 
 python -m devagent.cli build-system <prd.md>              # M20: multi-service system from one PRD
 # -> designs a multi-service system from a PRD (Architect -> SystemDesign), builds each
-#    service through the full scope->plan->build->verify->deploy pipeline under one shared
-#    budget, brings every service up together on a per-run docker network, runs cross-service
-#    E2E, and writes runs/<id>/system-report.json
+#    service through the full scope->plan->build->verify pipeline (deploy-less: no preview
+#    containers in sub-runs) under one shared budget, with each service's consumed contracts
+#    injected into its build prompt (M16). Datastore nodes skip the LLM build and start from
+#    their recipe image. Bring-up reads each sub-run's out/.devagent/scope.json, starts the
+#    ACTUAL built targets per node (namespaced devagent-preview-<node>-<target>) on a per-run
+#    network, injects DATABASE_URL from design-level datastore deps, points frontend
+#    config.json at the live api, runs cross-service E2E, writes runs/<id>/system-report.json,
+#    and tears everything down (containers, volumes, network).
 ```
 
 `--build` is opt-in because it requires Docker (the M2 sandbox image) and spends build
@@ -559,6 +564,13 @@ Remaining follow-ups (non-blocking, tracked):
     resume pattern); resume a days-long run after crash; global run envelope.
   - **M19** — **Mutable contracts (→ C).** Versioned `SystemDesign`; a sub-build renegotiates,
     the orchestrator re-plans affected nodes. Unlocks robust brownfield (M9).
+
+- **M21** ✅ — system-build live path: datastore nodes from recipe images (no LLM build),
+  deploy-less sub-runs (no preview collisions), consumed-contract injection into sub-builds,
+  bring-up wired from each sub-run's scope.json via the extracted `deploy.wire_targets`
+  (conn env + frontend apiBase + per-node namespacing). Design:
+  [2026-07-02](../docs/planning/specs/2026-07-02-dev-agent-m21-system-live-path-design.md).
+  Live multi-service run still pending (needs key + Docker).
 
 - **M22** ⬜ — **Eval as change-gate (extends M5 — no scheduled burn).** Two halves: (a) **free
   telemetry** — aggregate pass-rate / retries / cost-per-phase from real run ledgers
