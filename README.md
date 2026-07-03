@@ -81,13 +81,16 @@ Design + research: `../docs/planning/specs/2026-06-22-dev-agent-research-synthes
 
 ### How a request flows end-to-end
 
-A build can be triggered two ways — both land in the **same pipeline**:
+A build can be triggered three ways — the first two land in the **same single-run pipeline**;
+the third runs the **system lane**, which reuses that pipeline once per service:
 
-- **CLI:** `devagent run --build <prd.md>` (the primitive everything else wraps).
-- **Feishu:** drop a PRD into a Feishu chat → a bot triggers a run and **streams live progress
-  back into the chat**. See "Feishu channel" below.
+- **CLI, single run:** `devagent run --build <prd.md>` (the primitive everything else wraps).
+- **Feishu:** drop a PRD into a Feishu chat → a bot triggers a single run and **streams live
+  progress back into the chat**. See "Feishu channel" below.
+- **CLI, system run:** `devagent build-system <prd.md>` (M20/M21) — an Architect designs a
+  multi-service system, each service gets the single-run pipeline as a sub-build.
 
-The whole chain, from a Feishu message to a running preview:
+The single-run chain, from a Feishu message to a running preview:
 
 ```
 Feishu chat  ──@bot / DM (a PRD)──▶  feishu_bot.py            (runs on THIS host; WebSocket
@@ -110,6 +113,25 @@ Feishu chat  ──@bot / DM (a PRD)──▶  feishu_bot.py            (runs on
                                        ▼
                      Feishu chat  ◀── 📋 scope ✓ · 🗂 plan ✓ · 🔨 build ✓ · 🚀 URL · report.html
 ```
+
+The system lane (`devagent build-system <prd.md>`) wraps that same pipeline per service:
+
+```
+PRD ─▶ architect ─▶ SystemDesign (service DAG + contracts) ─▶ [architect gate]
+ ├─ per service, in dependency order (independent siblings concurrent · ONE shared budget):
+ │      scope ─▶ plan ─▶ build ─▶ verify         the same gated pipeline as above, as a sub-run
+ │      (deploy-less: no preview containers;     · consumed contracts injected into the prompt
+ │       datastore nodes skip the LLM build      · each sub-run persists out/.devagent/scope.json
+ │       entirely — recipe image at bring-up)
+ ├─ bring-up of the ACTUAL built targets (read from each sub-run's scope.json):
+ │      per-run docker network devagent-sys-<run_id> · containers devagent-preview-<node>-<target>
+ │      · DATABASE_URL injected from design-level datastore deps · frontend config.json → live api
+ ├─ cross-service E2E over real HTTP ─▶ [integration gate]
+ └─ runs/<id>/system-report.json · teardown ALWAYS (containers + volumes + network, even on failure)
+```
+
+Feishu currently triggers **single runs only** — pasting a system-sized PRD there builds one
+fullstack monorepo, not a service DAG; routing chat PRDs to `build-system` is future wiring.
 
 - **Where it runs — you host the agent, Anthropic hosts the brain.** The split:
   - **Local (Docker on your machine):** the **Claude Agent SDK runtime itself**, all file
