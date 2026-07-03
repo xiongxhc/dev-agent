@@ -34,6 +34,16 @@ Rules:
 - The dependency graph MUST be acyclic.
 - Keep contracts minimal but real: for openapi put paths + request/response shapes in `spec`; for
   db_schema the tables/columns; for auth_token the claims.
+- A service that CONSUMES another service's API must NOT rebuild it. Write its `prd_slice` so the
+  downstream builder knows that API already exists and is supplied at runtime (e.g. a frontend
+  slice says "the API exists — build ONLY the web UI against it"); otherwise the sub-build will
+  scope a duplicate backend of its own.
+- `integration` steps run against a FRESHLY BOOTED, EMPTY system, in order. A step may only
+  assert on data an EARLIER step created — POST with a `body` first, then GET and assert.
+  Health/readiness checks are always fine. The runner cannot carry values between steps, so only
+  reference ids that are deterministic on a fresh database (the first created record is id 1).
+  `json_path` is a plain dotted path into the response body ("ok", "0.question", "items.0.id");
+  array indexes are numeric segments; NEVER JSONPath syntax ($, [*], filters).
 
 REQUIREMENTS:
 {request}

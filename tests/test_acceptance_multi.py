@@ -34,6 +34,19 @@ def test_api_json_presence_and_equals():
         httpd.shutdown()
 
 
+def test_api_json_tolerates_jsonpath_root_prefix():
+    # LLM-emitted checks (the M14 architect's IntegrationChecks) habitually write JSONPath-style
+    # "$.items.0.id"; _dig walks plain dotted paths. The `$`/`$.` root prefix must be ignored,
+    # not treated as a key literally named "$" (live-run finding, 2026-07-03).
+    httpd, base = _serve()
+    try:
+        assert check_api_json(base, "/x", "GET", None, "$.items.0.id", 7)["ok"]
+        assert check_api_json(base, "/x", "GET", None, "$", None)["ok"]                # bare root = whole payload
+        assert not check_api_json(base, "/x", "GET", None, "$.missing", None)["ok"]
+    finally:
+        httpd.shutdown()
+
+
 def test_command_exit_and_stdout(tmp_path):
     r = check_command(str(tmp_path), ["python3", "-c", "print('hello-cli')"], 0, r"hello-")
     assert r["ok"]

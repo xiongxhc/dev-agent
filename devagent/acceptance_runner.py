@@ -67,7 +67,13 @@ def check_selector_present(base_url: str, route: str, selector: str) -> dict:
 
 
 def _dig(obj, dotted: str):
-    """Walk a dotted path ('items.0.id') into nested dicts/lists. Returns (found, value)."""
+    """Walk a dotted path ('items.0.id') into nested dicts/lists. Returns (found, value).
+    A JSONPath-style root prefix ('$.items.0.id', or a bare '$') is tolerated — LLM-emitted
+    checks (the architect's IntegrationChecks) write it habitually — by stripping it first."""
+    if dotted == "$":
+        return True, obj
+    if dotted.startswith("$."):
+        dotted = dotted[2:]
     cur = obj
     for part in dotted.split("."):
         if isinstance(cur, list):
