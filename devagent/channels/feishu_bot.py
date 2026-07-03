@@ -30,6 +30,7 @@ from . import feishu_app
 _ROOT = Path(__file__).resolve().parents[2]          # the dev-agent dir (holds devagent/)
 _MENTION = re.compile(r"@_user_\d+\s*")              # group @mention placeholders to strip
 _POLL_S = 1.0
+_HEARTBEAT_S = 180.0     # progress ping cadence during the long build phase
 # Stable, browsable runs root (override with DEVAGENT_FEISHU_RUNS_DIR). Each build still gets a
 # unique subdir, but under a predictable path so you can `tail -f` the ledger and open the run
 # report — unlike a random system tempdir that's unfindable and OS-cleaned mid-preview.
@@ -47,6 +48,25 @@ def _load_dotenv() -> None:
             continue
         k, _, v = line.partition("=")
         os.environ.setdefault(k.strip(), v.strip())
+
+
+def _build_eta(task_count: int | None) -> str:
+    """Honest band estimate for the build+verify phase, from the plan's task count (the only
+    sizing signal available before the build starts). Bands from observed live runs: a 6-8 task
+    fullstack ≈ 4 min; an auth+roles app (~20 tasks) runs well past 10."""
+    if not task_count:
+        return "typically 5-15 min"
+    if task_count <= 8:
+        return "typically 3-6 min"
+    if task_count <= 15:
+        return "typically 6-12 min"
+    return "typically 12-20 min"
+
+
+def _task_count(ev: dict) -> int | None:
+    """Pull the task count from a plan phase event's '<N> tasks' output."""
+    m = re.match(r"(\d+) tasks", str(ev.get("output", "")))
+    return int(m.group(1)) if m else None
 
 
 def _format_event(ev: dict) -> str | None:
@@ -88,10 +108,13 @@ def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
     ledger: Path | None = None
     seen = 0
     announced_build = False
+    build_started_at: float | None = None
+    build_done = False
+    eta = _build_eta(None)
     url: str | None = None
 
     def drain() -> None:
-        nonlocal seen, announced_build, url
+        nonlocal seen, announced_build, build_started_at, build_done, eta, url
         if ledger is None or not ledger.exists():
             return
         lines = ledger.read_text(encoding="utf-8").splitlines()
@@ -106,19 +129,32 @@ def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
             if ev.get("event") == "phase" and ev.get("phase") == "plan" and ev.get("exit") == 0 \
                     and not announced_build:
                 announced_build = True
+                build_started_at = time.monotonic()
+                eta = _build_eta(_task_count(ev))
                 feishu_app.send_text(api, chat_id,
                                      "🔨 Building + verifying (rebuild from source → boot → "
-                                     "acceptance). This is the slow part — a few minutes…")
+                                     f"acceptance). This is the slow part — {eta} for a plan "
+                                     f"this size. I'll post progress as I go.")
+            if ev.get("event") == "phase" and ev.get("phase") == "build":
+                build_done = True
             if ev.get("event") == "phase" and ev.get("phase") == "deploy":
                 url = ev.get("meta", {}).get("url") or url
         seen = len(lines)
 
+    last_heartbeat = time.monotonic()
     while True:
         if ledger is None:
             found = sorted(runs.glob("run-*"))
             if found:
                 ledger = found[0] / "ledger.jsonl"
         drain()
+        # Heartbeat while the long build phase runs, so the chat is never silent for 15 min.
+        if announced_build and not build_done \
+                and time.monotonic() - last_heartbeat >= _HEARTBEAT_S:
+            last_heartbeat = time.monotonic()
+            mins = int((time.monotonic() - (build_started_at or last_heartbeat)) // 60)
+            feishu_app.send_text(api, chat_id,
+                                 f"⏳ Still building — {mins} min elapsed ({eta}).")
         if proc.poll() is not None:
             drain()  # final flush after exit
             break

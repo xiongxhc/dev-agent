@@ -54,3 +54,18 @@ def test_sign_is_deterministic_and_base64():
     assert a == b and len(a) > 0
     import base64
     base64.b64decode(a)  # valid base64, else raises
+
+
+def test_build_eta_bands():
+    from devagent.channels.feishu_bot import _build_eta
+    assert _build_eta(None) == "typically 5-15 min"
+    assert _build_eta(6) == "typically 3-6 min"
+    assert _build_eta(12) == "typically 6-12 min"
+    assert _build_eta(21) == "typically 12-20 min"
+
+
+def test_task_count_parses_plan_output():
+    from devagent.channels.feishu_bot import _task_count
+    assert _task_count({"output": "21 tasks"}) == 21
+    assert _task_count({"output": "Team Todos"}) is None
+    assert _task_count({}) is None
