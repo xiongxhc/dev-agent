@@ -65,7 +65,8 @@ class ManagedExecutor:
         # crashes on a missing scope and the run fails even though the app is fine).
         dev = out / ".devagent"
         dev.mkdir(parents=True, exist_ok=True)
-        enriched = enrich_scope(req.scope, broadcast_consumed(req.scope, req.consumed_contracts))
+        enriched = enrich_scope(req.scope, broadcast_consumed(req.scope, req.consumed_contracts),
+                                broadcast_consumed(req.scope, req.provided_contracts))
         (dev / "scope.json").write_text(json.dumps(enriched))
         (dev / "plan.json").write_text(req.plan.model_dump_json())
         client = self._get_client()

@@ -76,3 +76,18 @@ def test_duplicate_service_names_is_design_failed():
         run_node=run_node, bring_up=bring_up, architect=lambda _prd: _design_dup_names())
     assert rep.status == "design_failed"
     assert not called["run_node"] and not called["bring_up"]
+
+
+def test_build_system_persists_design_json(tmp_path):
+    rep = build_system(
+        "prd.md", budget=None, ledger=None,
+        run_node=lambda n, d: NodeResult(n.id, SUCCEEDED),
+        bring_up=lambda d: ({"api": "http://api"}, lambda: None),
+        architect=_architect, run_dir=tmp_path,
+        integration_runner=lambda checks, urls: IntegrationReport(
+            steps=[{"service": "api", "route": "/api/todos", "ok": True, "detail": ""}]))
+    assert rep.status == "succeeded"
+    import json
+    design = json.loads((tmp_path / "design.json").read_text())
+    assert design["title"] == "Todo system"
+    assert design["services"][0]["id"] == "api"

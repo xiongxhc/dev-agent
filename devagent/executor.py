@@ -26,6 +26,7 @@ class BuildRequest:
     budget: Any = None    # shared Budget instance (token/wall-clock/retry ceilings)
     repair_context: str | None = None  # verify diagnostics for a repair pass (None = fresh build)
     consumed_contracts: tuple = ()     # M21: contract-spec dicts this service consumes (M16 seam)
+    provided_contracts: tuple = ()     # contract-spec dicts this service must IMPLEMENT (producer side)
 
 
 @dataclass
@@ -54,12 +55,17 @@ class Executor(Protocol):
     def build(self, req: BuildRequest) -> BuildResult: ...
 
 
-def enrich_scope(scope, consumed_by_target: dict | None = None) -> dict:
+def enrich_scope(scope, consumed_by_target: dict | None = None,
+                 provided_by_target: dict | None = None) -> dict:
     """Bake recipe-derived fields into a JSON-serializable scope dict that the in-container
     build prompt + acceptance runner consume (they stay registry-free). `consumed_by_target`
     (M16) maps a target name -> list of consumed contract-spec dicts, injected read-only into
-    that target's build prompt; absent/empty means no cross-service contracts (default)."""
+    that target's build prompt. `provided_by_target` maps a target name -> the contract-spec
+    dicts that target must IMPLEMENT — the producer side of the same frozen contracts (without
+    it a producer invents its own routes/shapes while its consumers build against the contract;
+    live-run finding, 2026-07-03). Absent/empty means no cross-service contracts (default)."""
     consumed_by_target = consumed_by_target or {}
+    provided_by_target = provided_by_target or {}
     targets = []
     for t in scope.targets:
         r = recipes.get(t.stack)
@@ -80,14 +86,16 @@ def enrich_scope(scope, consumed_by_target: dict | None = None) -> dict:
             "_boot": boot,
             "_static_dir": static_dir,
             "_consumed_contracts": consumed_by_target.get(t.name, []),
+            "_provided_contracts": provided_by_target.get(t.name, []),
         })
     return {"title": scope.title, "targets": targets}
 
 
-def broadcast_consumed(scope, consumed_contracts) -> dict | None:
-    """M21: a sub-run builds exactly ONE service, so its consumed contracts apply to every
-    target of its scope. Targets are LLM-named (not pinned to the design's node name), so
-    broadcasting per-target is the only stable keying for enrich_scope's consumed_by_target."""
-    if not consumed_contracts:
+def broadcast_consumed(scope, contracts) -> dict | None:
+    """M21: a sub-run builds exactly ONE service, so its contract specs apply to every target
+    of its scope (same broadcast for consumed and provided sides). Targets are LLM-named (not
+    pinned to the design's node name), so broadcasting per-target is the only stable keying
+    for enrich_scope's consumed_by_target/provided_by_target."""
+    if not contracts:
         return None
-    return {t.name: list(consumed_contracts) for t in scope.targets}
+    return {t.name: list(contracts) for t in scope.targets}

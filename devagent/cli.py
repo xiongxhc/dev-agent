@@ -36,13 +36,15 @@ def _new_run_id() -> str:
 
 
 def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None, run_id=None,
-                          executor=None, verifier=None, answers_path=None, consumed_contracts=()):
+                          executor=None, verifier=None, answers_path=None, consumed_contracts=(),
+                          provided_contracts=()):
     """The scope->plan[->build[->deploy]] phase list + gate map. Shared by `run` and the M20
     `build-system` per-service sub-runs so both assemble the pipeline identically. Sub-runs
     pass deploy=False: previews are pointless there, and their fixed devagent-preview-<name>
     container names collide across concurrent sibling builds — system bring-up starts the
     real containers instead (M21). `consumed_contracts` (M21) are the node's consumed
-    contract-spec dicts, forwarded into BuildPhase -> BuildRequest -> enrich_scope."""
+    contract-spec dicts, `provided_contracts` the ones it must implement — both forwarded
+    into BuildPhase -> BuildRequest -> enrich_scope."""
     phases = [ScopePhase(input_path, answers_path=answers_path), PlanPhase()]
     gates = {"scope": ScopeGate(), "plan": PlanGate()}
     if build:
@@ -50,7 +52,8 @@ def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None,
         # (cap 2), then emits the VerifyReport. VerifyGate is the trusted final check.
         phases.append(BuildPhase(executor=executor, workdir=str(out_dir), run_id=run_id,
                                  verifier=verifier, max_repairs=2,
-                                 consumed_contracts=consumed_contracts))
+                                 consumed_contracts=consumed_contracts,
+                                 provided_contracts=provided_contracts))
         gates["build"] = VerifyGate()
         if deploy:
             # Deploy the built app to a local preview server -> URL (gated on it actually answering).
@@ -104,7 +107,7 @@ def _build_system(args) -> int:
     report = build_system(
         args.input, budget=budget, ledger=ledger,
         run_node=make_run_node(run_dir, budget, ledger),
-        bring_up=make_bring_up(run_dir))
+        bring_up=make_bring_up(run_dir), run_dir=run_dir)
     (run_dir / "system-report.json").write_text(json.dumps({
         "title": report.title, "status": report.status, "build_ok": report.build_ok,
         "services": {k: {"status": v.status, "detail": v.detail}

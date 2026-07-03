@@ -79,6 +79,12 @@ def build_prompt(scope: dict, plan: dict) -> str:
             lines.append("This target is VERIFIED by these machine checks — build to satisfy them EXACTLY "
                          "(same routes, methods, and JSON shapes):")
             lines.append(json.dumps(t["acceptance_checks"], indent=2))
+        if t.get("_provided_contracts"):
+            lines.append(
+                "PROVIDED CONTRACTS (this service IMPLEMENTS these interfaces — other services are "
+                "built against them; expose EXACTLY these routes, methods, field names, and JSON "
+                "shapes, do not rename or restructure anything):")
+            lines.append(json.dumps(t["_provided_contracts"], indent=2))
         if t.get("_consumed_contracts"):
             lines.append(
                 "CONSUMED CONTRACTS (read-only — this service calls other services; build against "

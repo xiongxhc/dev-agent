@@ -47,7 +47,10 @@ def make_run_node(run_dir, budget, ledger, build_service=None):
 def _real_build_service(node, design, svc_dir, budget, ledger) -> str:
     """Build one service through the existing scope->plan->build->verify pipeline (deploy-less:
     system bring-up starts the real containers), sharing the system budget and injecting the
-    node's consumed contracts (M16 seam). Returns the run's terminal status string."""
+    node's contracts (M16 seam) — both the ones it consumes and the ones it provides (the
+    producer must implement its own frozen interface; live-run finding 2026-07-03: without it
+    the api invented routes/fields its consumers didn't call). Returns the run's terminal
+    status string."""
     from .cli import build_pipeline_phases
     from .config import Config
     from .contract_utils import contracts_for_node
@@ -68,10 +71,11 @@ def _real_build_service(node, design, svc_dir, budget, ledger) -> str:
                 else SdkExecutor(network=network, proxy_url=proxy, model=cfg.build_model))
     verifier = BuildVerifier(network=network, proxy_url=proxy)
     consumed = tuple(c.spec for c in contracts_for_node(node, design))
+    provided = tuple(c.spec for c in design.contracts if c.id in node.provides)
     phases, gates = build_pipeline_phases(
         str(Path(svc_dir) / "prd.md"), build=True, deploy=False, out_dir=out_dir,
         run_id=f"svc-{node.name}", executor=executor, verifier=verifier,
-        consumed_contracts=consumed)
+        consumed_contracts=consumed, provided_contracts=provided)
     orch = Orchestrator(phases=phases, gates=gates, budget=budget, ledger=ledger,
                         sandbox=NullSandbox())
     return orch.run()
@@ -179,10 +183,13 @@ class SystemReport:
 
 
 def build_system(prd_path, *, budget, ledger, run_node, bring_up,
-                 architect=None, integration_runner=None) -> SystemReport:
+                 architect=None, integration_runner=None, run_dir=None) -> SystemReport:
     """Deterministic system-build orchestration. `run_node`, `bring_up`, `architect`, and
     `integration_runner` are injected (defaults do the real thing) so this is unit-testable
-    without Docker/tokens."""
+    without Docker/tokens. `run_dir` (optional) persists the gated SystemDesign to
+    <run_dir>/design.json — the run's authoritative design record (contracts + integration
+    checks), without which a failed live run can't be diagnosed against what the architect
+    actually asked for."""
     from .tree import TreeOrchestrator
     from .integration import IntegrationRunner
     from .phase_gates import ArchitectGate, IntegrationGate
@@ -198,6 +205,13 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
             return SystemReport(getattr(design, "title", "?"), {}, False, None, "design_failed")
     else:
         design = architect(prd_path)
+
+    if run_dir is not None:
+        try:
+            Path(run_dir).mkdir(parents=True, exist_ok=True)
+            (Path(run_dir) / "design.json").write_text(design.model_dump_json(indent=2))
+        except OSError:
+            pass    # observability only — never fail the build over it
 
     # SystemDesign only guarantees unique ids; per-service dirs/containers key on `node.name`.
     names = [s.name for s in design.services]

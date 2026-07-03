@@ -83,3 +83,36 @@ def test_real_build_service_deployless_and_contract_injected(tmp_path, monkeypat
     assert status == "succeeded"
     assert seen["deploy"] is False
     assert seen["consumed_contracts"] == ({"paths": {"/api/todos": {"get": {}}}},)
+
+
+def test_real_build_service_injects_provided_contracts_into_producer(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from devagent import cli, orchestrator, system_build
+    from devagent.config import Config
+    from devagent.schema import Contract
+
+    seen = {}
+    def fake_bpp(input_path, **kw):
+        seen.update(kw)
+        return [], {}
+    monkeypatch.setattr(cli, "build_pipeline_phases", fake_bpp)
+
+    class _Orch:
+        def __init__(self, **kw): pass
+        def run(self): return "succeeded"
+    monkeypatch.setattr(orchestrator, "Orchestrator", _Orch)
+    monkeypatch.setattr(Config, "load", classmethod(lambda cls: SimpleNamespace(
+        egress=False, executor="sdk", build_model=None)))
+
+    d = SystemDesign(title="t", services=[
+        ServiceNode(id="api", name="api", kind="backend", stack="node-express",
+                    prd_slice="x", provides=["api.openapi"]),
+        ServiceNode(id="web", name="web", kind="frontend", stack="node-vite-react",
+                    prd_slice="y", depends_on=["api"], consumes=["api.openapi"])],
+        contracts=[Contract(id="api.openapi", kind="openapi", producer="api",
+                            spec={"paths": {"/api/todos": {"get": {}}}})])
+    # The PRODUCER must receive the contract it provides — the interface it has to implement.
+    status = system_build._real_build_service(d.services[0], d, str(tmp_path), object(), None)
+    assert status == "succeeded"
+    assert seen["provided_contracts"] == ({"paths": {"/api/todos": {"get": {}}}},)
+    assert seen["consumed_contracts"] == ()

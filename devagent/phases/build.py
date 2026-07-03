@@ -26,13 +26,15 @@ class BuildPhase:
     name = "build"
 
     def __init__(self, executor: Executor, workdir: str, run_id: str,
-                 verifier=None, max_repairs: int = 2, consumed_contracts: tuple = ()):
+                 verifier=None, max_repairs: int = 2, consumed_contracts: tuple = (),
+                 provided_contracts: tuple = ()):
         self.executor = executor
         self.workdir = workdir
         self.run_id = run_id
         self.verifier = verifier
         self.max_repairs = max_repairs
         self.consumed_contracts = tuple(consumed_contracts)
+        self.provided_contracts = tuple(provided_contracts)
 
     def run(self, ctx: PhaseContext) -> PhaseResult:
         req = BuildRequest(
@@ -42,6 +44,7 @@ class BuildPhase:
             run_id=self.run_id,
             budget=ctx.budget,
             consumed_contracts=self.consumed_contracts,
+            provided_contracts=self.provided_contracts,
         )
         result = self._build(ctx, req)
 
