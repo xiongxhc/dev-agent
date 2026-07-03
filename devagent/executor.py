@@ -9,6 +9,7 @@ Fairness rule: `BuildResult.success` is the executor's own CLAIM and is NOT trus
 the build/verify gates re-check the produced repo deterministically.
 """
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -78,7 +79,9 @@ def enrich_scope(scope, consumed_by_target: dict | None = None,
             "detail": t.detail,
             "auth": t.auth.model_dump() if t.auth else None,
             "actors": [a.model_dump() for a in t.actors],
-            "acceptance_checks": [c.model_dump() for c in t.acceptance_checks],
+            "acceptance_checks": _contract_conformed_checks(
+                [c.model_dump() for c in t.acceptance_checks],
+                provided_by_target.get(t.name, [])),
             "kind": r.kind,
             "_scaffold_hint": r.scaffold_hint,
             "build_cmd": r.build_cmd,
@@ -89,6 +92,27 @@ def enrich_scope(scope, consumed_by_target: dict | None = None,
             "_provided_contracts": provided_by_target.get(t.name, []),
         })
     return {"title": scope.title, "targets": targets}
+
+
+def _contract_conformed_checks(checks: list, provided: list) -> list:
+    """Drop LLM-emitted route_status checks the provided contract contradicts. route_status
+    probes with GET; when the frozen openapi declares a matching path GET-less, a
+    success-expecting probe (expected_status < 400) can never pass against a CORRECT build —
+    the repair loop then burns its repairs on an unsatisfiable check (live-run finding,
+    2026-07-03). The contract is the authority, not the scope model's check. Failure-asserting
+    probes (>= 400) and api_json checks (which carry their own method) are untouched; without
+    a provided openapi contract nothing changes."""
+    getless = []   # regexes for contract paths that do NOT answer GET
+    for spec in provided:
+        for path, methods in (spec.get("paths") or {}).items():
+            if isinstance(methods, dict) and "get" not in {str(m).lower() for m in methods}:
+                getless.append(re.compile(
+                    "^" + re.sub(r"\{[^/}]+\}", "[^/]+", path.rstrip("/")) + "/?$"))
+    if not getless:
+        return checks
+    return [c for c in checks
+            if not (c.get("kind") == "route_status" and c.get("expected_status", 200) < 400
+                    and any(rx.match(str(c.get("route", ""))) for rx in getless))]
 
 
 def broadcast_consumed(scope, contracts) -> dict | None:

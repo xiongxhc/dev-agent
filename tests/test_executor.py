@@ -86,3 +86,40 @@ def test_broadcast_consumed_maps_every_target():
     spec = {"paths": {"/api/todos": {"get": {}}}}
     m = broadcast_consumed(scope, (spec,))
     assert m == {"api": [spec], "web": [spec]}
+
+
+def test_enrich_scope_drops_route_status_contradicting_provided_contract():
+    # Live-run finding (2026-07-03, run #4): scope emitted a route_status (a GET probe,
+    # expecting 200) against the contract's POST-only vote route; the correctly-built api
+    # 404'd it and the repair loop burned both repairs on an unsatisfiable check. The frozen
+    # contract is the authority: drop success-expecting route_status checks whose path the
+    # provided openapi declares GET-less.
+    from devagent.schema import AcceptanceCheck
+    scope = ProjectScope(title="t", targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api", acceptance_checks=[
+            AcceptanceCheck(kind="route_status", route="/polls"),                        # GET exists -> keep
+            AcceptanceCheck(kind="route_status", route="/polls/1/options/1/vote"),       # POST-only -> drop
+            AcceptanceCheck(kind="route_status", route="/polls/1/options/1/vote",
+                            expected_status=404),                                        # failure-assert -> keep
+            AcceptanceCheck(kind="api_json", route="/polls/1/options/1/vote",
+                            method="POST", json_path="votes"),                           # right way -> keep
+        ])])
+    contract = {"paths": {
+        "/polls": {"get": {}, "post": {}},
+        "/polls/{pollId}/options/{optionId}/vote": {"post": {}},
+    }}
+    baked = enrich_scope(scope, provided_by_target={"api": [contract]})
+    kept = [(c["kind"], c["route"], c.get("expected_status")) for c in baked["targets"][0]["acceptance_checks"]]
+    assert ("route_status", "/polls", 200) in kept
+    assert ("route_status", "/polls/1/options/1/vote", 200) not in kept
+    assert ("route_status", "/polls/1/options/1/vote", 404) in kept
+    assert ("api_json", "/polls/1/options/1/vote", 200) in kept
+
+
+def test_enrich_scope_keeps_all_checks_without_provided_contract():
+    from devagent.schema import AcceptanceCheck
+    scope = ProjectScope(title="t", targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api", acceptance_checks=[
+            AcceptanceCheck(kind="route_status", route="/anything")])])
+    baked = enrich_scope(scope)
+    assert len(baked["targets"][0]["acceptance_checks"]) == 1
