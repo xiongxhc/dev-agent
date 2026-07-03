@@ -10,7 +10,8 @@ gate between every phase.
 → repair → deploy` in one command, gated at every phase. The pipeline is now **scope-first and
 flexible**: any request is classified into a confirmed `ProjectScope` (frontend, backend, fullstack,
 or any registered recipe) before building. Both A/B arms (`SdkExecutor` + `ManagedExecutor`)
-inherit the new flexible pipeline. **Live-verified (2026-06-25):** `examples/fullstack.md` built a
+inherit the new flexible pipeline. **Live-verified (2026-06-25):** the fullstack tasks example
+(today's `examples/tasks.md`) built a
 real **Express API + Vite/React frontend** monorepo — scope classified `api`+`web`, the SDK arm
 built both (1 repair), the shared verify rebuilt each from source, **booted the backend** and passed
 all 6 per-target acceptance checks (`api_json /health` + `/api/tasks` serving real JSON, frontend
@@ -187,9 +188,11 @@ python -m devagent.cli run --build examples/hello.md     # + contained build (ne
 # -> deploy to a local preview URL -> writes runs/<id>/report.html
 # -> built app in runs/<id>/out/
 
-python -m devagent.cli run --build examples/fullstack.md  # fullstack: backend + frontend
-# -> scope classifies into two targets (node-express API + node-vite-react web)
-# -> per-target build -> per-target verify (api_json + route_status) -> deploy
+python -m devagent.cli run --build examples/tasks.md      # fullstack: backend + frontend + store
+# -> scope classifies into targets (node-express API + node-vite-react web + a datastore
+#    if the agent picks one) -> per-target build -> per-target verify -> deploy
+# examples/ are BRD-level requirement docs (see examples/README.md) — what the app must
+# do, never endpoints/stacks/env vars; designing those is the agent's job.
 
 python -m devagent.cli run --answers answers.md examples/hello.md
 # -> re-run after providing answers to clarification questions
@@ -387,7 +390,8 @@ and its named volume down when done. Egress allowlist is preserved on the common
 present, injects each backend's connection URL, and uses a **named volume** so preview data survives
 `docker restart` of the app container.
 
-Live fixture: `examples/fullstack-persistent.md` (`DEVAGENT_RUN_LIVE=1` required). **Live-verified
+Live fixture: the durability tasks example (today's `examples/tasks.md`; `DEVAGENT_RUN_LIVE=1`
+required). **Live-verified
 (2026-06-25):** given the durability PRD, the agent autonomously chose **SQLite** (`persist_path:
 data/tasks.db`, no datastore target); the build rebuilt from source, booted the API, and all 8
 acceptance checks went green — including `persistence_survives_restart` (POST a task → kill &
@@ -399,9 +403,9 @@ token_in, 1.33M cache-read) falsely aborted at 1M; the budget now counts expensi
 
 Design: [`../docs/planning/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md`](../docs/planning/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md).
 Remaining follow-ups (non-blocking, tracked):
-  - ⬜ **live-validate the managed-datastore path** — run `examples/fullstack-persistent-shared.md`
-    (`DEVAGENT_RUN_LIVE=1`); its shared-state PRD nudges the agent to pick Postgres/Mongo, so the
-    sibling-container verify + deploy path gets live coverage (only SQLite is live-proven so far).
+  - ⬜ **live-validate the managed-datastore path** — run `examples/tasks.md`
+    (`DEVAGENT_RUN_LIVE=1`); its shared-data requirement nudges the agent to pick Postgres/Mongo, so
+    the sibling-container verify + deploy path gets live coverage (only SQLite is live-proven so far).
   - ✅ **`max_cost_usd` ceiling** — a per-run dollar guard (uses the SDK's exact `cost_usd`) as the
     project-agnostic runaway bound, complementing the now-cache-read-excluded token ceiling. `Budget`
     grows a `max_cost_usd`; `BuildPhase._build` calls `budget.add_cost(result.cost_usd)` so a doomed
@@ -443,7 +447,7 @@ Remaining follow-ups (non-blocking, tracked):
   (spec-completeness / code-quality / craft, arm label stripped), and **dual-normalized cost**
   (model-token vs all-in incl. session-hr). Resumable under `runs/eval/<id>/`; the managed arm
   degrades gracefully when its API is unreachable. Corpus is a JSON manifest (`examples/corpus.json`:
-  5 fixtures easy→hard incl. an auth/roles one). ✅ **harness + judge + report unit-verified**
+  3 fixtures easy→hard incl. an auth/roles one). ✅ **harness + judge + report unit-verified**
   (fakes, no Docker/tokens); ⬜ **the live corpus run** (real builds, real tokens — the actual A/B
   numbers) is a manual kickoff. Reference-URL clones + SSIM deferred (no URL intake yet).
 - **M7** ⬜ — **Git destination binding (where output lands).** Every run **binds to a target git

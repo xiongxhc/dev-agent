@@ -28,26 +28,21 @@ def test_brain_pipeline_live_produces_valid_plan(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(os.getenv("DEVAGENT_RUN_LIVE") != "1", reason="live")
-def test_live_fullstack_build(tmp_path):
+def test_live_tasks_build(tmp_path):
+    # BRD-level PRD: shared team task list, several app copies, data survives restarts.
+    # The shared-data requirement nudges the agent toward a MANAGED datastore — exercising
+    # the sibling-container verify/deploy path (postgres/mongo). The agent still decides;
+    # this asserts the whole pipeline succeeds end-to-end whichever store it picks.
     from devagent.cli import main
-    rc = main(["run", "--build", "examples/fullstack.md"])
-    assert rc == 0   # scope(web+api) -> build -> per-target rebuild + boot + api_json + route_status -> deploy
+    rc = main(["run", "--build", "examples/tasks.md"])
+    assert rc == 0   # scope(web+api) -> build -> per-target rebuild + boot + acceptance
+                     # (incl. persistence_survives_restart) -> deploy
 
 
 @pytest.mark.skipif(os.getenv("DEVAGENT_RUN_LIVE") != "1", reason="live")
-def test_live_fullstack_persistent_build(tmp_path):
+def test_live_notes_auth_build(tmp_path):
+    # BRD-level PRD: login, per-user private notes, one admin role. Exercises the auth
+    # path (sessions, ownership, protected routes) + persistence, agent's choice of store.
     from devagent.cli import main
-    rc = main(["run", "--build", "examples/fullstack-persistent.md"])
-    assert rc == 0   # scope picks a persistence strategy -> build -> verify with a real
-                     # datastore (if chosen) + persistence_survives_restart -> deploy
-
-
-@pytest.mark.skipif(os.getenv("DEVAGENT_RUN_LIVE") != "1", reason="live")
-def test_live_fullstack_shared_state_build(tmp_path):
-    # The PRD's shape (multiple stateless API replicas sharing state) nudges the agent toward a
-    # MANAGED datastore — exercising the sibling-container verify/deploy path (postgres/mongo)
-    # that the SQLite fixture does not. The agent still decides; this asserts the whole pipeline
-    # succeeds end-to-end whichever store it picks.
-    from devagent.cli import main
-    rc = main(["run", "--build", "examples/fullstack-persistent-shared.md"])
-    assert rc == 0   # scope -> build -> verify (sibling datastore + persistence_survives_restart) -> deploy
+    rc = main(["run", "--build", "examples/notes-auth.md"])
+    assert rc == 0   # scope -> build -> verify + acceptance (auth checks) -> deploy

@@ -3,9 +3,7 @@
   "n": 2,
   "fixtures": [
     "hello.md",
-    "fullstack.md",
-    "fullstack-persistent.md",
-    "fullstack-persistent-shared.md",
-    "auth-notes.md"
+    "tasks.md",
+    "notes-auth.md"
   ]
 }

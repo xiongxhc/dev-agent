@@ -1,8 +1,4 @@
-# Hello DevAgent
+# Hello Page
 
-A trivial PRD fixture for M1. The pipeline does not read it yet — M1's only phase is a
-no-op that proves the sandbox path. In M2 the `intake` phase will turn a file like this
-into a structured Brief.
-
-## Requirement
-Build a single static page that says "Hello, DevAgent".
+We want a single web page that greets visitors with "Hello, DevAgent". Nothing else —
+this is the smallest possible request, our smoke test.
