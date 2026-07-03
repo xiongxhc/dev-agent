@@ -100,8 +100,13 @@ def _contract_conformed_checks(checks: list, provided: list) -> list:
     success-expecting probe (expected_status < 400) can never pass against a CORRECT build —
     the repair loop then burns its repairs on an unsatisfiable check (live-run finding,
     2026-07-03). The contract is the authority, not the scope model's check. Failure-asserting
-    probes (>= 400) and api_json checks (which carry their own method) are untouched; without
-    a provided openapi contract nothing changes."""
+    probes (>= 400) and api_json checks (which carry their own method) are untouched.
+
+    Contract-free rule (Feishu live run, same day): a route_status expecting 201 Created is
+    dropped unconditionally — the probe is a GET, and a GET never creates; the scope model
+    writes these against POST register/create routes despite its prompt forbidding it."""
+    checks = [c for c in checks
+              if not (c.get("kind") == "route_status" and c.get("expected_status") == 201)]
     getless = []   # regexes for contract paths that do NOT answer GET
     for spec in provided:
         for path, methods in (spec.get("paths") or {}).items():

@@ -123,3 +123,22 @@ def test_enrich_scope_keeps_all_checks_without_provided_contract():
             AcceptanceCheck(kind="route_status", route="/anything")])])
     baked = enrich_scope(scope)
     assert len(baked["targets"][0]["acceptance_checks"]) == 1
+
+
+def test_enrich_scope_drops_get_probe_expecting_created_status():
+    # Feishu live run (2026-07-03): scope emitted route_status /auth/register want 201 —
+    # route_status probes GET, and a GET can never return 201 Created; 12/13 checks passed
+    # and both repairs burned on this one. No contract needed to know it's wrong.
+    from devagent.schema import AcceptanceCheck
+    scope = ProjectScope(title="t", targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api", acceptance_checks=[
+            AcceptanceCheck(kind="route_status", route="/auth/register", expected_status=201),
+            AcceptanceCheck(kind="route_status", route="/health"),
+            AcceptanceCheck(kind="api_json", route="/auth/register", method="POST",
+                            json_path="id"),
+        ])])
+    baked = enrich_scope(scope)
+    kept = [(c["kind"], c["route"]) for c in baked["targets"][0]["acceptance_checks"]]
+    assert ("route_status", "/auth/register") not in kept
+    assert ("route_status", "/health") in kept
+    assert ("api_json", "/auth/register") in kept
