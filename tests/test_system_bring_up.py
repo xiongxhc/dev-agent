@@ -47,7 +47,7 @@ def test_bring_up_collects_base_urls_in_topo_order(tmp_path):
     def fake_start_target(out_dir, target, image=None, network=None, env=None, **kw):
         started.append(target.name)
         return f"http://{target.name}:3000"
-    bring = make_bring_up(tmp_path, ensure_network=lambda n: None,
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
                           start_service=lambda *a, **k: "c", start_target=fake_start_target)
     base_urls, teardown = bring(_design())
     assert base_urls == {"api": "http://api:3000", "web": "http://web:3000"}
@@ -59,7 +59,7 @@ def test_bring_up_omits_service_that_fails_to_start(tmp_path):
     _scaffold(tmp_path)
     def fake_start_target(out_dir, target, image=None, network=None, env=None, **kw):
         return None if target.name == "web" else "http://api:3000"
-    bring = make_bring_up(tmp_path, ensure_network=lambda n: None,
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
                           start_service=lambda *a, **k: "c", start_target=fake_start_target)
     base_urls, _ = bring(_design())
     assert base_urls == {"api": "http://api:3000"}   # web absent -> M17 fails its E2E steps
@@ -67,7 +67,7 @@ def test_bring_up_omits_service_that_fails_to_start(tmp_path):
 
 def test_bring_up_uses_per_run_network(tmp_path):
     seen = []
-    bring = make_bring_up(tmp_path, ensure_network=lambda n: seen.append(n),
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: seen.append(n),
                           start_service=lambda *a, **k: "c",
                           start_target=lambda *a, **k: "http://x:3000")
     bring(_design())
@@ -93,7 +93,7 @@ def test_bring_up_teardown_removes_started_containers_and_network(tmp_path, monk
     def fake_start_target(out_dir, target, image=None, network=None, env=None, **kw):
         return None if target.name == "web" else "http://api:3000"   # api starts, web fails
 
-    bring = make_bring_up(tmp_path, ensure_network=lambda n: None,
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
                           start_service=fake_start_service, start_target=fake_start_target)
     _, teardown = bring(_design_with_datastore())
     teardown()
@@ -128,7 +128,7 @@ def test_bring_up_mid_loop_exception_tears_down_and_propagates(tmp_path, monkeyp
             raise RuntimeError("boom")
         return "http://api:3000"
 
-    bring = make_bring_up(tmp_path, ensure_network=lambda n: None,
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
                           start_service=lambda *a, **k: "c", start_target=fake_start_target)
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -148,7 +148,7 @@ def test_bring_up_teardown_never_raises_without_docker(tmp_path, monkeypatch):
 
     monkeypatch.setattr(system_build.subprocess, "run", fake_run)
 
-    bring = make_bring_up(tmp_path, ensure_network=lambda n: None,
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
                           start_service=lambda *a, **k: "devagent-preview-db",
                           start_target=lambda *a, **k: "http://api:3000")
     _, teardown = bring(_design_with_datastore())
@@ -161,7 +161,7 @@ def test_bring_up_injects_design_level_conn_env(tmp_path):
     def fake_start_target(out_dir, target, image=None, network=None, env=None, **kw):
         seen[target.name] = env
         return f"http://{target.name}:3000"
-    bring = make_bring_up(tmp_path, ensure_network=lambda n: None,
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
                           start_service=lambda *a, **k: "devagent-preview-db",
                           start_target=fake_start_target)
     bring(_design_with_datastore())
@@ -173,7 +173,7 @@ def test_bring_up_wires_cross_node_frontend_api_base(tmp_path):
     _scaffold(tmp_path)
     def fake_start_target(out_dir, target, image=None, network=None, env=None, **kw):
         return f"http://{target.name}:3000"
-    bring = make_bring_up(tmp_path, ensure_network=lambda n: None,
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
                           start_service=lambda *a, **k: "c", start_target=fake_start_target)
     bring(_design())
     cfg = json.loads((Path(tmp_path) / "services" / "web" / "out" / "web" / "dist"
@@ -191,17 +191,45 @@ def test_bring_up_mounts_actual_scope_target_names(tmp_path):
         return "http://server:3000"
     d = SystemDesign(title="t", services=[
         ServiceNode(id="api", name="api", kind="backend", stack="node-express", prd_slice="x")])
-    bring = make_bring_up(tmp_path, ensure_network=lambda n: None,
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
                           start_service=lambda *a, **k: "c", start_target=fake_start_target)
     base_urls, _ = bring(d)
     assert base_urls == {"api": "http://server:3000"}
     assert seen == [("server", "devagent-preview-api-server")]
 
 
+def test_bring_up_probes_health_before_adding_base_url(tmp_path):
+    # Live-run finding (2026-07-03): start_target returns before the app listens; the E2E hit
+    # containers mid-boot and every step reset. Bring-up must wait for readiness the way
+    # DeployGate does — probe each started URL at its health path before exposing base_urls.
+    _scaffold(tmp_path)
+    probed = []
+    def fake_start_target(out_dir, target, image=None, network=None, env=None, **kw):
+        return f"http://{target.name}:3000"
+    bring = make_bring_up(tmp_path, probe=lambda u: probed.append(u) or True,
+                          ensure_network=lambda n: None,
+                          start_service=lambda *a, **k: "c", start_target=fake_start_target)
+    base_urls, _ = bring(_design())
+    assert base_urls == {"api": "http://api:3000", "web": "http://web:3000"}
+    assert "http://api:3000/health" in probed     # backend probed at its recipe health path
+    assert "http://web:3000/" in probed           # frontend probed at "/"
+
+
+def test_bring_up_drops_node_that_never_becomes_healthy(tmp_path):
+    _scaffold(tmp_path)
+    def fake_start_target(out_dir, target, image=None, network=None, env=None, **kw):
+        return f"http://{target.name}:3000"
+    bring = make_bring_up(tmp_path, probe=lambda u: "web" not in u,
+                          ensure_network=lambda n: None,
+                          start_service=lambda *a, **k: "c", start_target=fake_start_target)
+    base_urls, _ = bring(_design())
+    assert base_urls == {"api": "http://api:3000"}   # web absent -> E2E fails with a clear reason
+
+
 def test_bring_up_skips_node_without_scope_json(tmp_path):
     d = SystemDesign(title="t", services=[
         ServiceNode(id="api", name="api", kind="backend", stack="node-express", prd_slice="x")])
-    bring = make_bring_up(tmp_path, ensure_network=lambda n: None,
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
                           start_service=lambda *a, **k: "c",
                           start_target=lambda *a, **k: "http://x")
     base_urls, teardown = bring(d)

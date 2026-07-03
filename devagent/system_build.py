@@ -77,18 +77,23 @@ def _real_build_service(node, design, svc_dir, budget, ledger) -> str:
     return orch.run()
 
 
-def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_target=None):
+def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_target=None,
+                  probe=None):
     """Return bring_up(design) -> (base_urls, teardown). Starts each service on a fresh
     per-run docker network and collects {service_id -> base_url}. Build-kind nodes are driven
     from the sub-run's persisted out/.devagent/scope.json — the targets ACTUALLY built (scope
     names are LLM-chosen, not node.name) — wired via deploy.wire_targets exactly as a
     single-run DeployPhase would, namespaced per node. Service-kind nodes start straight from
-    their recipe image. teardown() removes every started container (+ its data volume) and
-    the network. Deploy helpers are injectable for tests."""
+    their recipe image. A node enters base_urls only once EVERY started URL answers at its
+    health path (probe = DeployGate's poll; start_target returns before the app listens, and
+    an E2E fired at t=0 sees nothing but connection resets — live-run finding, 2026-07-03).
+    teardown() removes every started container (+ its data volume) and the network. Deploy
+    helpers and the probe are injectable for tests."""
     from . import deploy
     en = ensure_network or deploy.ensure_network
     ss = start_service or deploy.start_service
     st = start_target or deploy.start_target
+    pr = probe or deploy._probe
     run_dir = Path(run_dir)
 
     def bring_up(design):
@@ -148,8 +153,12 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
                                             extra_env=extra_env, frontend_api_base=api_base,
                                             start_target_fn=st, start_service_fn=ss)
                 started.extend(wired.containers)
-                if wired.primary_url:
-                    base_urls[sid] = wired.primary_url
+                if not wired.primary_url:
+                    continue
+                if not all(pr(url.rstrip("/") + wired.health_paths.get(name, "/"))
+                           for name, url in wired.urls.items()):
+                    continue    # never became healthy -> absent from base_urls -> E2E names it
+                base_urls[sid] = wired.primary_url
         except Exception:
             # A mid-loop crash must not leak already-started containers or the per-run network.
             teardown()
