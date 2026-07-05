@@ -109,7 +109,7 @@ def test_ledger_records_node_events():
         def append(self, e): events.append(e)
     TreeOrchestrator(run_node=lambda n, dz: NodeResult(n.id, SUCCEEDED), ledger=L()).run(d)
     kinds = [e.get("event") for e in events]
-    assert "system_build_start" in kinds and "node" in kinds and "system_build_end" in kinds
+    assert "system_build_start" in kinds and "node" in kinds and "tree_build_end" in kinds
 
 
 def test_run_node_exception_becomes_failed_and_run_continues():

@@ -44,7 +44,10 @@ class IntegrationRunner:
                 steps.append({"service": c.service, "route": c.route, "ok": False,
                               "detail": f"no base_url for service {c.service!r}"})
                 continue
-            if c.json_path is not None:
+            # route_status probes with GET, so only a GET check without a JSON assertion may
+            # fall back to it — a non-GET check (e.g. a derived POST with no declared response
+            # schema) must still issue its real method via api_json (json_path None = any 2xx JSON).
+            if c.json_path is not None or c.method.upper() != "GET":
                 r = aj(base, c.route, c.method, c.body, c.json_path, c.json_equals)
             else:
                 r = rs(base, c.route, c.expected_status)

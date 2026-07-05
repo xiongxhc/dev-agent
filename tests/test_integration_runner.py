@@ -52,3 +52,18 @@ def test_json_path_uses_api_json():
     IntegrationRunner(route_status_fn=rs, api_json_fn=aj).run(checks, {"api": "http://a"})
     assert seen["args"] == ("http://a", "/api/todos", "POST", "id")   # api_json got the check
     assert "rs_called" not in seen                         # route_status NOT used for a json_path check
+
+
+def test_non_get_check_without_json_path_uses_its_real_method():
+    # route_status probes with GET; a derived POST with no declared response schema must still
+    # POST (api_json with json_path None = any 2xx JSON), never degrade to a GET probe.
+    from devagent.integration import IntegrationRunner
+    from devagent.schema import IntegrationCheck
+    calls = []
+    runner = IntegrationRunner(
+        route_status_fn=lambda base, route, status: calls.append(("rs", route)) or {"ok": True},
+        api_json_fn=lambda base, route, method, body, jp, je:
+            calls.append(("aj", method, route)) or {"ok": True})
+    runner.run([IntegrationCheck(service="api", route="/vote", method="POST")],
+               {"api": "http://api"})
+    assert calls == [("aj", "POST", "/vote")]

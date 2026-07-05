@@ -123,5 +123,8 @@ class TreeOrchestrator:
                         remaining.discard(sid)
         status = (SUCCEEDED if results and all(r.status == SUCCEEDED for r in results.values())
                   else FAILED)
-        self._log({"event": "system_build_end", "status": status})
+        # tree_build_end = the per-service BUILD verdict only. build_system logs the
+        # post-integration system_build_end — the ledger used to end "succeeded" here while
+        # integration then failed (review finding, 2026-07-03).
+        self._log({"event": "tree_build_end", "status": status})
         return SystemBuildResult(results=results, status=status, order=order)

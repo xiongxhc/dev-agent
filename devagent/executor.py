@@ -95,24 +95,61 @@ def enrich_scope(scope, consumed_by_target: dict | None = None,
 
 
 def _contract_conformed_checks(checks: list, provided: list) -> list:
-    """Drop LLM-emitted route_status checks the provided contract contradicts. route_status
-    probes with GET; when the frozen openapi declares a matching path GET-less, a
-    success-expecting probe (expected_status < 400) can never pass against a CORRECT build —
-    the repair loop then burns its repairs on an unsatisfiable check (live-run finding,
-    2026-07-03). The contract is the authority, not the scope model's check. Failure-asserting
-    probes (>= 400) and api_json checks (which carry their own method) are untouched.
+    """Drop LLM-emitted checks the provided contract contradicts. route_status probes with GET;
+    when the frozen openapi declares a matching path GET-less, a success-expecting probe
+    (expected_status < 400) can never pass against a CORRECT build — the repair loop then burns
+    its repairs on an unsatisfiable check (live-run finding, 2026-07-03). The contract is the
+    authority, not the scope model's check. Failure-asserting route_status probes (>= 400) are
+    untouched.
 
     Contract-free rule (Feishu live run, same day): a route_status expecting 201 Created is
     dropped unconditionally — the probe is a GET, and a GET never creates; the scope model
-    writes these against POST register/create routes despite its prompt forbidding it."""
+    writes these against POST register/create routes despite its prompt forbidding it.
+
+    api_json checks carry a json_path whose FIRST segment reveals what root shape the scope
+    model assumed: a digit ("0.question") assumes the response is an array; anything else
+    ("polls", "length") assumes an object with that key. When the declared 200 response schema
+    says otherwise, the check is unsatisfiable by a contract-correct build — drop it. (Live-run
+    finding, 2026-07-03, Team Polls: enrich_scope wrote an object-shaped check for GET /polls
+    while the frozen contract — and the system-level integration checks — declared it a bare
+    array; no build could satisfy both, so the LLM built a hybrid response object that broke
+    the frontend, which correctly implements the array contract.)"""
     checks = [c for c in checks
               if not (c.get("kind") == "route_status" and c.get("expected_status") == 201)]
-    getless = []   # regexes for contract paths that do NOT answer GET
+    getless = []          # regexes for contract paths that do NOT answer GET
+    root_type = []         # (method, path_regex, "array"|"object") from each declared 200 schema
     for spec in provided:
         for path, methods in (spec.get("paths") or {}).items():
-            if isinstance(methods, dict) and "get" not in {str(m).lower() for m in methods}:
-                getless.append(re.compile(
-                    "^" + re.sub(r"\{[^/}]+\}", "[^/]+", path.rstrip("/")) + "/?$"))
+            if not isinstance(methods, dict):
+                continue
+            rx = re.compile("^" + re.sub(r"\{[^/}]+\}", "[^/]+", path.rstrip("/")) + "/?$")
+            if "get" not in {str(m).lower() for m in methods}:
+                getless.append(rx)
+            for method, op in methods.items():
+                if not isinstance(op, dict):
+                    continue
+                schema = ((op.get("responses") or {}).get("200") or {}) \
+                    .get("content", {}).get("application/json", {}).get("schema")
+                t = schema.get("type") if isinstance(schema, dict) else None
+                if t in ("array", "object"):
+                    root_type.append((str(method).lower(), rx, t))
+
+    def _root_contradicted(c) -> bool:
+        if c.get("kind") != "api_json":
+            return False
+        jp = c.get("json_path")
+        if not jp or jp == "$":
+            return False    # no root-shape assumption to check
+        first = (jp[2:] if jp.startswith("$.") else jp).split(".", 1)[0]
+        is_array_shaped = first.isdigit()
+        method, route = str(c.get("method", "GET")).lower(), str(c.get("route", ""))
+        for m, rx, t in root_type:
+            if m == method and rx.match(route):
+                if (t == "array") != is_array_shaped:
+                    return True
+        return False
+
+    checks = [c for c in checks if not _root_contradicted(c)]
     if not getless:
         return checks
     return [c for c in checks

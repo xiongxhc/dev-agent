@@ -235,3 +235,48 @@ def test_bring_up_skips_node_without_scope_json(tmp_path):
     base_urls, teardown = bring(d)
     assert base_urls == {}
     teardown()
+
+
+def test_bring_up_namespaces_design_datastore_containers_per_run(tmp_path):
+    # A fixed name (devagent-preview-db) is shared with single-run previews and every other
+    # system run — each caller docker-rm-f's the other's live container (live-run finding).
+    seen = {}
+    def fake_start_service(target, image=None, network=None, **kw):
+        seen["container_name"] = kw.get("container_name")
+        seen["alias"] = kw.get("alias")
+        return kw.get("container_name")
+    _write_scope(tmp_path, "api",
+                 [{"name": "api", "type": "backend", "stack": "node-express", "detail": {}}])
+    _write_scope(tmp_path, "web",
+                 [{"name": "web", "type": "frontend", "stack": "node-vite-react", "detail": {}}],
+                 dist_for=("web",))
+    def fake_start_target(out_dir, target, image=None, network=None, env=None, **kw):
+        return f"http://{target.name}:3000"
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
+                          start_service=fake_start_service, start_target=fake_start_target)
+    bring(_design_with_datastore())
+    net = f"devagent-sys-{tmp_path.name}"
+    assert seen["container_name"] == f"{net}-db"     # run-scoped, collision-free
+    assert seen["alias"] == "db"                     # conn URLs still resolve host "db"
+
+
+def test_bring_up_skips_service_kind_targets_from_sub_scopes(tmp_path):
+    # The frozen sub-scope lists the design's datastore so in-container acceptance can boot
+    # one; bring-up must NOT start it a second time next to the design-level node.
+    starts = []
+    def fake_start_service(target, image=None, network=None, **kw):
+        starts.append(target.name)
+        return "c"
+    _write_scope(tmp_path, "api", [
+        {"name": "db", "type": "datastore", "stack": "postgres", "detail": {}},
+        {"name": "api", "type": "backend", "stack": "node-express", "detail": {}}])
+    _write_scope(tmp_path, "web",
+                 [{"name": "web", "type": "frontend", "stack": "node-vite-react", "detail": {}}],
+                 dist_for=("web",))
+    def fake_start_target(out_dir, target, image=None, network=None, env=None, **kw):
+        return f"http://{target.name}:3000"
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
+                          start_service=fake_start_service, start_target=fake_start_target)
+    base_urls, _ = bring(_design_with_datastore())
+    assert starts == ["db"]                          # once as the design node, never again
+    assert set(base_urls) == {"api", "web"}

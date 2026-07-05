@@ -31,10 +31,12 @@ _ROOT = Path(__file__).resolve().parents[2]          # the dev-agent dir (holds 
 _MENTION = re.compile(r"@_user_\d+\s*")              # group @mention placeholders to strip
 _POLL_S = 1.0
 _HEARTBEAT_S = 180.0     # progress ping cadence during the long build phase
-# Stable, browsable runs root (override with DEVAGENT_FEISHU_RUNS_DIR). Each build still gets a
-# unique subdir, but under a predictable path so you can `tail -f` the ledger and open the run
-# report — unlike a random system tempdir that's unfindable and OS-cleaned mid-preview.
-_RUNS_BASE = Path(os.environ.get("DEVAGENT_FEISHU_RUNS_DIR", Path.home() / "devagent-runs"))
+# Stable, browsable runs root (override with DEVAGENT_FEISHU_RUNS_DIR). Same dir every other
+# entrypoint uses (CLI `run --build`, `build-system`) — one place to look for any run,
+# gitignored so builds never land in the repo. Each build still gets a unique subdir, under a
+# predictable path so you can `tail -f` the ledger and open the run report — unlike a random
+# system tempdir that's unfindable and OS-cleaned mid-preview.
+_RUNS_BASE = Path(os.environ.get("DEVAGENT_FEISHU_RUNS_DIR", _ROOT / "runs"))
 
 
 def _load_dotenv() -> None:

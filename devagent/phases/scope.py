@@ -88,6 +88,24 @@ def _recipe_catalog() -> tuple[str, str]:
     return "\n".join(lines), "  " + ", ".join(sorted(checks))
 
 
+class FrozenScopePhase:
+    """Scope phase that emits a precomputed ProjectScope — no LLM call. The system lane
+    derives each sub-build's scope mechanically from the architect's SystemDesign
+    (system_build.scope_for_node): the design is decided ONCE, and a sub-build must not
+    re-decide it. (Live-run finding, 2026-07-03: the per-service ScopePhase re-invented
+    targets and checks that contradicted the frozen contract — a correct build could not
+    satisfy both.) Same name/gate as ScopePhase so the pipeline is otherwise identical."""
+
+    name = "scope"
+
+    def __init__(self, scope: ProjectScope):
+        self.scope = scope
+
+    def run(self, ctx: PhaseContext) -> PhaseResult:
+        return PhaseResult(name=self.name, exit_code=0, output=self.scope.title,
+                           output_artifact=self.scope)
+
+
 class ScopePhase:
     name = "scope"
 

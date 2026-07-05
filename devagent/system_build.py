@@ -6,16 +6,60 @@ without Docker/tokens; the defaults do the real thing. Nothing in M14-M17 is mod
 import json
 import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
+from .schema import AcceptanceCheck, ArtifactSpec, ProjectScope
 from .tree import NodeResult, SUCCEEDED, FAILED, topo_order
 from . import recipes
 
 # egress.ensure() is an unlocked check-then-act on the shared devagent-proxy container;
 # serialize it across concurrent per-service build worker threads.
 _egress_lock = threading.Lock()
+
+
+def scope_for_node(node, design) -> ProjectScope:
+    """The mechanical ProjectScope for one service node — the SystemDesign is the ONLY scope
+    authority (one-flow, 2026-07-03). No per-service ScopePhase LLM call: live runs showed the
+    sub-run's scope model re-inventing targets (its own duplicate db) and acceptance checks
+    that contradicted the frozen contract (object vs array root for GET /polls), leaving no
+    response shape a correct build could satisfy.
+
+    Targets: the node itself, plus one service-kind target per design-level datastore
+    dependency (named exactly as the design names it, so in-container acceptance boots the
+    same store bring-up wires). Checks: derived from the node's PROVIDED contracts
+    (contract_utils.derive_checks) + a persistence check when a datastore backs the node;
+    a node providing nothing checkable (a frontend) gets a root route_status."""
+    from .contract_utils import derive_checks, derive_persistence_check
+
+    by_id = {s.id: s for s in design.services}
+    svc_deps = [by_id[d] for d in node.depends_on
+                if d in by_id and recipes.get(by_id[d].stack).kind == "service"]
+    targets = [ArtifactSpec(type=dep.kind, stack=dep.stack, name=dep.name)
+               for dep in svc_deps]
+
+    provided = [c for c in design.contracts if c.id in node.provides]
+    checks: list[dict] = []
+    for contract in provided:
+        checks.extend(derive_checks(contract))
+    if svc_deps:
+        for contract in provided:
+            p = derive_persistence_check(contract)
+            if p:
+                checks.append(p)
+                break
+    if not checks:
+        checks = [{"kind": "route_status", "route": "/", "expected_status": 200}]
+
+    detail = {"description": node.prd_slice}
+    if svc_deps:
+        detail["datastore"] = svc_deps[0].name
+        detail["conn_env"] = "DATABASE_URL"
+    targets.append(ArtifactSpec(type=node.kind, stack=node.stack, name=node.name,
+                                detail=detail,
+                                acceptance_checks=[AcceptanceCheck(**c) for c in checks]))
+    return ProjectScope(title=f"{design.title} — {node.name}", targets=targets)
 
 
 def make_run_node(run_dir, budget, ledger, build_service=None):
@@ -45,12 +89,13 @@ def make_run_node(run_dir, budget, ledger, build_service=None):
 
 
 def _real_build_service(node, design, svc_dir, budget, ledger) -> str:
-    """Build one service through the existing scope->plan->build->verify pipeline (deploy-less:
+    """Build one service through the existing plan->build->verify pipeline (deploy-less:
     system bring-up starts the real containers), sharing the system budget and injecting the
     node's contracts (M16 seam) — both the ones it consumes and the ones it provides (the
     producer must implement its own frozen interface; live-run finding 2026-07-03: without it
-    the api invented routes/fields its consumers didn't call). Returns the run's terminal
-    status string."""
+    the api invented routes/fields its consumers didn't call). The sub-run's scope is FROZEN
+    (scope_for_node): derived from the design, never re-decided by a second LLM call.
+    Returns the run's terminal status string."""
     from .cli import build_pipeline_phases
     from .config import Config
     from .contract_utils import contracts_for_node
@@ -75,7 +120,8 @@ def _real_build_service(node, design, svc_dir, budget, ledger) -> str:
     phases, gates = build_pipeline_phases(
         str(Path(svc_dir) / "prd.md"), build=True, deploy=False, out_dir=out_dir,
         run_id=f"svc-{node.name}", executor=executor, verifier=verifier,
-        consumed_contracts=consumed, provided_contracts=provided)
+        consumed_contracts=consumed, provided_contracts=provided,
+        scope=scope_for_node(node, design))
     orch = Orchestrator(phases=phases, gates=gates, budget=budget, ledger=ledger,
                         sandbox=NullSandbox())
     return orch.run()
@@ -130,7 +176,12 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
             for sid in topo_order(design):
                 node = by_id[sid]
                 if recipes.get(node.stack).kind == "service":
-                    container = ss(node, network=net)      # design-level datastore: alias node.name
+                    # Run-scoped container name (alias stays node.name for conn URLs): a fixed
+                    # name like devagent-preview-db is shared with single-run previews and
+                    # every other system run — each caller docker-rm-f's the other's live
+                    # container (live-run finding, 2026-07-03).
+                    container = ss(node, network=net, alias=node.name,
+                                   container_name=f"{net}-{node.name}")
                     if container:
                         started.append(container)
                     continue
@@ -142,6 +193,13 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
                 targets = [SimpleNamespace(name=t["name"], type=t["type"], stack=t["stack"],
                                            detail=t.get("detail") or {})
                            for t in json.loads(scope_path.read_text())["targets"]]
+                # A sub-scope's service-kind targets are design-level dependencies (the frozen
+                # scope names them from the design) — they exist so in-container acceptance can
+                # boot a store, and are started ABOVE as design nodes. Wiring them again here
+                # would run a second datastore with ambiguous conn wiring.
+                targets = [t for t in targets
+                           if not (recipes.is_registered(t.stack)
+                                   and recipes.get(t.stack).kind == "service")]
 
                 deps = [by_id[d] for d in node.depends_on]
                 extra_env = None
@@ -180,6 +238,7 @@ class SystemReport:
     build_ok: bool
     integration: object          # IntegrationReport | None
     status: str                  # design_failed | build_failed | integration_failed | succeeded
+    urls: dict = field(default_factory=dict)   # service_id -> preview base_url (on success)
 
 
 def build_system(prd_path, *, budget, ledger, run_node, bring_up,
@@ -189,11 +248,25 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
     without Docker/tokens. `run_dir` (optional) persists the gated SystemDesign to
     <run_dir>/design.json — the run's authoritative design record (contracts + integration
     checks), without which a failed live run can't be diagnosed against what the architect
-    actually asked for."""
+    actually asked for.
+
+    One-flow (2026-07-03): integration checks are DERIVED from the design's contracts
+    (contract_utils.derive_integration_checks) — the same assertions each producer already
+    passed in-container — falling back to the architect's hand-written integration_checks
+    only when nothing is derivable. On success the brought-up system is KEPT as the preview
+    (urls in the report), exactly like a single-run deploy; teardown happens only on failure.
+    The final ledger event carries the true post-integration status (tree_build_end is the
+    per-service build verdict only)."""
     from .tree import TreeOrchestrator
+    from .contract_utils import derive_integration_checks
     from .integration import IntegrationRunner
     from .phase_gates import ArchitectGate, IntegrationGate
     from .phases.base import PhaseContext, PhaseResult
+
+    def _finish(report: SystemReport) -> SystemReport:
+        if ledger is not None:
+            ledger.append({"event": "system_build_end", "status": report.status})
+        return report
 
     # Architect -> SystemDesign, gated.
     if architect is None:
@@ -201,8 +274,12 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
         ctx = PhaseContext(sandbox=None, budget=budget, ledger=ledger)
         res = ArchitectPhase(prd_path).run(ctx)
         design = res.output_artifact
+        if ledger is not None:   # architect cost was invisible in the ledger (review finding)
+            ledger.append({"event": "phase", "phase": "architect", "exit": res.exit_code,
+                           "output": res.output, "meta": res.meta})
         if not ArchitectGate().check(res).ok:
-            return SystemReport(getattr(design, "title", "?"), {}, False, None, "design_failed")
+            return _finish(SystemReport(getattr(design, "title", "?"), {}, False, None,
+                                        "design_failed"))
     else:
         design = architect(prd_path)
 
@@ -219,22 +296,30 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
         dups = sorted({n for n in names if names.count(n) > 1})
         if ledger is not None:
             ledger.append({"event": "design_duplicate_names", "names": dups})
-        return SystemReport(design.title, {}, False, None, "design_failed")
+        return _finish(SystemReport(design.title, {}, False, None, "design_failed"))
 
     # Build every service (M15).
     sysres = TreeOrchestrator(run_node=run_node, ledger=ledger).run(design)
     build_ok = sysres.status == "succeeded"
     if not build_ok:
-        return SystemReport(design.title, sysres.results, False, None, "build_failed")
+        return _finish(SystemReport(design.title, sysres.results, False, None, "build_failed"))
 
-    # Bring up + cross-service E2E (M17), teardown always.
+    # Bring up + cross-service E2E (M17). Success keeps the system running as the preview.
     base_urls, teardown = bring_up(design)
     try:
+        checks = derive_integration_checks(design) or design.integration_checks
         runner = integration_runner or IntegrationRunner().run
-        report = runner(design.integration_checks, base_urls)
+        report = runner(checks, base_urls)
         ok = IntegrationGate().check(
             PhaseResult(name="integration", exit_code=0, output_artifact=report)).ok
-    finally:
+    except Exception:
         teardown()
-    return SystemReport(design.title, sysres.results, True, report,
-                        "succeeded" if ok else "integration_failed")
+        raise
+    if not ok:
+        teardown()
+        return _finish(SystemReport(design.title, sysres.results, True, report,
+                                    "integration_failed"))
+    if ledger is not None:
+        ledger.append({"event": "system_deploy", "urls": dict(base_urls)})
+    return _finish(SystemReport(design.title, sysres.results, True, report, "succeeded",
+                                urls=dict(base_urls)))

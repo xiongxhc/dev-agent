@@ -114,20 +114,30 @@ Feishu chat  ──@bot / DM (a PRD)──▶  feishu_bot.py            (runs on
                      Feishu chat  ◀── 📋 scope ✓ · 🗂 plan ✓ · 🔨 build ✓ · 🚀 URL · report.html
 ```
 
-The system lane (`devagent build-system <prd.md>`) wraps that same pipeline per service:
+The system lane (`devagent build-system <prd.md>`) wraps that same pipeline per service.
+**One-flow rule (2026-07-03): the design is decided ONCE.** The architect's SystemDesign is
+the only scope authority — each sub-build gets a mechanically derived frozen scope (no second
+scope LLM call), and both the per-service acceptance checks AND the cross-service integration
+checks are derived from the frozen contracts (`contract_utils.derive_checks`), so one route
+can never be graded against two contradictory shapes (the Team Polls live-run failure class):
 
 ```
 PRD ─▶ architect ─▶ SystemDesign (service DAG + contracts) ─▶ [architect gate]
  ├─ per service, in dependency order (independent siblings concurrent · ONE shared budget):
- │      scope ─▶ plan ─▶ build ─▶ verify         the same gated pipeline as above, as a sub-run
- │      (deploy-less: no preview containers;     · consumed contracts injected into the prompt
- │       datastore nodes skip the LLM build      · each sub-run persists out/.devagent/scope.json
- │       entirely — recipe image at bring-up)
+ │      frozen scope ─▶ plan ─▶ build ─▶ verify  the same gated pipeline as above, as a sub-run
+ │      (scope derived from the design via       · consumed + provided contracts in the prompt
+ │       scope_for_node — checks derived from    · acceptance checks = derive_checks(contract)
+ │       the node's provided contracts;          · each sub-run persists out/.devagent/scope.json
+ │       datastore nodes skip the LLM build entirely — recipe image at bring-up)
  ├─ bring-up of the ACTUAL built targets (read from each sub-run's scope.json):
- │      per-run docker network devagent-sys-<run_id> · containers devagent-preview-<node>-<target>
+ │      per-run docker network devagent-sys-<run_id> · design datastore nodes named per-run
+ │      (devagent-sys-<run_id>-<node> — runs and previews never rm -f each other)
  │      · DATABASE_URL injected from design-level datastore deps · frontend config.json → live api
- ├─ cross-service E2E over real HTTP ─▶ [integration gate]
- └─ runs/<id>/system-report.json · teardown ALWAYS (containers + volumes + network, even on failure)
+ ├─ cross-service E2E over real HTTP — the SAME derived checks against the live system
+ │      ─▶ [integration gate]
+ └─ runs/<id>/system-report.json (+ preview urls) · on SUCCESS the system STAYS UP as the
+    preview (like a single-run deploy); teardown only on failure · the ledger's final
+    system_build_end carries the true post-integration status
 ```
 
 Feishu currently triggers **single runs only** — pasting a system-sized PRD there builds one
@@ -602,7 +612,18 @@ Remaining follow-ups (non-blocking, tracked):
   bring-up wired from each sub-run's scope.json via the extracted `deploy.wire_targets`
   (conn env + frontend apiBase + per-node namespacing). Design:
   [2026-07-02](../docs/planning/specs/2026-07-02-dev-agent-m21-system-live-path-design.md).
-  Live multi-service run still pending (needs key + Docker).
+
+- **One-flow** ✅ (2026-07-03) — **the design is decided once; checks derive from contracts.**
+  Live Team Polls runs failed 4/4 because THREE independent LLM calls specced the same route
+  (architect integration checks, each sub-run's re-scope, the contract) and contradicted each
+  other — no build could satisfy all. Fixes: sub-builds get a FROZEN mechanical scope
+  (`system_build.scope_for_node` + `FrozenScopePhase`, per-service ScopePhase deleted from the
+  lane); acceptance AND integration checks are derived from the frozen contracts
+  (`contract_utils.derive_checks` / `derive_integration_checks`, architect prose checks used
+  only as fallback); success keeps the brought-up system as the preview (urls in report +
+  ledger `system_deploy`); design datastore nodes get per-run container names; the ledger's
+  final `system_build_end` is post-integration truth (tree verdict renamed `tree_build_end`).
+  Review: [2026-07-03](../docs/planning/specs/2026-07-03-dev-agent-single-flow-review.md).
 
 - **M22** ⬜ — **Eval as change-gate (extends M5 — no scheduled burn).** Two halves: (a) **free
   telemetry** — aggregate pass-rate / retries / cost-per-phase from real run ledgers

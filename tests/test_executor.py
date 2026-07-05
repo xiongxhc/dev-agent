@@ -125,6 +125,39 @@ def test_enrich_scope_keeps_all_checks_without_provided_contract():
     assert len(baked["targets"][0]["acceptance_checks"]) == 1
 
 
+def test_enrich_scope_drops_api_json_check_contradicting_provided_array_contract():
+    # Live-run finding (2026-07-03, Team Polls, 4/4 system-build runs): the scope model wrote
+    # an api_json check assuming GET /polls returns an object ({"polls": [...]}) while the
+    # frozen openapi contract declares the 200 response as a bare array. No build can satisfy
+    # both: enrich_scope's OWN api_json checks (object-shaped) and the system-level integration
+    # checks (array-shaped, "0.question") disagree, so the LLM built a hybrid
+    # {"length", "count", "polls", "data"} object to limp past both — which broke the frontend,
+    # which correctly implements the contract's array shape and renders nothing for anything
+    # that isn't Array.isArray(). The contract is the authority: drop api_json checks whose
+    # json_path's root-level assumption (object key vs array index) the provided openapi
+    # contradicts.
+    from devagent.schema import AcceptanceCheck
+    scope = ProjectScope(title="t", targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api", acceptance_checks=[
+            AcceptanceCheck(kind="api_json", route="/polls", method="GET",
+                            json_path="polls"),               # object-shaped -> contradicts array -> drop
+            AcceptanceCheck(kind="api_json", route="/polls", method="GET",
+                            json_path="0.question"),           # array-indexed -> matches array -> keep
+            AcceptanceCheck(kind="api_json", route="/polls", method="POST",
+                            json_path="id"),                   # POST has no declared schema -> keep
+        ])])
+    contract = {"paths": {
+        "/polls": {"get": {"responses": {"200": {"content": {"application/json": {
+            "schema": {"type": "array", "items": {"type": "object"}}}}}}},
+                   "post": {}},
+    }}
+    baked = enrich_scope(scope, provided_by_target={"api": [contract]})
+    kept = [(c["kind"], c["route"], c["json_path"]) for c in baked["targets"][0]["acceptance_checks"]]
+    assert ("api_json", "/polls", "polls") not in kept
+    assert ("api_json", "/polls", "0.question") in kept
+    assert ("api_json", "/polls", "id") in kept
+
+
 def test_enrich_scope_drops_get_probe_expecting_created_status():
     # Feishu live run (2026-07-03): scope emitted route_status /auth/register want 201 —
     # route_status probes GET, and a GET can never return 201 Created; 12/13 checks passed

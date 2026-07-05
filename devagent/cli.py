@@ -24,7 +24,7 @@ from .phase_gates import PlanGate, ScopeGate, VerifyGate
 from .phases.build import BuildPhase
 from .phases.deploy import DeployPhase
 from .phases.plan import PlanPhase
-from .phases.scope import ScopePhase
+from .phases.scope import FrozenScopePhase, ScopePhase
 from .report import write_report
 from .sandbox import NullSandbox
 from .system_build import build_system, make_run_node, make_bring_up
@@ -37,15 +37,20 @@ def _new_run_id() -> str:
 
 def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None, run_id=None,
                           executor=None, verifier=None, answers_path=None, consumed_contracts=(),
-                          provided_contracts=()):
+                          provided_contracts=(), scope=None):
     """The scope->plan[->build[->deploy]] phase list + gate map. Shared by `run` and the M20
     `build-system` per-service sub-runs so both assemble the pipeline identically. Sub-runs
     pass deploy=False: previews are pointless there, and their fixed devagent-preview-<name>
     container names collide across concurrent sibling builds — system bring-up starts the
     real containers instead (M21). `consumed_contracts` (M21) are the node's consumed
     contract-spec dicts, `provided_contracts` the ones it must implement — both forwarded
-    into BuildPhase -> BuildRequest -> enrich_scope."""
-    phases = [ScopePhase(input_path, answers_path=answers_path), PlanPhase()]
+    into BuildPhase -> BuildRequest -> enrich_scope. `scope` (one-flow, 2026-07-03): a
+    precomputed ProjectScope — the phase list starts with FrozenScopePhase instead of an LLM
+    ScopePhase; system sub-builds pass the scope derived from the architect's design so the
+    design is decided exactly once."""
+    first = FrozenScopePhase(scope) if scope is not None \
+        else ScopePhase(input_path, answers_path=answers_path)
+    phases = [first, PlanPhase()]
     gates = {"scope": ScopeGate(), "plan": PlanGate()}
     if build:
         # BuildPhase owns the repair loop: build -> rebuild-from-source verify -> repair
@@ -113,11 +118,14 @@ def _build_system(args) -> int:
         "services": {k: {"status": v.status, "detail": v.detail}
                     for k, v in report.node_results.items()},
         "integration": [dict(s) for s in report.integration.steps] if report.integration else None,
+        "urls": report.urls,
     }, indent=2))
     print(f"{run_id} {report.status}")
     print(f"  -> services: " + ", ".join(
         f"{k}={v.status}" if v.status == "succeeded" else f"{k}={v.status} ({v.detail})"
         for k, v in report.node_results.items()))
+    for svc, url in report.urls.items():
+        print(f"  -> preview {svc}: {url}")
     print(f"  -> report: {run_dir / 'system-report.json'}")
     return 0 if report.status == "succeeded" else 1
 
