@@ -641,3 +641,13 @@ Remaining follow-ups (non-blocking, tracked):
   (frozen scope + persisted plan reloaded — no re-plan drift); teardown → fresh bring-up → full
   suite re-run; capped by `max_system_repairs` (default 1) spending shared-Budget retries.
   Design: [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-system-repair-loop-design.md).
+
+- **M24** ⬜ — **security verify phase (red-team).** Functional checks verify the contract was
+  *met*, never that it's *safe* — a live run shipped `POST /auth/register` accepting `role=admin`
+  (privilege escalation) with every check green. New verify phase probes the brought-up preview
+  (reusing `base_urls` + the synthesized `AuthFlow`, plus a second registered principal for
+  IDOR/authz) for mass-assignment, missing-authz, cross-user IDOR, and weak-registration.
+  Deterministic probe library + gating ruleset (LLM only triages/expands — can't invent a
+  gating finding); a high-confidence finding fails verification and feeds the M23 repair loop,
+  so the bug is repaired, not just reported. Depends on M23. Design:
+  [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-m24-security-verify-phase-design.md).
