@@ -95,6 +95,15 @@ def test_regression_safe_app_has_no_gating_findings():
     assert gating == []
 
 
+def test_run_probes_never_raises_even_when_http_explodes():
+    class _ExplodingHttp:
+        def api_json(self, *a, **k): raise RuntimeError("boom")
+        def route_status(self, *a, **k): raise RuntimeError("boom")
+    findings = run_probes("http://api", "api", _register_contract(),
+                          auth={"a": None, "b": None}, http=_ExplodingHttp())
+    assert isinstance(findings, list)   # fail-open: a crashing probe yields no finding, no raise
+
+
 def test_finding_renders_as_failing_step():
     f = Finding(kind="mass_assignment", service="api", route="/auth/register", method="POST",
                 severity="critical", confidence="high",

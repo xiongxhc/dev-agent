@@ -14,6 +14,8 @@ class _Http:
     """Default adapter over acceptance_runner: returns dicts with a parsed _payload for
     reflection checks. Failures degrade to {'ok': False} — a dead route is a failed probe."""
     def api_json(self, base, route, method, body, json_path, json_equals, headers=None):
+        # Not check_api_json: the probes need the raw parsed payload + status for reflection/IDOR
+        # detection, which that verdict-only helper doesn't expose. Kept separate deliberately.
         import json
         import urllib.request
         url = base.rstrip("/") + route

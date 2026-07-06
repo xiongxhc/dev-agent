@@ -84,3 +84,37 @@ def test_repair_context_forwards_to_build_phase():
         executor=_Ex(), verifier=None, scope=scope, repair_context="INTEGRATION FAILED: ...")
     build_phase = next(p for p in phases if p.name == "build")
     assert build_phase.repair_context == "INTEGRATION FAILED: ..."
+
+
+def test_repair_context_reaches_build_request_on_run():
+    # test_repair_context_forwards_to_build_phase only checks the stored attribute; this drives
+    # BuildPhase.run() end to end and asserts repair_context actually lands in the BuildRequest
+    # the executor receives (mirrors tests/test_build_phase.py's ctx/executor setup).
+    from devagent.budget import Budget
+    from devagent.executor import BuildResult
+    from devagent.phases.base import PhaseContext
+    from devagent.schema import AcceptanceCheck, ArtifactSpec, Plan, ProjectScope, Task
+
+    scope = ProjectScope(title="frozen", targets=[
+        ArtifactSpec(type="backend", stack="node-express", name="api",
+                     acceptance_checks=[AcceptanceCheck(kind="route_status", route="/")])])
+    plan = Plan(tasks=[Task(id="t1", description="scaffold", owned_files=["api/index.js"])])
+
+    class _CapturingExecutor:
+        def __init__(self):
+            self.seen = None
+        def build(self, req):
+            self.seen = req
+            return BuildResult(repo_path="/tmp/out", success=True)
+
+    ex = _CapturingExecutor()
+    phases, _ = build_pipeline_phases(
+        "ignored.md", build=True, deploy=False, out_dir="/tmp/out", run_id="r1",
+        executor=ex, verifier=None, scope=scope, repair_context="INTEGRATION FAILED: ...")
+    build_phase = next(p for p in phases if p.name == "build")
+
+    ctx = PhaseContext(sandbox=None, budget=Budget(10**9, 1e9, 9), ledger=None,
+                       artifacts={"scope": scope, "plan": plan})
+    build_phase.run(ctx)
+    assert ex.seen is not None
+    assert ex.seen.repair_context == "INTEGRATION FAILED: ..."

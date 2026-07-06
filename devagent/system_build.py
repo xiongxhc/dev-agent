@@ -115,10 +115,12 @@ def scope_for_node(node, design) -> ProjectScope:
 
 
 def make_run_node(run_dir, budget, ledger, build_service=None):
-    """Return a run_node(node, design) -> NodeResult for M15's TreeOrchestrator. Each service
-    is built into <run_dir>/services/<name>/ via
-    `build_service(node, design, svc_dir, budget, ledger)` (default: the real pipeline
-    sub-run), sharing the one `budget`. A build_service crash becomes a FAILED node."""
+    """Return a run_node(node, design, repair_context=None) -> NodeResult for M15's
+    TreeOrchestrator. Each service is built into <run_dir>/services/<name>/ via
+    `build_service(node, design, svc_dir, budget, ledger, repair_context=None)` (default: the
+    real pipeline sub-run), sharing the one `budget`. `repair_context` (M23) is forwarded
+    unchanged to build_service and reaches the executor's first BuildRequest on a repair pass.
+    A build_service crash becomes a FAILED node."""
     run_dir = Path(run_dir)
     bs = build_service if build_service is not None else _real_build_service
 
@@ -302,7 +304,7 @@ class SystemReport:
     status: str                  # design_failed | build_failed | integration_failed | succeeded
     urls: dict = field(default_factory=dict)   # service_id -> preview base_url (on success)
     repairs: list = field(default_factory=list)  # one entry per system-repair pass (M23)
-    findings: list = field(default_factory=list)  # gating security findings recorded (M24)
+    findings: list = field(default_factory=list)  # M24: full security findings (gating + advisory)
 
 
 def build_system(prd_path, *, budget, ledger, run_node, bring_up,
@@ -418,14 +420,29 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
                                         "integration_failed", repairs=repairs,
                                         findings=list(security_findings or [])))
     except Exception:
-        teardown()                                       # a mid-pass bring_up/reverify crash still tears down
+        # a mid-pass bring_up/reverify crash still tears down. teardown() is idempotent (the
+        # injected teardown does `docker rm -f`/`network rm` with check=False) so a double-call
+        # here — e.g. a post-repair step raising before `teardown` is rebound to the fresh
+        # stack's — is safe.
+        teardown()
         raise
 
     # Success keys on the loop's FINAL base_urls/report — never the stale pre-loop values.
-    # M24: active probes mutated the kept preview — deliver a pristine one.
-    if security_verify is not None:
+    # M24: active probes mutated the kept preview — deliver a pristine one. Only when a
+    # probeable openapi contract exists (else no probe ran → nothing mutated), and guarded so a
+    # re-bring-up failure degrades to a graceful integration_failed return rather than an
+    # uncaught crash on an otherwise-successful run.
+    probed = security_verify is not None and any(
+        getattr(c, "kind", None) == "openapi" for c in getattr(design, "contracts", []))
+    if probed:
         teardown()
-        base_urls, teardown = bring_up(design)
+        try:
+            base_urls, teardown = bring_up(design)
+        except Exception:
+            teardown()
+            return _finish(SystemReport(design.title, sysres.results, True, report,
+                                        "integration_failed", repairs=repairs,
+                                        findings=list(security_findings or [])))
     if ledger is not None:
         ledger.append({"event": "system_deploy", "urls": dict(base_urls)})
     return _finish(SystemReport(design.title, sysres.results, True, report, "succeeded",

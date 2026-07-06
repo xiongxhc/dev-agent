@@ -229,13 +229,18 @@ def test_m24_gating_finding_drives_repair_and_records_findings():
     from devagent.system_build import build_system
     d = _design_api_provides()
 
-    sec = {"n": 0, "sink": []}
+    sec = {"n": 0}
+    sink = []
     def security_verify(design, base_urls):
         sec["n"] += 1
         if sec["n"] == 1:
             step = {"service": "api", "route": "/auth/register", "ok": False,
                     "detail": "mass-assignment role=admin accepted — strip role server-side"}
-            sec["sink"].append(step)      # cli captures findings via a sink like this
+            # mirrors the cli: the gating finding is written to the security_findings sink
+            # build_system was given, on the FIRST (gating) call.
+            sink[:] = [{"kind": "mass_assignment", "service": "api", "route": "/auth/register",
+                       "method": "POST", "severity": "critical", "confidence": "high",
+                       "evidence": "e", "remediation": "r"}]
             return [step]
         return []                          # clean after repair
     def runner(checks, urls):
@@ -252,5 +257,8 @@ def test_m24_gating_finding_drives_repair_and_records_findings():
 
     rep = build_system("prd.md", budget=None, ledger=None, run_node=run_node,
                        bring_up=bring_up, architect=lambda _p: d, integration_runner=runner,
-                       security_verify=security_verify, max_system_repairs=1)
+                       security_verify=security_verify, security_findings=sink,
+                       max_system_repairs=1)
     assert rep.status == "succeeded" and repaired["n"] == 1
+    # the sink the cli would populate is echoed onto the report's findings, on success
+    assert rep.findings and rep.findings[0]["kind"] == "mass_assignment"
