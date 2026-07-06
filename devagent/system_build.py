@@ -83,7 +83,7 @@ def make_run_node(run_dir, budget, ledger, build_service=None):
     run_dir = Path(run_dir)
     bs = build_service if build_service is not None else _real_build_service
 
-    def run_node(node, design):
+    def run_node(node, design, repair_context=None):
         svc_dir = run_dir / "services" / node.name
         svc_dir.mkdir(parents=True, exist_ok=True)
         (svc_dir / "prd.md").write_text(node.prd_slice)
@@ -93,7 +93,8 @@ def make_run_node(run_dir, budget, ledger, build_service=None):
             return NodeResult(node.id, SUCCEEDED,
                               "service node: started from recipe image at bring-up")
         try:
-            status = bs(node, design, str(svc_dir), budget, ledger)
+            status = bs(node, design, str(svc_dir), budget, ledger,
+                        repair_context=repair_context)
         except Exception as e:  # a sub-run crash is a node failure, not a system-build crash
             return NodeResult(node.id, FAILED, repr(e))
         return NodeResult(node.id, SUCCEEDED if status == "succeeded" else FAILED, str(status))
@@ -101,19 +102,23 @@ def make_run_node(run_dir, budget, ledger, build_service=None):
     return run_node
 
 
-def _real_build_service(node, design, svc_dir, budget, ledger) -> str:
-    """Build one service through the existing plan->build->verify pipeline (deploy-less:
-    system bring-up starts the real containers), sharing the system budget and injecting the
-    node's contracts (M16 seam) — both the ones it consumes and the ones it provides (the
-    producer must implement its own frozen interface; live-run finding 2026-07-03: without it
-    the api invented routes/fields its consumers didn't call). The sub-run's scope is FROZEN
-    (scope_for_node): derived from the design, never re-decided by a second LLM call.
+def _real_build_service(node, design, svc_dir, budget, ledger, repair_context=None) -> str:
+    """Build one service through the plan->build->verify pipeline (deploy-less: system
+    bring-up starts the real containers), sharing the system budget and injecting the node's
+    contracts (M16 seam) — both the ones it consumes and the ones it provides (the producer
+    must implement its own frozen interface; live-run finding 2026-07-03: without it the api
+    invented routes/fields its consumers didn't call). The sub-run's scope is FROZEN
+    (scope_for_node): derived from the design, never re-decided by a second LLM call. In
+    REPAIR mode (repair_context set) the sub-run reloads the executor-persisted plan
+    (out/.devagent/plan.json) via FrozenPlanPhase — build+verify only, no LLM re-plan — and
+    seeds the executor's first BuildRequest with the integration report as repair_context.
     Returns the run's terminal status string."""
     from .cli import build_pipeline_phases
     from .config import Config
     from .contract_utils import contracts_for_node
     from .orchestrator import Orchestrator
     from .sandbox import NullSandbox
+    from .schema import Plan
     from .verifier import BuildVerifier
     from . import egress
     from .executor_sdk import SdkExecutor
@@ -130,11 +135,15 @@ def _real_build_service(node, design, svc_dir, budget, ledger) -> str:
     verifier = BuildVerifier(network=network, proxy_url=proxy)
     consumed = tuple(c.spec for c in contracts_for_node(node, design))
     provided = tuple(c.spec for c in design.contracts if c.id in node.provides)
+    plan = None
+    if repair_context is not None:
+        # Reload the plan the executor already persisted; a repair re-plans nothing.
+        plan = Plan.model_validate_json((out_dir / ".devagent" / "plan.json").read_text())
     phases, gates = build_pipeline_phases(
         str(Path(svc_dir) / "prd.md"), build=True, deploy=False, out_dir=out_dir,
         run_id=f"svc-{node.name}", executor=executor, verifier=verifier,
         consumed_contracts=consumed, provided_contracts=provided,
-        scope=scope_for_node(node, design))
+        scope=scope_for_node(node, design), plan=plan, repair_context=repair_context)
     orch = Orchestrator(phases=phases, gates=gates, budget=budget, ledger=ledger,
                         sandbox=NullSandbox())
     return orch.run()
