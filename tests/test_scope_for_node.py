@@ -62,3 +62,50 @@ def test_derived_scopes_pass_scope_gate():
         scope = scope_for_node(_node(design, sid), design)
         res = ScopeGate().check(PhaseResult(name="scope", exit_code=0, output_artifact=scope))
         assert res.ok, f"{sid}: {res.reason}"
+
+
+def _auth_design():
+    return SystemDesign(title="Private Notes", services=[
+        ServiceNode(id="db", name="db", kind="datastore", stack="postgres", prd_slice="store",
+                    provides=["db_schema_notes"]),
+        ServiceNode(id="api", name="api", kind="backend", stack="node-express",
+                    prd_slice="notes API with auth", depends_on=["db"],
+                    provides=["openapi_notes"], consumes=["db_schema_notes"])],
+        contracts=[
+            Contract(id="db_schema_notes", kind="db_schema", producer="db", spec={}),
+            Contract(id="openapi_notes", kind="openapi", producer="api", spec={"paths": {
+                "/auth/register": {"post": {"requestBody": {"content": {"application/json": {
+                    "schema": {"type": "object", "required": ["username", "password"],
+                               "properties": {"username": {"type": "string"},
+                                              "password": {"type": "string"}}}}}}}},
+                "/auth/login": {"post": {
+                    "requestBody": {"content": {"application/json": {"schema": {
+                        "type": "object", "required": ["username", "password"],
+                        "properties": {"username": {"type": "string"},
+                                       "password": {"type": "string"}}}}}},
+                    "responses": {"200": {"content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"token": {"type": "string"}}}}}}}}},
+                "/notes": {
+                    "get": {"security": [{"bearerAuth": []}],
+                            "responses": {"200": {"content": {"application/json": {"schema": {
+                                "type": "array", "items": {"type": "object", "properties": {
+                                    "id": {"type": "integer"}}}}}}}}},
+                    "post": {"security": [{"bearerAuth": []}],
+                             "responses": {"201": {"content": {"application/json": {"schema": {
+                                 "type": "object",
+                                 "properties": {"id": {"type": "integer"}}}}}}}}}}})])
+
+
+def test_auth_backend_scope_carries_synthesized_flow_and_gated_checks():
+    design = _auth_design()
+    scope = scope_for_node(_node(design, "api"), design)
+    api = {t.name: t for t in scope.targets}["api"]
+    assert api.auth is not None and api.auth.login_route == "/auth/login"
+    assert api.auth.register_route == "/auth/register"
+    assert api.auth.token_json_path == "token"
+    protected = [c for c in api.acceptance_checks if c.auth]
+    unauth_probe = [c for c in api.acceptance_checks
+                    if c.kind == "route_status" and c.expected_status == 401]
+    assert protected and unauth_probe                    # both sides of the auth gate
+    res = ScopeGate().check(PhaseResult(name="scope", exit_code=0, output_artifact=scope))
+    assert res.ok, res.reason

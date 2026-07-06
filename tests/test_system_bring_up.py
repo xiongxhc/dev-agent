@@ -195,7 +195,8 @@ def test_bring_up_mounts_actual_scope_target_names(tmp_path):
                           start_service=lambda *a, **k: "c", start_target=fake_start_target)
     base_urls, _ = bring(d)
     assert base_urls == {"api": "http://server:3000"}
-    assert seen == [("server", "devagent-preview-api-server")]
+    # container name is run-scoped (kept-up previews must survive the next run's bring-up)
+    assert seen == [("server", f"devagent-sys-{tmp_path.name}-api-server")]
 
 
 def test_bring_up_probes_health_before_adding_base_url(tmp_path):
@@ -280,3 +281,19 @@ def test_bring_up_skips_service_kind_targets_from_sub_scopes(tmp_path):
     base_urls, _ = bring(_design_with_datastore())
     assert starts == ["db"]                          # once as the design node, never again
     assert set(base_urls) == {"api", "web"}
+
+
+def test_bring_up_run_scopes_wired_target_container_names(tmp_path):
+    # Success now KEEPS the system up as the preview, so wired-target container names must be
+    # run-scoped too — with the fixed devagent-preview-<node>-<target> names, the NEXT system
+    # run's bring-up would docker-rm-f the previous run's live preview.
+    seen = []
+    def fake_start_target(out_dir, target, image=None, network=None, env=None, **kw):
+        seen.append(kw.get("container_name"))
+        return f"http://{target.name}:3000"
+    _scaffold(tmp_path)
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
+                          start_service=lambda *a, **k: "c", start_target=fake_start_target)
+    bring(_design())
+    net = f"devagent-sys-{tmp_path.name}"
+    assert seen == [f"{net}-api-api", f"{net}-web-web"]

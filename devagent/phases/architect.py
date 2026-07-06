@@ -34,6 +34,15 @@ Rules:
 - The dependency graph MUST be acyclic.
 - Keep contracts minimal but real: for openapi put paths + request/response shapes in `spec`; for
   db_schema the tables/columns; for auth_token the claims.
+- AUTH in openapi contracts (verification checks are DERIVED from these markers — omitting them
+  means auth goes unverified):
+  - Include the auth endpoints themselves in `paths` with request/response shapes: a register
+    POST (accepting EXACTLY the signup fields — never a role field, roles are assigned
+    server-side) and a login POST whose 200 response body contains a `token` property.
+  - Mark every op that requires a credential with `security: [{{"bearerAuth": []}}]`. Protected
+    routes return 401 without a token.
+  - Mark ops restricted to a privileged role with `x-required-role: <role>` as well — a
+    freshly-registered user is a REGULAR member, and a member hitting such an op gets 403.
 - A service that CONSUMES another service's API must NOT rebuild it. Write its `prd_slice` so the
   downstream builder knows that API already exists and is supplied at runtime (e.g. a frontend
   slice says "the API exists — build ONLY the web UI against it"); otherwise the sub-build will

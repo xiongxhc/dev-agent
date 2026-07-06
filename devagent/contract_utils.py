@@ -44,6 +44,32 @@ def openapi_to_checks(contract: Contract) -> list[dict]:
     return checks
 
 
+def _resolve_refs(node, spec, depth=0):
+    """Inline local '#/a/b/c' $ref pointers so every schema consumer sees concrete shapes —
+    architects legitimately emit components/schemas + $ref (live run, 2026-07-06: unresolved
+    refs made auth underivable and every protected check was silently stripped). Depth-capped
+    against self-referential schemas; a dangling ref resolves to {} (derives nothing, same as
+    an absent schema)."""
+    if depth > 10:
+        return {}
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/"):
+            target = spec
+            for part in ref[2:].split("/"):
+                target = target.get(part) if isinstance(target, dict) else None
+            return _resolve_refs(target, spec, depth + 1) if target is not None else {}
+        return {k: _resolve_refs(v, spec, depth + 1) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_resolve_refs(v, spec, depth + 1) for v in node]
+    return node
+
+
+def _paths(contract: Contract) -> dict:
+    """The contract's paths with every local $ref inlined."""
+    return _resolve_refs(contract.spec.get("paths") or {}, contract.spec)
+
+
 def _first_2xx_schema(op) -> dict | None:
     """The JSON schema of an operation's first (lowest) 2xx application/json response."""
     if not isinstance(op, dict):
@@ -82,7 +108,8 @@ def sample_body(schema, name: str = ""):
     """Deterministic sample value satisfying *schema*, for synthesized POST bodies.
     required-only objects (all properties when nothing is required), 2-element arrays
     (collections like poll options commonly require >= 2), name-aware strings so
-    email/password validators don't reject the sample."""
+    email/password validators don't reject the sample. Strings carry no spaces — a
+    'sample username' 400s against alphanumeric-username validators (live run, 2026-07-06)."""
     if not isinstance(schema, dict):
         return "sample"
     if schema.get("enum"):
@@ -104,7 +131,7 @@ def sample_body(schema, name: str = ""):
         return "sample@example.com"
     if "password" in low:
         return "Sample-Passw0rd-1!"
-    return f"sample {name}".strip() or "sample"
+    return f"sample_{name}".rstrip("_") if name else "sample"
 
 
 def _method_op(methods: dict, wanted: str):
@@ -112,49 +139,126 @@ def _method_op(methods: dict, wanted: str):
                  if str(k).lower() == wanted and isinstance(v, dict)), None)
 
 
+def _protected(op) -> bool:
+    """Truthy `security` on the operation = needs a credential (the architect prompt requires
+    the marker on every protected op)."""
+    return bool(isinstance(op, dict) and op.get("security"))
+
+
+def _role_gated(op) -> bool:
+    """`x-required-role` = only a privileged actor gets 200. The derived default flow is a
+    REGULAR member (prompt rule), so the only mechanical assertion is the negative one."""
+    return bool(isinstance(op, dict) and op.get("x-required-role"))
+
+
+def _runnerize(body):
+    """The auth FLOW's creds, distinct from the derived register CHECK's sample user (same
+    schema, 'runner' prefix) so the two never collide on a uniqueness constraint."""
+    if isinstance(body, dict):
+        return {k: _runnerize(v) for k, v in body.items()}
+    if isinstance(body, str) and body.startswith("sample"):
+        return "runner" + body[len("sample"):]
+    return body
+
+
+def auth_flow_from_contract(contract: Contract) -> dict | None:
+    """Synthesize the verify harness's AuthFlow from the contract's own auth endpoints: the
+    first plain POST path containing 'login' (plus 'register' if present). token_json_path is
+    the login 2xx schema's 'token' property (prompt rule) or its first property. Returns None
+    when the contract declares no login — protected ops are then unverifiable mechanically.
+    A login op WITHOUT a request schema still derives: default username/password creds — the
+    build prompt's auth-contract line makes the builder accept exactly these fields."""
+    if contract.kind != "openapi":
+        return None
+    paths = _paths(contract)
+    def _find(word):
+        return next((p for p, m in paths.items()
+                     if word in p and "{" not in p and isinstance(m, dict)
+                     and _method_op(m, "post") is not None), None)
+    login = _find("login")
+    if login is None:
+        return None
+    login_op = _method_op(paths[login], "post")
+    creds = _runnerize(sample_body(_request_schema(login_op)) or {})
+    if not isinstance(creds, dict) or not creds:
+        creds = {"username": "runner_user", "password": "Runner-Passw0rd-1!"}
+    schema = _first_2xx_schema(login_op) or {}
+    props = schema.get("properties") or {}
+    token_path = "token" if "token" in props else (next(iter(props), None) or "token")
+    flow = {"login_route": login, "login_body": creds,
+            "token_json_path": token_path, "mode": "bearer"}
+    register = _find("register")
+    if register is not None:
+        reg = _runnerize(sample_body(_request_schema(_method_op(paths[register], "post"))) or {})
+        flow["register_route"] = register
+        flow["register_body"] = {**reg, **creds} if isinstance(reg, dict) else creds
+    return flow
+
+
 def derive_checks(contract: Contract) -> list[dict]:
     """The full mechanical check set for an openapi contract, in run order:
 
-      1. route_status 200 for every plain (non-templated) GET — safe on an empty datastore.
+      1. route_status for every plain (non-templated) GET: 200 for public ops; for protected
+         ops (`security`) an unauthenticated 401 probe PLUS an authenticated 200 probe; for
+         role-gated ops (`x-required-role`) ONLY the member-gets-403 probe — the default
+         derived flow is a regular member, so a privileged 200 is not mechanically provable.
       2. api_json POST for every plain POST, body synthesized from the request schema,
-         asserting the first declared response property is present.
+         asserting the first declared response property is present (auth per the op).
       3. api_json GET re-reading every path a step-2 POST created, asserting the ROOT SHAPE
          the contract declares (array root -> "0.<prop>", object root -> "<prop>").
       4. Templated paths under a created collection, every param substituted with 1 (the
          first row on a fresh datastore — the same rule the architect prompt states).
 
     Ordering matters: mutations precede the reads that assert on them. Returns [] for
-    non-openapi contracts."""
+    non-openapi contracts. NOTE: callers must drop auth=True checks when no auth flow is
+    derivable (auth_flow_from_contract is None) — an auth'd check without a flow fails
+    ArtifactSpec validation."""
     if contract.kind != "openapi":
         return []
-    paths = contract.spec.get("paths") or {}
+    paths = _paths(contract)
     plain = {p: m for p, m in paths.items() if isinstance(m, dict) and "{" not in p}
     templated = {p: m for p, m in paths.items() if isinstance(m, dict) and "{" in p}
     checks: list[dict] = []
 
+    def _with_auth(check: dict, op) -> dict:
+        if _protected(op):
+            check["auth"] = True
+        return check
+
     for path, methods in plain.items():
-        if _method_op(methods, "get") is not None:
+        get = _method_op(methods, "get")
+        if get is None:
+            continue
+        if _role_gated(get):
+            checks.append({"kind": "route_status", "route": path, "expected_status": 403,
+                           "auth": True})
+        elif _protected(get):
+            checks.append({"kind": "route_status", "route": path, "expected_status": 401})
+            checks.append({"kind": "route_status", "route": path, "expected_status": 200,
+                           "auth": True})
+        else:
             checks.append({"kind": "route_status", "route": path, "expected_status": 200})
 
     created: list[str] = []
     for path, methods in plain.items():
         post = _method_op(methods, "post")
-        if post is None:
+        if post is None or _role_gated(post):
             continue
         body = sample_body(_request_schema(post)) if _request_schema(post) else None
-        checks.append({"kind": "api_json", "route": path, "method": "POST",
-                       "body": body if isinstance(body, dict) else None,
-                       "json_path": _first_prop(_first_2xx_schema(post))})
+        checks.append(_with_auth({"kind": "api_json", "route": path, "method": "POST",
+                                  "body": body if isinstance(body, dict) else None,
+                                  "json_path": _first_prop(_first_2xx_schema(post))}, post))
         created.append(path)
 
     for path in created:
         get = _method_op(plain[path], "get")
         schema = _first_2xx_schema(get)
         prop = _first_prop(schema)
-        if get is None or prop is None:
+        if get is None or prop is None or _role_gated(get):
             continue
         jp = f"0.{prop}" if schema.get("type") == "array" else prop
-        checks.append({"kind": "api_json", "route": path, "method": "GET", "json_path": jp})
+        checks.append(_with_auth({"kind": "api_json", "route": path, "method": "GET",
+                                  "json_path": jp}, get))
 
     for path, methods in templated.items():
         if not any(path.startswith(c + "/") for c in created):
@@ -162,12 +266,13 @@ def derive_checks(contract: Contract) -> list[dict]:
         route = re.sub(r"\{[^/}]+\}", "1", path)
         for wanted in ("get", "post"):
             op = _method_op(methods, wanted)
-            if op is None:
+            if op is None or _role_gated(op):
                 continue
             body = sample_body(_request_schema(op)) if _request_schema(op) else None
-            checks.append({"kind": "api_json", "route": route, "method": wanted.upper(),
-                           "body": body if isinstance(body, dict) else None,
-                           "json_path": _first_prop(_first_2xx_schema(op))})
+            checks.append(_with_auth({"kind": "api_json", "route": route,
+                                      "method": wanted.upper(),
+                                      "body": body if isinstance(body, dict) else None,
+                                      "json_path": _first_prop(_first_2xx_schema(op))}, op))
     return checks
 
 
@@ -177,17 +282,21 @@ def derive_persistence_check(contract: Contract) -> dict | None:
     HAS a datastore — the caller gates on that."""
     if contract.kind != "openapi":
         return None
-    for path, methods in (contract.spec.get("paths") or {}).items():
+    for path, methods in _paths(contract).items():
         if not isinstance(methods, dict) or "{" in path:
             continue
         post, get = _method_op(methods, "post"), _method_op(methods, "get")
-        if post is None or get is None:
+        if post is None or get is None or _role_gated(post) or _role_gated(get):
             continue
+        check = {"kind": "persistence_survives_restart", "route": path, "method": "POST",
+                 "body": None, "json_path": _first_prop(_first_2xx_schema(post)) or "id",
+                 "verify_route": path}
         body = sample_body(_request_schema(post)) if _request_schema(post) else None
-        return {"kind": "persistence_survives_restart", "route": path, "method": "POST",
-                "body": body if isinstance(body, dict) else None,
-                "json_path": _first_prop(_first_2xx_schema(post)) or "id",
-                "verify_route": path}
+        if isinstance(body, dict):
+            check["body"] = body
+        if _protected(post) or _protected(get):
+            check["auth"] = True
+        return check
     return None
 
 
@@ -196,11 +305,17 @@ def derive_integration_checks(design: SystemDesign) -> list[IntegrationCheck]:
     re-graded against the brought-up system with the same shape assertions it passed
     in-container, plus a root probe per frontend node. This replaces the architect's
     free-written integration_checks as the gate's authority — two LLM check sets over one
-    contract contradicted each other in live runs; a derived set cannot."""
+    contract contradicted each other in live runs; a derived set cannot.
+
+    Protected checks (auth=True) are dropped: IntegrationRunner has no auth-flow support, and
+    every protected op was already fully graded in-container (where the acceptance runner DOES
+    log in). Integration proves the system is up and wired, not auth depth."""
     by_producer: dict[str, list[dict]] = {}
     for c in design.contracts:
         if c.kind == "openapi":
-            by_producer.setdefault(c.producer, []).extend(derive_checks(c))
+            by_producer.setdefault(c.producer, []).extend(
+                k for k in derive_checks(c)
+                if not k.get("auth") and k.get("expected_status", 200) < 400)
     out: list[IntegrationCheck] = []
     for node in design.services:
         for chk in by_producer.get(node.id, []):

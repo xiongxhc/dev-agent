@@ -30,8 +30,12 @@ def scope_for_node(node, design) -> ProjectScope:
     dependency (named exactly as the design names it, so in-container acceptance boots the
     same store bring-up wires). Checks: derived from the node's PROVIDED contracts
     (contract_utils.derive_checks) + a persistence check when a datastore backs the node;
-    a node providing nothing checkable (a frontend) gets a root route_status."""
-    from .contract_utils import derive_checks, derive_persistence_check
+    a node providing nothing checkable (a frontend) gets a root route_status. Auth: when a
+    provided contract declares login/register endpoints, the verify harness's AuthFlow is
+    synthesized from them (auth_flow_from_contract) and protected checks run authenticated;
+    without a derivable flow, auth-needing checks are dropped (unverifiable mechanically)."""
+    from .contract_utils import auth_flow_from_contract, derive_checks, derive_persistence_check
+    from .schema import AuthFlow
 
     by_id = {s.id: s for s in design.services}
     svc_deps = [by_id[d] for d in node.depends_on
@@ -40,6 +44,7 @@ def scope_for_node(node, design) -> ProjectScope:
                for dep in svc_deps]
 
     provided = [c for c in design.contracts if c.id in node.provides]
+    flow = next((f for f in (auth_flow_from_contract(c) for c in provided) if f), None)
     checks: list[dict] = []
     for contract in provided:
         checks.extend(derive_checks(contract))
@@ -49,6 +54,8 @@ def scope_for_node(node, design) -> ProjectScope:
             if p:
                 checks.append(p)
                 break
+    if flow is None:
+        checks = [c for c in checks if not c.get("auth")]
     if not checks:
         checks = [{"kind": "route_status", "route": "/", "expected_status": 200}]
 
@@ -57,7 +64,7 @@ def scope_for_node(node, design) -> ProjectScope:
         detail["datastore"] = svc_deps[0].name
         detail["conn_env"] = "DATABASE_URL"
     targets.append(ArtifactSpec(type=node.kind, stack=node.stack, name=node.name,
-                                detail=detail,
+                                detail=detail, auth=AuthFlow(**flow) if flow else None,
                                 acceptance_checks=[AcceptanceCheck(**c) for c in checks]))
     return ProjectScope(title=f"{design.title} — {node.name}", targets=targets)
 
@@ -212,6 +219,7 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
 
                 wired = deploy.wire_targets(targets, str(out_dir), network=net,
                                             alias_prefix=f"{node.name}-",
+                                            container_prefix=f"{net}-{node.name}-",
                                             extra_env=extra_env, frontend_api_base=api_base,
                                             start_target_fn=st, start_service_fn=ss)
                 started.extend(wired.containers)

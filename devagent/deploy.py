@@ -255,7 +255,8 @@ class WiredTargets:
 
 
 def wire_targets(targets, workdir, *, network=None, alias_prefix="", extra_env=None,
-                 frontend_api_base=None, start_target_fn=None, start_service_fn=None) -> WiredTargets:
+                 frontend_api_base=None, start_target_fn=None, start_service_fn=None,
+                 container_prefix=None) -> WiredTargets:
     """One service's target set -> running, wired containers (M21: extracted from DeployPhase
     so system bring-up reuses the exact intra-scope wiring: datastores first, conn-env
     injection for backends, frontend dist/config.json -> apiBase).
@@ -263,7 +264,10 @@ def wire_targets(targets, workdir, *, network=None, alias_prefix="", extra_env=N
     alias_prefix namespaces container names + network aliases (and the conn-URL hosts, which
     must match the aliases) so two nodes' same-named internal targets can't collide on a
     shared network; with the default "" every call is byte-identical to the pre-M21
-    DeployPhase loop. extra_env seeds each backend's env (a target's own detail wiring wins).
+    DeployPhase loop. container_prefix (one-flow, 2026-07-06) overrides the container-NAME
+    prefix only — system bring-up passes a per-run prefix so a kept-up preview can't be
+    docker-rm-f'd by the next run's bring-up; aliases stay alias_prefix-based (they are the
+    conn-URL hosts). extra_env seeds each backend's env (a target's own detail wiring wins).
     frontend_api_base supplies apiBase when this scope has no internal backend."""
     from .recipes import get as get_recipe
 
@@ -284,10 +288,10 @@ def wire_targets(targets, workdir, *, network=None, alias_prefix="", extra_env=N
     def _naming(t):
         # Pass the namespacing kwargs only when actually namespacing, so prefix="" callers
         # (DeployPhase, pre-M21 test fakes) see the exact legacy call shapes.
-        if not alias_prefix:
+        if not alias_prefix and not container_prefix:
             return {}
         return {"alias": f"{alias_prefix}{t.name}",
-                "container_name": f"devagent-preview-{alias_prefix}{t.name}"}
+                "container_name": f"{container_prefix or 'devagent-preview-' + alias_prefix}{t.name}"}
 
     # 1. datastores first
     for t in datastores:
