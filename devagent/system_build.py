@@ -19,6 +19,45 @@ from . import recipes
 _egress_lock = threading.Lock()
 
 
+def failing_steps(report) -> list[dict]:
+    """The failing steps of an IntegrationReport, normalized to the loop's input shape
+    {service, route, detail}. This is the ONLY thing attribution consumes — never the
+    IntegrationReport type — so a later gating verifier (M24 security) feeds the same loop
+    by rendering findings into this exact shape."""
+    return [{"service": s["service"], "route": s["route"], "detail": s.get("detail", "")}
+            for s in report.steps if not s["ok"]]
+
+
+def implicated_nodes(steps, design):
+    """Failing steps -> the buildable design nodes to repair. Maps each step's service id to
+    its node, drops recipe-kind `service` nodes (datastores have no buildable artifact), and
+    returns the survivors deduplicated in topo_order. Empty result => nothing repairable
+    (e.g. every failing step maps to a datastore): the caller skips repair and fails as today."""
+    by_id = {s.id: s for s in design.services}
+    hit = set()
+    for st in steps:
+        node = by_id.get(st.get("service"))
+        if node is None:
+            continue
+        if recipes.get(node.stack).kind == "service":
+            continue
+        hit.add(node.id)
+    return [by_id[sid] for sid in topo_order(design) if sid in hit]
+
+
+def render_repair_context(report, node) -> str:
+    """The repair_context handed to `node`'s executor: the WHOLE report as text with THIS
+    node's own steps marked '>>>'. The executor sees the cross-service picture (M23's
+    mis-attribution mitigation depends on it), not just the lone failing step."""
+    lines = ["System verification failed. Full report "
+             "(steps for the service under repair marked '>>>'):"]
+    for s in report.steps:
+        mark = ">>>" if s["service"] == node.id else "   "
+        status = "ok" if s["ok"] else "FAIL"
+        lines.append(f"{mark} [{status}] {s['service']} {s['route']}: {s.get('detail', '')}")
+    return "\n".join(lines)
+
+
 def scope_for_node(node, design) -> ProjectScope:
     """The mechanical ProjectScope for one service node — the SystemDesign is the ONLY scope
     authority (one-flow, 2026-07-03). No per-service ScopePhase LLM call: live runs showed the
@@ -262,6 +301,7 @@ class SystemReport:
     integration: object          # IntegrationReport | None
     status: str                  # design_failed | build_failed | integration_failed | succeeded
     urls: dict = field(default_factory=dict)   # service_id -> preview base_url (on success)
+    repairs: list = field(default_factory=list)  # one entry per system-repair pass (M23)
 
 
 def build_system(prd_path, *, budget, ledger, run_node, bring_up,
