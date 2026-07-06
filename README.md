@@ -633,15 +633,14 @@ Remaining follow-ups (non-blocking, tracked):
   live decision (SDK-vs-managed backend, model-tier per phase, prompt regression) — never runs
   on a schedule. First action is the pending **M5 live corpus run** to establish the baseline.
 
-- **M23** ⬜ — **system-level repair loop.** Repair exists per-service (`BuildPhase`,
-  `max_repairs=2`) but an integration failure still tears everything down and ends the run —
-  exactly where failures concentrate now that one-flow fixed the in-service class. New loop in
-  `build_system`: failing integration steps deterministically implicate their build-kind nodes;
-  each is re-built on its existing `out/` with `repair_context` = the full integration report
-  (reached via `run_node`'s new `repair_context` seam); frozen scope and the persisted plan are
-  reloaded separately (a new `FrozenPlanPhase`, no re-plan drift); teardown → fresh bring-up →
-  full suite re-run; capped by `max_system_repairs` (default 1, its own counter — cost bounded
-  by the existing token/$/time ceilings, not the shared retry pool).
+- **M23** ✅ — **system-level repair loop.** On cross-service verification failure, `build_system`
+  deterministically attributes failing steps to their build-kind nodes (`implicated_nodes`) and
+  re-invokes the executor on each node's existing `out/` with the full report as `repair_context`
+  (via `run_node`'s seam; frozen scope + persisted plan reloaded through `FrozenPlanPhase`, no
+  re-plan), then tears down, brings the system up fresh, and re-verifies the full suite
+  (integration + security once M24 lands). Bounded by its own counter, `max_system_repairs`
+  (default 1) — not the shared retry budget. `SystemReport.repairs` records every pass; ledger
+  events `system_repair_start`/`system_repair_end` trace it.
   Design: [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-system-repair-loop-design.md).
 
 - **M24** ⬜ — **security verify phase (red-team).** Functional checks verify the contract was
