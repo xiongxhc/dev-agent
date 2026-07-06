@@ -50,3 +50,30 @@ def test_build_system_report_includes_integration_steps(tmp_path, monkeypatch):
     assert rc == 0
     reports = list((tmp_path / "runs").rglob("system-report.json"))
     assert json.loads(reports[0].read_text())["integration"] == steps
+
+
+def test_cli_build_system_passes_cap_and_persists_repairs(tmp_path, monkeypatch):
+    import json
+    from devagent import cli
+    from devagent.config import Config
+    from devagent.system_build import SystemReport
+    from devagent.tree import NodeResult, SUCCEEDED
+
+    monkeypatch.setattr(Config, "load", classmethod(lambda cls: Config(
+        runs_dir=tmp_path, max_system_repairs=2)))
+
+    seen = {}
+    def fake_build_system(prd, **kw):
+        seen.update(kw)
+        return SystemReport("t", {"api": NodeResult("api", SUCCEEDED)}, True, None,
+                            "succeeded", urls={"api": "http://api"},
+                            repairs=[{"attempt": 1, "nodes": ["api"], "outcomes": [],
+                                      "integration_ok": True}])
+    monkeypatch.setattr(cli, "build_system", fake_build_system)
+
+    prd = tmp_path / "prd.md"; prd.write_text("build me")
+    rc = cli._build_system(type("A", (), {"input": str(prd)})())
+    assert rc == 0
+    assert seen["max_system_repairs"] == 2
+    report = json.loads(next(tmp_path.glob("run-*/system-report.json")).read_text())
+    assert report["repairs"][0]["nodes"] == ["api"]

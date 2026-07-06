@@ -117,13 +117,15 @@ def _build_system(args) -> int:
     report = build_system(
         args.input, budget=budget, ledger=ledger,
         run_node=make_run_node(run_dir, budget, ledger),
-        bring_up=make_bring_up(run_dir), run_dir=run_dir)
+        bring_up=make_bring_up(run_dir), run_dir=run_dir,
+        max_system_repairs=cfg.max_system_repairs)
     (run_dir / "system-report.json").write_text(json.dumps({
         "title": report.title, "status": report.status, "build_ok": report.build_ok,
         "services": {k: {"status": v.status, "detail": v.detail}
                     for k, v in report.node_results.items()},
         "integration": [dict(s) for s in report.integration.steps] if report.integration else None,
         "urls": report.urls,
+        "repairs": report.repairs,
     }, indent=2))
     print(f"{run_id} {report.status}")
     print(f"  -> services: " + ", ".join(
