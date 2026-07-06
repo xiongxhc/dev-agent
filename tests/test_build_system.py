@@ -52,7 +52,12 @@ def test_integration_failure_reports_and_tears_down():
         return {"api": "http://api"}, (lambda: torn.__setitem__("down", True))
     rep = build_system(
         "prd.md", budget=None, ledger=None,
-        run_node=lambda n, d: NodeResult(n.id, SUCCEEDED),
+        # Task 3 made run_node 3-arg (repair_context). This design's api node is kind=build
+        # (repairable), so under the M23 loop (default max_system_repairs=1) integration
+        # failure fires one repair — which the always-failing runner leaves failing, so the
+        # terminal verdict is still integration_failed + teardown. Accept the repair_context
+        # kwarg the loop passes; assertions unchanged.
+        run_node=lambda n, d, repair_context=None: NodeResult(n.id, SUCCEEDED),
         bring_up=bring_up, architect=_architect,
         integration_runner=lambda c, u: IntegrationReport(
             steps=[{"service": "api", "route": "/api/todos", "ok": False, "detail": "500"}]))
@@ -153,7 +158,10 @@ def test_ledger_system_build_end_carries_post_integration_status():
     ledger = FakeLedger()
     rep = build_system(
         "prd.md", budget=None, ledger=ledger,
-        run_node=lambda n, d: NodeResult(n.id, SUCCEEDED),
+        # 3-arg run_node (Task 3): the repairable api node makes the M23 loop fire one repair
+        # on integration failure; the runner keeps failing so the final system_build_end still
+        # carries integration_failed (what this test asserts). Signature updated, assertions kept.
+        run_node=lambda n, d, repair_context=None: NodeResult(n.id, SUCCEEDED),
         bring_up=lambda d: ({"api": "http://api"}, lambda: None),
         architect=_architect,
         integration_runner=lambda c, u: IntegrationReport(

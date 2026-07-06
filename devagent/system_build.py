@@ -305,7 +305,8 @@ class SystemReport:
 
 
 def build_system(prd_path, *, budget, ledger, run_node, bring_up,
-                 architect=None, integration_runner=None, run_dir=None) -> SystemReport:
+                 architect=None, integration_runner=None, run_dir=None,
+                 max_system_repairs=1, security_verify=None) -> SystemReport:
     """Deterministic system-build orchestration. `run_node`, `bring_up`, `architect`, and
     `integration_runner` are injected (defaults do the real thing) so this is unit-testable
     without Docker/tokens. `run_dir` (optional) persists the gated SystemDesign to
@@ -322,7 +323,7 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
     per-service build verdict only)."""
     from .tree import TreeOrchestrator
     from .contract_utils import derive_integration_checks
-    from .integration import IntegrationRunner
+    from .integration import IntegrationRunner, IntegrationReport
     from .phase_gates import ArchitectGate, IntegrationGate
     from .phases.base import PhaseContext, PhaseResult
 
@@ -367,22 +368,58 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
     if not build_ok:
         return _finish(SystemReport(design.title, sysres.results, False, None, "build_failed"))
 
-    # Bring up + cross-service E2E (M17). Success keeps the system running as the preview.
-    base_urls, teardown = bring_up(design)
-    try:
-        checks = derive_integration_checks(design) or design.integration_checks
-        runner = integration_runner or IntegrationRunner().run
+    # Bring up + cross-service verification, wrapped in the M23 repair loop. `reverify` is the
+    # single combined-verification step (integration suite + security phase via the seam); the
+    # initial pass AND every post-repair pass go through it, so a security-triggered repair
+    # re-passes functional checks and vice versa (M23 "Re-verification"; M24 extends `reverify`).
+    checks = derive_integration_checks(design) or design.integration_checks
+    runner = integration_runner or IntegrationRunner().run
+
+    def reverify(base_urls):
         report = runner(checks, base_urls)
+        if security_verify is not None:
+            extra = security_verify(design, base_urls)   # gating findings as failing steps
+            if extra:
+                report = IntegrationReport(steps=list(report.steps) + list(extra))
         ok = IntegrationGate().check(
             PhaseResult(name="integration", exit_code=0, output_artifact=report)).ok
+        return report, ok
+
+    base_urls, teardown = bring_up(design)
+    repairs: list = []
+    try:
+        report, ok = reverify(base_urls)
+        for attempt in range(max_system_repairs):
+            if ok:
+                break
+            nodes = implicated_nodes(failing_steps(report), design)
+            if not nodes:
+                break
+            if ledger is not None:
+                ledger.append({"event": "system_repair_start", "attempt": attempt + 1,
+                               "nodes": [n.id for n in nodes]})
+            teardown()                                   # tear down the failed stack first
+            outcomes = []
+            for node in nodes:
+                nr = run_node(node, design, repair_context=render_repair_context(report, node))
+                outcomes.append({"node": node.id, "status": nr.status})
+            if ledger is not None:
+                ledger.append({"event": "system_repair_end", "attempt": attempt + 1,
+                               "outcomes": outcomes})
+            base_urls, teardown = bring_up(design)       # fresh stack for the combined re-verify
+            report, ok = reverify(base_urls)
+            repairs.append({"attempt": attempt + 1, "nodes": [n.id for n in nodes],
+                            "outcomes": outcomes, "integration_ok": ok})
+        if not ok:
+            teardown()
+            return _finish(SystemReport(design.title, sysres.results, True, report,
+                                        "integration_failed", repairs=repairs))
     except Exception:
-        teardown()
+        teardown()                                       # a mid-pass bring_up/reverify crash still tears down
         raise
-    if not ok:
-        teardown()
-        return _finish(SystemReport(design.title, sysres.results, True, report,
-                                    "integration_failed"))
+
+    # Success keys on the loop's FINAL base_urls/report — never the stale pre-loop values.
     if ledger is not None:
         ledger.append({"event": "system_deploy", "urls": dict(base_urls)})
     return _finish(SystemReport(design.title, sysres.results, True, report, "succeeded",
-                                urls=dict(base_urls)))
+                                urls=dict(base_urls), repairs=repairs))
