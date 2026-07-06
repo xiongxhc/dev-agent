@@ -15,6 +15,9 @@ class Config:
                                  # run aborted at the old 200k). Override via DEVAGENT_MAX_TOKENS.
     max_seconds: float = 1800.0
     max_retries: int = 3
+    max_system_repairs: int = 1  # system-build repair loop's OWN counter (NOT budget.spend_retry).
+                                 # Each pass re-enters BuildPhase (its own shared-retry loop + $/token
+                                 # ceilings bound doomed work). Override via DEVAGENT_MAX_SYSTEM_REPAIRS.
     max_cost_usd: float = 10.0   # hard $ ceiling per run — kills a doomed repair loop. Raise for
                                  # prod via DEVAGENT_MAX_COST_USD (0/empty disables the cap).
     egress: bool = True  # route --build containers through the egress allowlist (DEVAGENT_EGRESS=0 to disable)
@@ -31,6 +34,7 @@ class Config:
             max_tokens=int(env.get("DEVAGENT_MAX_TOKENS", cls.max_tokens)),
             max_seconds=float(env.get("DEVAGENT_MAX_SECONDS", cls.max_seconds)),
             max_retries=int(env.get("DEVAGENT_MAX_RETRIES", cls.max_retries)),
+            max_system_repairs=int(env.get("DEVAGENT_MAX_SYSTEM_REPAIRS", cls.max_system_repairs)),
             max_cost_usd=(float(env["DEVAGENT_MAX_COST_USD"]) or None
                           if env.get("DEVAGENT_MAX_COST_USD") else cls.max_cost_usd),
             egress=env.get("DEVAGENT_EGRESS", "1").lower() not in ("0", "false", "no"),
