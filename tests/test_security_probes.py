@@ -1,6 +1,7 @@
 from devagent.security.findings import Finding
 from devagent.schema import Contract
 from devagent.security.probes import run_probes, probe_mass_assignment
+from devagent.security.ruleset import GATING_KINDS
 
 
 def _register_contract():
@@ -11,6 +12,17 @@ def _register_contract():
                 "required": ["username", "password"]}}}},
             "responses": {"200": {"content": {"application/json": {"schema": {"type": "object",
                 "properties": {"token": {"type": "string"}, "role": {"type": "string"}}}}}}}}}}})
+
+
+def _safe_app_contract():
+    """The same register surface plus a protected GET route — so the safe-app regression
+    fixture also exercises probe_missing_authz, not just mass-assignment."""
+    contract = _register_contract()
+    contract.spec["paths"]["/profile"] = {"get": {
+        "security": [{"bearerAuth": []}],
+        "responses": {"200": {"content": {"application/json": {"schema": {"type": "object",
+            "properties": {"username": {"type": "string"}}}}}}}}}
+    return contract
 
 
 class _FakeHttp:
@@ -50,6 +62,37 @@ def test_run_probes_returns_findings_list():
     findings = run_probes("http://api", "api", _register_contract(),
                           auth={"a": None, "b": None}, http=http)
     assert isinstance(findings, list) and all(hasattr(f, "kind") for f in findings)
+
+
+def test_regression_july3_vulnerable_app_gates_on_mass_assignment():
+    """The July-3 production bug, as a permanent regression guard: an app whose
+    /auth/register reflects an injected role=admin back in the response. run_probes must trip
+    exactly one gating finding — mass_assignment, critical, on /auth/register — and no other
+    gating-kind finding (missing_authz/idor) rides along with it."""
+    http = _FakeHttp(reflect=True)
+    findings = run_probes("http://api", "api", _register_contract(),
+                          auth={"a": None, "b": None}, http=http)
+    gating = [f for f in findings if f.kind in GATING_KINDS]
+    assert len(gating) == 1
+    hit = gating[0]
+    assert hit.kind == "mass_assignment"
+    assert hit.route == "/auth/register"
+    assert hit.method == "POST"
+    assert hit.severity == "critical"
+
+
+def test_regression_safe_app_has_no_gating_findings():
+    """A safe app: injected privilege fields are NOT reflected (reflect=False) and protected
+    routes correctly 401 an unauthenticated caller. run_probes must return zero gating-kind
+    findings (no mass_assignment, no missing_authz, no idor) — the counterpart to the
+    vulnerable-app regression guard above, proving the probes don't false-positive on a
+    correctly-built app."""
+    http = _FakeHttp(reflect=False, status=401)
+    findings = run_probes("http://api", "api", _safe_app_contract(),
+                          auth={"a": {"Authorization": "Bearer a"},
+                                "b": {"Authorization": "Bearer b"}}, http=http)
+    gating = [f for f in findings if f.kind in GATING_KINDS]
+    assert gating == []
 
 
 def test_finding_renders_as_failing_step():

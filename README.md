@@ -643,12 +643,22 @@ Remaining follow-ups (non-blocking, tracked):
   events `system_repair_start`/`system_repair_end` trace it.
   Design: [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-system-repair-loop-design.md).
 
-- **M24** ⬜ — **security verify phase (red-team).** Functional checks verify the contract was
+- **M24** ✅ — **security verify phase (red-team).** Functional checks verify the contract was
   *met*, never that it's *safe* — a live run shipped `POST /auth/register` accepting `role=admin`
-  (privilege escalation) with every check green. New verify phase probes the brought-up preview
-  (reusing `base_urls` + the synthesized `AuthFlow`, plus a second registered principal for
-  IDOR/authz) for mass-assignment, missing-authz, cross-user IDOR, and weak-registration.
-  Deterministic probe library + gating ruleset (LLM only triages/expands — can't invent a
-  gating finding); a high-confidence finding fails verification and feeds the M23 repair loop,
-  so the bug is repaired, not just reported. Depends on M23. Design:
-  [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-m24-security-verify-phase-design.md).
+  (privilege escalation) with every check green. `SecurityVerifyPhase` probes the brought-up
+  preview (`base_urls` + the synthesized `AuthFlow`, plus a second registered principal for
+  IDOR/authz) with a deterministic probe library keyed off the frozen contract — mass-assignment,
+  missing-authz, cross-user IDOR, weak-registration, verb-tampering — then a fail-safe LLM triage
+  pass expands/classifies (it never gates on its own; the deterministic findings still gate when
+  the triage API is down). A gating ruleset partitions the findings: `GATING_KINDS`
+  (mass_assignment, missing_authz, idor) fail the run, with a `(route, probe-class)` escape hatch
+  for a design-declared intentionally-open pair — `mass_assignment` is never escape-hatchable, so
+  the July-3 bug can't be waived away. Gating findings render as M23 failing steps and feed its
+  repair loop through `build_system`'s `security_verify` seam (`reverify` runs the combined
+  integration+security suite on the initial pass and every post-repair pass); the single-run path
+  (`devagent run --build`) has no repair loop, so it reports the gate and fails rather than
+  auto-repairing. `SystemReport.findings` carries the run's full findings list (gating and
+  advisory) regardless of outcome. Regression-guarded: `test_security_probes.py` fixtures pin the
+  July-3 vulnerable app (reflected `role=admin` → exactly one `mass_assignment` gating finding)
+  and a safe app (no reflection, protected routes 401 → zero gating findings). Depends on M23.
+  Design: [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-m24-security-verify-phase-design.md).
