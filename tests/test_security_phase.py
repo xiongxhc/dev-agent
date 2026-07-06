@@ -1,5 +1,7 @@
+from types import SimpleNamespace
+
 from devagent.schema import Contract, ServiceNode, SystemDesign
-from devagent.security.phase import SecurityVerifyPhase, SecurityVerifyResult, verify_callable
+from devagent.security.phase import SecurityVerifyPhase, SecurityVerifyResult
 
 
 def _vuln_design():
@@ -48,11 +50,9 @@ def test_phase_noop_without_base_urls():
     assert res.gating_steps == [] and res.findings == []
 
 
-def test_verify_callable_factory_matches_reverify_call_convention():
-    # build_system.reverify calls security_verify(design, base_urls) — the factory must
-    # return a callable that matches that shape and delegates to a bound SecurityVerifyPhase.
-    design = _vuln_design()
-    security_verify = verify_callable(design, http=_ReflectHttp(), triage_client=None)
-    res = security_verify(design, {"api": "http://api"})
+def test_single_run_shim_no_contracts_no_ops():
+    # The single-run call site builds a shim design with no openapi contracts (single runs hold
+    # no probeable contract today). The phase must no-op: no probes, no gating steps, no findings.
+    res = SecurityVerifyPhase(SimpleNamespace(contracts=[], services=[])).verify({"api": "http://api"})
     assert isinstance(res, SecurityVerifyResult)
-    assert any(f.kind == "mass_assignment" for f in res.findings)
+    assert res.gating_steps == [] and res.findings == []

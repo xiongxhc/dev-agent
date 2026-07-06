@@ -220,3 +220,37 @@ def test_security_verify_seam_drives_the_same_repair_path():
                        integration_runner=runner, security_verify=security_verify,
                        max_system_repairs=1)
     assert rep.status == "succeeded" and repaired["n"] == 1 and sec_calls["n"] == 2
+
+
+def test_m24_gating_finding_drives_repair_and_records_findings():
+    """A gating security finding renders as a failing step M23 attributes to the node; the
+    node's repair_context is the WHOLE report; a repaired app re-passes integration AND
+    security via the same reverify."""
+    from devagent.system_build import build_system
+    d = _design_api_provides()
+
+    sec = {"n": 0, "sink": []}
+    def security_verify(design, base_urls):
+        sec["n"] += 1
+        if sec["n"] == 1:
+            step = {"service": "api", "route": "/auth/register", "ok": False,
+                    "detail": "mass-assignment role=admin accepted — strip role server-side"}
+            sec["sink"].append(step)      # cli captures findings via a sink like this
+            return [step]
+        return []                          # clean after repair
+    def runner(checks, urls):
+        return IntegrationReport(steps=[{"service": "api", "route": "/todos",
+                                         "ok": True, "detail": ""}])
+    repaired = {"n": 0}
+    def run_node(node, design, repair_context=None):
+        if repair_context is not None:            # skip the initial-build invocation
+            repaired["n"] += 1
+            assert "role=admin" in repair_context # security evidence reached the executor
+        return NodeResult(node.id, SUCCEEDED)
+    def bring_up(design):
+        return {"api": "http://api"}, (lambda: None)
+
+    rep = build_system("prd.md", budget=None, ledger=None, run_node=run_node,
+                       bring_up=bring_up, architect=lambda _p: d, integration_runner=runner,
+                       security_verify=security_verify, max_system_repairs=1)
+    assert rep.status == "succeeded" and repaired["n"] == 1

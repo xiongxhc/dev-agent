@@ -302,11 +302,13 @@ class SystemReport:
     status: str                  # design_failed | build_failed | integration_failed | succeeded
     urls: dict = field(default_factory=dict)   # service_id -> preview base_url (on success)
     repairs: list = field(default_factory=list)  # one entry per system-repair pass (M23)
+    findings: list = field(default_factory=list)  # gating security findings recorded (M24)
 
 
 def build_system(prd_path, *, budget, ledger, run_node, bring_up,
                  architect=None, integration_runner=None, run_dir=None,
-                 max_system_repairs=1, security_verify=None) -> SystemReport:
+                 max_system_repairs=1, security_verify=None,
+                 security_findings=None) -> SystemReport:
     """Deterministic system-build orchestration. `run_node`, `bring_up`, `architect`, and
     `integration_runner` are injected (defaults do the real thing) so this is unit-testable
     without Docker/tokens. `run_dir` (optional) persists the gated SystemDesign to
@@ -413,13 +415,19 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
         if not ok:
             teardown()
             return _finish(SystemReport(design.title, sysres.results, True, report,
-                                        "integration_failed", repairs=repairs))
+                                        "integration_failed", repairs=repairs,
+                                        findings=list(security_findings or [])))
     except Exception:
         teardown()                                       # a mid-pass bring_up/reverify crash still tears down
         raise
 
     # Success keys on the loop's FINAL base_urls/report — never the stale pre-loop values.
+    # M24: active probes mutated the kept preview — deliver a pristine one.
+    if security_verify is not None:
+        teardown()
+        base_urls, teardown = bring_up(design)
     if ledger is not None:
         ledger.append({"event": "system_deploy", "urls": dict(base_urls)})
     return _finish(SystemReport(design.title, sysres.results, True, report, "succeeded",
-                                urls=dict(base_urls), repairs=repairs))
+                                urls=dict(base_urls), repairs=repairs,
+                                findings=list(security_findings or [])))

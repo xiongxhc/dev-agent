@@ -114,11 +114,23 @@ def _build_system(args) -> int:
     ledger = Ledger(run_dir)
     ledger.append({"event": "input", "path": args.input})
     budget = Budget(cfg.max_tokens, cfg.max_seconds, cfg.max_retries, max_cost_usd=cfg.max_cost_usd)
+
+    from .security.phase import SecurityVerifyPhase
+
+    security_findings: list = []
+    def security_verify(design, base_urls):
+        result = SecurityVerifyPhase(design).verify(base_urls)
+        security_findings[:] = [f.model_dump() for f in result.findings]
+        if ledger is not None and result.not_run:
+            ledger.append({"event": "security_not_run", "classes": sorted(set(result.not_run))})
+        return result.gating_steps
+
     report = build_system(
         args.input, budget=budget, ledger=ledger,
         run_node=make_run_node(run_dir, budget, ledger),
         bring_up=make_bring_up(run_dir), run_dir=run_dir,
-        max_system_repairs=cfg.max_system_repairs)
+        max_system_repairs=cfg.max_system_repairs,
+        security_verify=security_verify, security_findings=security_findings)
     (run_dir / "system-report.json").write_text(json.dumps({
         "title": report.title, "status": report.status, "build_ok": report.build_ok,
         "services": {k: {"status": v.status, "detail": v.detail}
@@ -126,6 +138,7 @@ def _build_system(args) -> int:
         "integration": [dict(s) for s in report.integration.steps] if report.integration else None,
         "urls": report.urls,
         "repairs": report.repairs,
+        "findings": report.findings,
     }, indent=2))
     print(f"{run_id} {report.status}")
     print(f"  -> services: " + ", ".join(
@@ -135,6 +148,16 @@ def _build_system(args) -> int:
         print(f"  -> preview {svc}: {url}")
     print(f"  -> report: {run_dir / 'system-report.json'}")
     return 0 if report.status == "succeeded" else 1
+
+
+def _single_run_design_shim(artifacts):
+    """A SecurityVerifyPhase-shaped design for the single-run preview. Single runs hold no
+    probeable openapi contract today (build_pipeline_phases passes no provided_contracts), so
+    the shim carries empty contracts and the phase no-ops. The single-run security pass
+    activates only if/when a single run gains an openapi contract; today it is a no-op guard so
+    the call site exists at the correct spot (after DeployPhase)."""
+    from types import SimpleNamespace
+    return SimpleNamespace(contracts=[], services=[])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -216,6 +239,21 @@ def main(argv: list[str] | None = None) -> int:
     acceptance = json.loads(acc_path.read_text()).get("checks") if acc_path.is_file() else None
     report_path = write_report(run_dir, ledger.events(), run_id,
                                preview_url=preview_url, acceptance=acceptance)
+
+    # M24: red-team the single-run preview after DeployPhase. A gating finding fails the run
+    # with the evidence (the single-run path has no post-deploy repair loop — reported, not
+    # auto-repaired). deploy_art.urls maps target name -> url; the phase reuses it as base_urls.
+    # With the current empty shim (single runs hold no openapi contract) this never fires, but
+    # the wiring sits at the correct spot for when a single run gains a probeable contract.
+    if args.build and status == SUCCEEDED and deploy_art is not None and deploy_art.urls:
+        from .security.phase import SecurityVerifyPhase
+        sec = SecurityVerifyPhase(_single_run_design_shim(orch.artifacts)).verify(deploy_art.urls)
+        if sec.gating_steps:
+            for s in sec.gating_steps:
+                print(f"  -> SECURITY GATE: {s['route']}: {s['detail']}", file=sys.stderr)
+            (run_dir / "security-findings.json").write_text(
+                json.dumps([f.model_dump() for f in sec.findings], indent=2))
+            return 1
 
     if status != SUCCEEDED:
         scope = orch.artifacts.get("scope")

@@ -88,17 +88,3 @@ class SecurityVerifyPhase:
                 res.gating_steps.extend(g.as_failing_step() for g in gating)
                 res.findings.extend(deduped)
         return res
-
-
-def verify_callable(design, *, triage_client=None, http=None):
-    """Factory for the M23 `security_verify` default (wired in by the CLI, Task 6): binds one
-    design plus triage/http config and returns a (design, base_urls) -> SecurityVerifyResult
-    callable matching build_system.reverify's call convention (`security_verify(design,
-    base_urls)`). The design argument on the returned callable is accepted for that convention
-    but ignored — the design captured at construction time is authoritative."""
-    phase = SecurityVerifyPhase(design, triage_client=triage_client, http=http)
-
-    def _verify(_design, base_urls) -> SecurityVerifyResult:
-        return phase.verify(base_urls)
-
-    return _verify

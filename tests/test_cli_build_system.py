@@ -77,3 +77,31 @@ def test_cli_build_system_passes_cap_and_persists_repairs(tmp_path, monkeypatch)
     assert seen["max_system_repairs"] == 2
     report = json.loads(next(tmp_path.glob("run-*/system-report.json")).read_text())
     assert report["repairs"][0]["nodes"] == ["api"]
+
+
+def test_cli_build_system_persists_security_findings(tmp_path, monkeypatch):
+    import json
+    from devagent import cli
+    from devagent.config import Config
+    from devagent.system_build import SystemReport
+    from devagent.tree import NodeResult, SUCCEEDED
+
+    monkeypatch.setattr(Config, "load", classmethod(lambda cls: Config(runs_dir=tmp_path)))
+
+    def fake_build_system(prd, **kw):
+        # Exercise the seam: cli passed a security_verify + sink; simulate a finding landing.
+        sink = kw.get("security_findings")
+        if sink is not None:
+            sink.append({"kind": "mass_assignment", "service": "api", "route": "/auth/register",
+                         "method": "POST", "severity": "critical", "confidence": "high",
+                         "evidence": "e", "remediation": "r"})
+        return SystemReport("t", {"api": NodeResult("api", SUCCEEDED)}, True, None,
+                            "succeeded", urls={"api": "http://api"},
+                            findings=list(sink or []))
+    monkeypatch.setattr(cli, "build_system", fake_build_system)
+
+    prd = tmp_path / "prd.md"; prd.write_text("build me")
+    rc = cli._build_system(type("A", (), {"input": str(prd)})())
+    assert rc == 0
+    report = json.loads(next(tmp_path.glob("run-*/system-report.json")).read_text())
+    assert report["findings"][0]["kind"] == "mass_assignment"
