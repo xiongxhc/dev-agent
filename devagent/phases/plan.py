@@ -46,3 +46,21 @@ class PlanPhase:
                                output_artifact=plan)
         except Exception as e:
             return PhaseResult(name=self.name, exit_code=1, output=str(e))
+
+
+class FrozenPlanPhase:
+    """Plan phase that emits a precomputed Plan — no LLM call. The system repair sub-run
+    reloads the plan the executor already persisted (out/.devagent/plan.json) so a repair
+    is build+verify only: re-planning could restructure what integration already
+    half-validated. Same name/gate as PlanPhase so the pipeline is otherwise identical
+    (mirrors FrozenScopePhase)."""
+
+    name = "plan"
+
+    def __init__(self, plan: Plan):
+        self.plan = plan
+
+    def run(self, ctx: PhaseContext) -> PhaseResult:
+        return PhaseResult(name=self.name, exit_code=0,
+                           output=f"{len(self.plan.tasks)} tasks (frozen)",
+                           output_artifact=self.plan)

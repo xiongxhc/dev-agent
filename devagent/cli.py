@@ -23,7 +23,7 @@ from .orchestrator import SUCCEEDED, Orchestrator
 from .phase_gates import PlanGate, ScopeGate, VerifyGate
 from .phases.build import BuildPhase
 from .phases.deploy import DeployPhase
-from .phases.plan import PlanPhase
+from .phases.plan import FrozenPlanPhase, PlanPhase
 from .phases.scope import FrozenScopePhase, ScopePhase
 from .report import write_report
 from .sandbox import NullSandbox
@@ -37,7 +37,7 @@ def _new_run_id() -> str:
 
 def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None, run_id=None,
                           executor=None, verifier=None, answers_path=None, consumed_contracts=(),
-                          provided_contracts=(), scope=None):
+                          provided_contracts=(), scope=None, plan=None, repair_context=None):
     """The scope->plan[->build[->deploy]] phase list + gate map. Shared by `run` and the M20
     `build-system` per-service sub-runs so both assemble the pipeline identically. Sub-runs
     pass deploy=False: previews are pointless there, and their fixed devagent-preview-<name>
@@ -47,10 +47,14 @@ def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None,
     into BuildPhase -> BuildRequest -> enrich_scope. `scope` (one-flow, 2026-07-03): a
     precomputed ProjectScope — the phase list starts with FrozenScopePhase instead of an LLM
     ScopePhase; system sub-builds pass the scope derived from the architect's design so the
-    design is decided exactly once."""
+    design is decided exactly once. `plan` (M23): likewise freezes the plan phase via
+    FrozenPlanPhase for a repair sub-run reloading the persisted plan — re-planning could
+    restructure what integration already half-validated. `repair_context` (M23) forwards into
+    BuildPhase to seed the first BuildRequest with prior verify/integration diagnostics."""
     first = FrozenScopePhase(scope) if scope is not None \
         else ScopePhase(input_path, answers_path=answers_path)
-    phases = [first, PlanPhase()]
+    plan_phase = FrozenPlanPhase(plan) if plan is not None else PlanPhase()
+    phases = [first, plan_phase]
     gates = {"scope": ScopeGate(), "plan": PlanGate()}
     if build:
         # BuildPhase owns the repair loop: build -> rebuild-from-source verify -> repair
@@ -58,7 +62,8 @@ def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None,
         phases.append(BuildPhase(executor=executor, workdir=str(out_dir), run_id=run_id,
                                  verifier=verifier, max_repairs=2,
                                  consumed_contracts=consumed_contracts,
-                                 provided_contracts=provided_contracts))
+                                 provided_contracts=provided_contracts,
+                                 repair_context=repair_context))
         gates["build"] = VerifyGate()
         if deploy:
             # Deploy the built app to a local preview server -> URL (gated on it actually answering).

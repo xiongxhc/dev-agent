@@ -27,7 +27,7 @@ class BuildPhase:
 
     def __init__(self, executor: Executor, workdir: str, run_id: str,
                  verifier=None, max_repairs: int = 2, consumed_contracts: tuple = (),
-                 provided_contracts: tuple = ()):
+                 provided_contracts: tuple = (), repair_context: str | None = None):
         self.executor = executor
         self.workdir = workdir
         self.run_id = run_id
@@ -35,6 +35,7 @@ class BuildPhase:
         self.max_repairs = max_repairs
         self.consumed_contracts = tuple(consumed_contracts)
         self.provided_contracts = tuple(provided_contracts)
+        self.repair_context = repair_context  # system repair: seeds the FIRST BuildRequest only
 
     def run(self, ctx: PhaseContext) -> PhaseResult:
         req = BuildRequest(
@@ -45,6 +46,7 @@ class BuildPhase:
             budget=ctx.budget,
             consumed_contracts=self.consumed_contracts,
             provided_contracts=self.provided_contracts,
+            repair_context=self.repair_context,
         )
         result = self._build(ctx, req)
 
