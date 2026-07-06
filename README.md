@@ -632,3 +632,12 @@ Remaining follow-ups (non-blocking, tracked):
   deterministic acceptance + cost against a stored baseline. Policy: an eval run must answer a
   live decision (SDK-vs-managed backend, model-tier per phase, prompt regression) — never runs
   on a schedule. First action is the pending **M5 live corpus run** to establish the baseline.
+
+- **M23** ⬜ — **system-level repair loop.** Repair exists per-service (`BuildPhase`,
+  `max_repairs=2`) but an integration failure still tears everything down and ends the run —
+  exactly where failures concentrate now that one-flow fixed the in-service class. New loop in
+  `build_system`: failing integration steps deterministically implicate their build-kind nodes;
+  each is re-built on its existing `out/` with `repair_context` = the full integration report
+  (frozen scope + persisted plan reloaded — no re-plan drift); teardown → fresh bring-up → full
+  suite re-run; capped by `max_system_repairs` (default 1) spending shared-Budget retries.
+  Design: [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-system-repair-loop-design.md).
