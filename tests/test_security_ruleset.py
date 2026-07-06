@@ -1,5 +1,6 @@
 from devagent.security.findings import Finding
-from devagent.security.ruleset import gates, partition, GATING_KINDS
+from devagent.security.ruleset import gates, partition, intentional_open_pairs, GATING_KINDS
+from devagent.schema import Contract, ServiceNode, SystemDesign
 
 
 def _f(kind, route="/x"):
@@ -34,3 +35,89 @@ def test_partition_splits_gating_from_advisory():
     gating, advisory = partition(findings, open_pairs=set())
     assert {g.kind for g in gating} == {"mass_assignment", "idor"}
     assert {a.kind for a in advisory} == {"verb_tampering"}
+
+
+# Tests for intentional_open_pairs function
+
+def test_intentional_open_pairs_extracts_escape_hatchable_markers():
+    # A design with x-intentionally-open: ["missing_authz"] should return the (route, kind) pair.
+    design = SystemDesign(
+        title="test",
+        services=[ServiceNode(
+            id="api", name="api", kind="backend", stack="node-express",
+            prd_slice="api spec", provides=["contract1"])],
+        contracts=[Contract(
+            id="contract1", kind="openapi", producer="api",
+            spec={"paths": {
+                "/auth/register": {
+                    "post": {"x-intentionally-open": ["missing_authz"]}
+                }
+            }}
+        )]
+    )
+    pairs = intentional_open_pairs(design)
+    assert pairs == {("/auth/register", "missing_authz")}
+
+
+def test_intentional_open_pairs_rejects_non_escape_hatchable_kinds():
+    # mass_assignment, idor, verb_tampering are NOT escape-hatchable; should not appear in result.
+    design = SystemDesign(
+        title="test",
+        services=[ServiceNode(
+            id="api", name="api", kind="backend", stack="node-express",
+            prd_slice="api spec", provides=["contract1"])],
+        contracts=[Contract(
+            id="contract1", kind="openapi", producer="api",
+            spec={"paths": {
+                "/auth/register": {
+                    "post": {"x-intentionally-open": ["mass_assignment", "idor", "verb_tampering"]}
+                }
+            }}
+        )]
+    )
+    pairs = intentional_open_pairs(design)
+    assert pairs == set()  # None of these kinds are escape-hatchable
+
+
+def test_intentional_open_pairs_empty_without_markers_or_contracts():
+    # No x-intentionally-open markers should return empty set.
+    design_no_markers = SystemDesign(
+        title="test",
+        services=[ServiceNode(
+            id="api", name="api", kind="backend", stack="node-express",
+            prd_slice="api spec", provides=["contract1"])],
+        contracts=[Contract(
+            id="contract1", kind="openapi", producer="api",
+            spec={"paths": {"/todos": {"get": {}}}}
+        )]
+    )
+    assert intentional_open_pairs(design_no_markers) == set()
+
+    # No contracts at all should return empty set.
+    design_no_contracts = SystemDesign(
+        title="test",
+        services=[ServiceNode(
+            id="api", name="api", kind="backend", stack="node-express",
+            prd_slice="api spec")]
+    )
+    assert intentional_open_pairs(design_no_contracts) == set()
+
+
+def test_intentional_open_pairs_ignores_non_openapi_contracts():
+    # A marker on a db_schema contract should be ignored (only openapi contracts are read).
+    design = SystemDesign(
+        title="test",
+        services=[ServiceNode(
+            id="api", name="api", kind="backend", stack="node-express",
+            prd_slice="api spec", provides=["contract1"])],
+        contracts=[Contract(
+            id="contract1", kind="db_schema", producer="api",
+            spec={"paths": {
+                "/some/route": {
+                    "post": {"x-intentionally-open": ["missing_authz"]}
+                }
+            }}
+        )]
+    )
+    pairs = intentional_open_pairs(design)
+    assert pairs == set()  # db_schema contracts are not openapi, so marker is ignored
