@@ -638,8 +638,10 @@ Remaining follow-ups (non-blocking, tracked):
   exactly where failures concentrate now that one-flow fixed the in-service class. New loop in
   `build_system`: failing integration steps deterministically implicate their build-kind nodes;
   each is re-built on its existing `out/` with `repair_context` = the full integration report
-  (frozen scope + persisted plan reloaded — no re-plan drift); teardown → fresh bring-up → full
-  suite re-run; capped by `max_system_repairs` (default 1) spending shared-Budget retries.
+  (reached via `run_node`'s new `repair_context` seam); frozen scope and the persisted plan are
+  reloaded separately (a new `FrozenPlanPhase`, no re-plan drift); teardown → fresh bring-up →
+  full suite re-run; capped by `max_system_repairs` (default 1, its own counter — cost bounded
+  by the existing token/$/time ceilings, not the shared retry pool).
   Design: [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-system-repair-loop-design.md).
 
 - **M24** ⬜ — **security verify phase (red-team).** Functional checks verify the contract was
