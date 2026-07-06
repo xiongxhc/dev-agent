@@ -109,3 +109,18 @@ def test_auth_backend_scope_carries_synthesized_flow_and_gated_checks():
     assert protected and unauth_probe                    # both sides of the auth gate
     res = ScopeGate().check(PhaseResult(name="scope", exit_code=0, output_artifact=scope))
     assert res.ok, res.reason
+
+
+def test_frontend_scope_derives_mobile_fit_when_prd_slice_says_mobile():
+    design = _design()
+    web = _node(design, "web")
+    web_mobile = web.model_copy(update={
+        "prd_slice": "React SPA optimised for mobile WebView embedding; touch-friendly."})
+    design_m = design.model_copy(update={
+        "services": [s if s.id != "web" else web_mobile for s in design.services]})
+    scope = scope_for_node(web_mobile, design_m)
+    kinds = [(c.kind, c.route) for c in scope.targets[0].acceptance_checks]
+    assert ("mobile_fit", "/") in kinds and ("route_status", "/") in kinds
+    # a non-mobile slice derives no mobile_fit
+    plain = scope_for_node(_node(design, "web"), design)
+    assert all(c.kind != "mobile_fit" for c in plain.targets[0].acceptance_checks)

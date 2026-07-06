@@ -66,6 +66,62 @@ def check_selector_present(base_url: str, route: str, selector: str) -> dict:
             "detail": f"selector {selector!r} {'found' if found else 'missing'}"}
 
 
+_MOBILE_VIEWPORT = {"width": 390, "height": 844}    # common phone logical resolution
+_TOUCH_TARGET_MIN_PX = 44                            # Apple HIG floor (Material says 48)
+
+
+def _mobile_fit_verdict(scroll_width: int, inner_width: int, small_targets: list) -> tuple:
+    """Pure verdict for a mobile_fit render: (ok, detail). Fails on horizontal overflow
+    (a desktop layout squeezed into a phone viewport) or interactive elements under the
+    touch-target floor — the two mechanical signatures of 'not designed for mobile'."""
+    problems = []
+    if scroll_width > inner_width:
+        problems.append(f"horizontal overflow: content {scroll_width}px > viewport {inner_width}px")
+    if small_targets:
+        shown = "; ".join(small_targets[:5])
+        problems.append(f"{len(small_targets)} touch target(s) under "
+                        f"{_TOUCH_TARGET_MIN_PX}px: {shown}")
+    if problems:
+        return False, " | ".join(problems)
+    return True, (f"no horizontal overflow at {inner_width}px; "
+                  f"all touch targets >= {_TOUCH_TARGET_MIN_PX}px")
+
+
+def check_mobile_fit(base_url: str, route: str) -> dict:
+    """Render *route* at a phone viewport and apply _mobile_fit_verdict. Checkboxes/radios are
+    exempt (their tap area is the label); plain links are exempt (inline prose links are
+    legitimately text-sized) — buttons, inputs, selects, and role=button are the floor."""
+    from playwright.sync_api import sync_playwright  # lazy: only when a mobile check exists
+
+    url = base_url.rstrip("/") + route
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page(viewport=dict(_MOBILE_VIEWPORT))
+            page.goto(url, wait_until="networkidle")
+            data = page.evaluate("""() => {
+                const sels = 'button, select, textarea, [role="button"], ' +
+                             'input:not([type=hidden]):not([type=checkbox]):not([type=radio])';
+                const small = [];
+                for (const el of document.querySelectorAll(sels)) {
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) continue;    // hidden
+                    if (r.height < MINPX) {
+                        const label = (el.innerText || el.value || el.type || el.tagName)
+                            .trim().slice(0, 24);
+                        small.push(el.tagName.toLowerCase() + " '" + label + "' " +
+                                   Math.round(r.height) + "px");
+                    }
+                }
+                return {scrollWidth: document.documentElement.scrollWidth,
+                        innerWidth: window.innerWidth, small};
+            }""".replace("MINPX", str(_TOUCH_TARGET_MIN_PX)))
+        finally:
+            browser.close()
+    ok, detail = _mobile_fit_verdict(data["scrollWidth"], data["innerWidth"], data["small"])
+    return {"kind": "mobile_fit", "route": route, "ok": ok, "detail": detail}
+
+
 def _dig(obj, dotted: str):
     """Walk a dotted path ('items.0.id') into nested dicts/lists. Returns (found, value).
     A JSONPath-style root prefix ('$.items.0.id', or a bare '$') is tolerated — LLM-emitted
@@ -177,6 +233,8 @@ def run_checks(checks: list[dict], base_url: str) -> list[dict]:
             results.append(check_route_status(base_url, c["route"], c.get("expected_status", 200)))
         elif kind == "selector_present":
             results.append(check_selector_present(base_url, c["route"], c["selector"]))
+        elif kind == "mobile_fit":
+            results.append(check_mobile_fit(base_url, c["route"]))
         else:
             results.append({"kind": kind, "route": c.get("route"), "ok": False,
                             "detail": f"unsupported check kind {kind!r}"})
@@ -305,6 +363,8 @@ def run_target_checks(target: dict, base_url: str, workdir: str, restart=None) -
             out.append(check_route_status(base_url, c["route"], c.get("expected_status", 200), headers=hdrs))
         elif k == "selector_present":
             out.append(check_selector_present(base_url, c["route"], c["selector"]))
+        elif k == "mobile_fit":
+            out.append(check_mobile_fit(base_url, c["route"]))
         elif k == "api_json":
             out.append(check_api_json(base_url, c["route"], c.get("method", "GET"),
                                       c.get("body"), c.get("json_path"), c.get("json_equals"), headers=hdrs))

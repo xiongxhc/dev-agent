@@ -43,6 +43,14 @@ Rules:
     routes return 401 without a token.
   - Mark ops restricted to a privileged role with `x-required-role: <role>` as well — a
     freshly-registered user is a REGULAR member, and a member hitting such an op gets 403.
+- MOBILE / WebView requirements: adapting a UI for phones is a REDESIGN, not a squeeze — a
+  desktop pattern that does not translate must be replaced by a mobile pattern in the SAME
+  design language. When the requirements include mobile/WebView, the frontend `prd_slice`
+  MUST contain: (a) a per-screen adaptation mapping naming the mobile pattern for each screen
+  (wide table -> card list; sidebar nav -> bottom tab bar; hover actions -> visible buttons;
+  side-by-side panels -> stacked navigation), and (b) a design-continuity rule: same design
+  tokens (palette, typography, spacing, components) restyled for touch — never a new theme.
+  The build is graded at a phone viewport: no horizontal overflow, 44px minimum touch targets.
 - A service that CONSUMES another service's API must NOT rebuild it. Write its `prd_slice` so the
   downstream builder knows that API already exists and is supplied at runtime (e.g. a frontend
   slice says "the API exists — build ONLY the web UI against it"); otherwise the sub-build will

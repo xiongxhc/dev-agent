@@ -37,6 +37,10 @@ Rules:
       field, or rely on a persistence_survives_restart check, which creates the record first.
 - If a fullstack app, point the frontend at the backend (note the base URL in the frontend
   target's detail).
+- If the request mentions mobile / WebView / phone use, add a `mobile_fit` check (route "/")
+  on the frontend: it renders at a phone viewport and fails on horizontal overflow or touch
+  targets under 44px — adapting for mobile is a redesign in the same design language, and a
+  squeezed desktop layout must fail verification.
 - If the request is genuinely underspecified (you cannot pick targets/stacks/checks with
   confidence), put concrete questions in `clarifications` and leave targets as your best guess.
   If it is clear, leave `clarifications` empty.

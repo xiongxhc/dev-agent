@@ -58,6 +58,12 @@ def scope_for_node(node, design) -> ProjectScope:
         checks = [c for c in checks if not c.get("auth")]
     if not checks:
         checks = [{"kind": "route_status", "route": "/", "expected_status": 200}]
+    # Mobile floor: a frontend whose slice carries a mobile/WebView requirement is graded at
+    # a phone viewport (no horizontal overflow, 44px touch targets) — "squeezed desktop"
+    # must FAIL verification so the repair loop restructures instead of shrinking.
+    if node.kind == "frontend" and any(
+            kw in node.prd_slice.lower() for kw in ("mobile", "webview", "phone", "touch")):
+        checks.append({"kind": "mobile_fit", "route": "/"})
 
     detail = {"description": node.prd_slice}
     if svc_deps:

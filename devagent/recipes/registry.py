@@ -62,7 +62,7 @@ REGISTRY: dict[str, Recipe] = {
         build_cmd="pnpm install --frozen-lockfile && pnpm build",
         artifact_glob="dist/index.html",
         boot=None,
-        supported_checks=("route_status", "selector_present"),
+        supported_checks=("route_status", "selector_present", "mobile_fit"),
     ),
     "node-express": Recipe(
         name="node-express", type="backend", toolchain=NODE,

@@ -19,6 +19,8 @@ KNOWN_AUTH_MODES = ("bearer", "cookie")
 
 AcceptanceKind = Literal[
     "route_status", "selector_present",   # frontend (HTTP / browser)
+    "mobile_fit",                          # frontend (browser at phone viewport: no horizontal
+                                           #   overflow, 44px touch-target floor)
     "api_json",                            # backend (HTTP JSON-body assertion)
     "command_exit", "stdout_matches",      # cli/mcp (subprocess) — plumbed for future recipes
     "persistence_survives_restart",        # backend durability across an app restart
@@ -50,7 +52,7 @@ class AcceptanceCheck(BaseModel):
 
     @model_validator(mode="after")
     def _required_per_kind(self):
-        http_kinds = {"route_status", "selector_present", "api_json"}
+        http_kinds = {"route_status", "selector_present", "api_json", "mobile_fit"}
         if self.kind in http_kinds:
             if not self.route or not self.route.startswith("/"):
                 raise ValueError(f"{self.kind} requires a route starting with '/'")
