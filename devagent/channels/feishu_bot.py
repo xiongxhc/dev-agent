@@ -1,10 +1,18 @@
-"""Feishu INBOUND bot (MVP) — drop a PRD in Feishu, watch it build live, get the preview URL back.
+"""Feishu INBOUND bot — drop a requirement in Feishu, watch it build live, get the preview URL back.
 
 A WebSocket long-connection (no public URL) subscribes to `im.message.receive_v1`. A text message
-is treated as a PRD: the bot launches the existing pipeline (`python -m devagent.cli run --build`)
-in a fresh runs dir and TAILS that run's `ledger.jsonl`, posting each phase/gate to the same chat as
-it happens — then the deployed preview URL. The pipeline itself is untouched (the ledger is already
-the event stream); this module only listens, spawns, tails, and replies.
+is treated as a requirement and handed to the full multi-service pipeline
+(`python -m devagent.cli build-system`): the architect decides how many services it is, each is
+built + verified, the system is brought up and cross-service integration-checked, the security
+verify phase red-teams the preview, and any gating failure drives the system repair loop — then the
+deployed preview URL(s) come back. The bot TAILS that run's `ledger.jsonl` and posts each milestone
+to the same chat as it happens. The pipeline itself is untouched (the ledger is already the event
+stream); this module only listens, spawns, tails, and replies.
+
+Always `build-system`, never the single-service `run` path: `build-system` is the superset (a
+one-service requirement yields a one-node design) and it is the ONLY flow that carries the system
+repair loop (M23) and the security verify phase (M24). Routing chat requests anywhere else would
+silently skip both — the chat is the product interface, so it gets the full pipeline.
 
 Run it:  set FEISHU_APP_ID / FEISHU_APP_SECRET (+ ANTHROPIC_API_KEY for the build), then
     python -m devagent.channels.feishu_bot
@@ -52,71 +60,92 @@ def _load_dotenv() -> None:
         os.environ.setdefault(k.strip(), v.strip())
 
 
-def _build_eta(task_count: int | None) -> str:
-    """Honest band estimate for the build+verify phase, from the plan's task count (the only
-    sizing signal available before the build starts). Bands from observed live runs: a 6-8 task
-    fullstack ≈ 4 min; an auth+roles app (~20 tasks) runs well past 10."""
-    if not task_count:
-        return "typically 5-15 min"
-    if task_count <= 8:
-        return "typically 3-6 min"
-    if task_count <= 15:
-        return "typically 6-12 min"
-    return "typically 12-20 min"
-
-
-def _task_count(ev: dict) -> int | None:
-    """Pull the task count from a plan phase event's '<N> tasks' output."""
-    m = re.match(r"(\d+) tasks", str(ev.get("output", "")))
-    return int(m.group(1)) if m else None
+def _system_eta(n_services: int | None) -> str:
+    """Honest band estimate for a whole system build (architect → per-service build+verify →
+    bring-up → integration → security verify → any repair pass), sized by service count — the
+    only sizing signal available once the architect has designed the system. Bands from observed
+    live runs: a single-service app ≈ 4-8 min; a small multi-service system runs well past 10."""
+    if not n_services:
+        return "typically 5-20 min"
+    if n_services <= 1:
+        return "typically 4-8 min"
+    if n_services <= 3:
+        return "typically 8-15 min"
+    return "typically 15-30 min"
 
 
 def _format_event(ev: dict) -> str | None:
-    """Map a ledger event to a friendly chat line (or None to stay silent)."""
+    """Map a system-build ledger event to a friendly chat line (or None to stay silent).
+
+    The `build-system` ledger interleaves system-level events with each per-service sub-run's own
+    scope/plan/build/deploy/gate/run_start/run_end events (they share one ledger, and siblings run
+    concurrently). Streaming the sub-run events would be a confusing concurrent jumble, so this
+    surfaces only the system-level arc — architect → building N services → each node done →
+    repair (if verification failed) → security note → preview — and the per-node build outcomes.
+    A failed service's `node` event carries the detail, so sub-run gate/phase noise is suppressed."""
     kind = ev.get("event")
-    if kind == "phase":
-        phase, ok = ev.get("phase"), ev.get("exit") == 0
-        out = str(ev.get("output", ""))[:80]
-        if not ok:
-            return None  # the gate line (below) carries the failure detail
-        return {
-            "scope":  f"📋 Scope ✓ — {out}",
-            "plan":   f"🗂️ Plan ✓ — {out}",
-            "build":  "🔨 Build ✓ — rebuilt from source, booted, acceptance passed",
-            "deploy": f"🚀 Deployed — {ev.get('meta', {}).get('url', '')}",
-        }.get(phase)
-    if kind == "gate" and not ev.get("ok"):
-        return f"⛔ Gate failed at {ev.get('phase')}: {ev.get('reason', '')[:120]}"
-    if kind == "run_end" and ev.get("status") != "succeeded":
-        return f"❌ Run ended: {ev.get('status')} — {str(ev.get('detail', ''))[:120]}"
+    if kind == "phase" and ev.get("phase") == "architect":
+        # Only the architect phase runs at the system level; every other `phase` event is a
+        # concurrent sub-run's and is suppressed. Architect failure surfaces via system_build_end.
+        return "🏗️ Designing the system architecture…" if ev.get("exit") == 0 else None
+    if kind == "system_build_start":
+        order = ev.get("order") or []
+        n = len(order)
+        return (f"🧩 Architecture ready — building {n} service{'s' if n != 1 else ''}: "
+                f"{', '.join(order)}")
+    if kind == "node":
+        node, status = ev.get("node"), ev.get("status")
+        if status == "succeeded":
+            return f"  ✅ {node} built"
+        if status == "failed":
+            return f"  ❌ {node} failed — {str(ev.get('detail', ''))[:100]}"
+        return None  # blocked: a dependency failed; that failing node already reported
+    if kind == "system_repair_start":
+        nodes = ", ".join(ev.get("nodes") or [])
+        return (f"🔧 Verification failed — repairing {nodes} "
+                f"(attempt {ev.get('attempt')}), then re-verifying…")
+    if kind == "security_not_run":
+        classes = ", ".join(ev.get("classes") or [])
+        return (f"🔐 Note: {classes} security probe(s) did not run (no second principal available) "
+                "— a coverage gap, not a clean pass.")
+    if kind == "system_deploy":
+        urls = ev.get("urls") or {}
+        if not urls:
+            return None
+        body = "\n".join(f"  • {sid}: {url}" for sid, url in urls.items())
+        return f"🚀 Preview up:\n{body}"
+    if kind == "system_build_end" and ev.get("status") != "succeeded":
+        return f"❌ Build ended: {ev.get('status')}"
     return None
 
 
 def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
-    """Run the pipeline on *prd_text* and stream its ledger to *chat_id* until completion."""
+    """Run the full `build-system` pipeline on *prd_text* and stream its ledger to *chat_id*."""
     _RUNS_BASE.mkdir(parents=True, exist_ok=True)
     runs = Path(tempfile.mkdtemp(prefix="feishu-run-", dir=str(_RUNS_BASE)))
     prd = runs / "prd.md"
     prd.write_text(prd_text, encoding="utf-8")
-    feishu_app.send_text(api, chat_id, "🛠️ Got it — starting an autonomous build. Scoping your request…")
+    feishu_app.send_text(api, chat_id,
+                         "🛠️ Got it — starting an autonomous system build. Designing the architecture…")
 
     env = {**os.environ, "DEVAGENT_RUNS_DIR": str(runs)}
     proc = subprocess.Popen(
-        [sys.executable, "-m", "devagent.cli", "run", "--build", str(prd)],
+        [sys.executable, "-m", "devagent.cli", "build-system", str(prd)],
         cwd=str(_ROOT), env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
     ledger: Path | None = None
     seen = 0
-    announced_build = False
+    announced = False
     build_started_at: float | None = None
     build_done = False
-    eta = _build_eta(None)
-    url: str | None = None
+    eta = _system_eta(None)
+    urls: dict = {}
+    status: str | None = None
 
     def drain() -> None:
-        nonlocal seen, announced_build, build_started_at, build_done, eta, url
+        nonlocal seen, announced, build_started_at, build_done, eta, urls, status
         if ledger is None or not ledger.exists():
             return
         lines = ledger.read_text(encoding="utf-8").splitlines()
@@ -128,19 +157,20 @@ def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
             msg = _format_event(ev)
             if msg:
                 feishu_app.send_text(api, chat_id, msg)
-            if ev.get("event") == "phase" and ev.get("phase") == "plan" and ev.get("exit") == 0 \
-                    and not announced_build:
-                announced_build = True
+            kind = ev.get("event")
+            if kind == "system_build_start" and not announced:
+                announced = True
                 build_started_at = time.monotonic()
-                eta = _build_eta(_task_count(ev))
+                eta = _system_eta(len(ev.get("order") or []))
                 feishu_app.send_text(api, chat_id,
-                                     "🔨 Building + verifying (rebuild from source → boot → "
-                                     f"acceptance). This is the slow part — {eta} for a plan "
-                                     f"this size. I'll post progress as I go.")
-            if ev.get("event") == "phase" and ev.get("phase") == "build":
+                                     "🔨 Building + verifying each service, then wiring, "
+                                     "integration-testing and security-checking the system — "
+                                     f"the slow part ({eta}). I'll post progress as I go.")
+            if kind == "system_deploy":
+                urls = dict(ev.get("urls") or {})
+            if kind == "system_build_end":
+                status = ev.get("status")
                 build_done = True
-            if ev.get("event") == "phase" and ev.get("phase") == "deploy":
-                url = ev.get("meta", {}).get("url") or url
         seen = len(lines)
 
     last_heartbeat = time.monotonic()
@@ -150,8 +180,8 @@ def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
             if found:
                 ledger = found[0] / "ledger.jsonl"
         drain()
-        # Heartbeat while the long build phase runs, so the chat is never silent for 15 min.
-        if announced_build and not build_done \
+        # Heartbeat while the long build phase runs, so the chat is never silent for many minutes.
+        if announced and not build_done \
                 and time.monotonic() - last_heartbeat >= _HEARTBEAT_S:
             last_heartbeat = time.monotonic()
             mins = int((time.monotonic() - (build_started_at or last_heartbeat)) // 60)
@@ -162,35 +192,18 @@ def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
             break
         time.sleep(_POLL_S)
 
-    rc = proc.wait()
-    if rc == 0 and url:
+    proc.wait()
+    if urls:
+        body = "\n".join(f"• {sid}: {u}" for sid, u in urls.items())
         feishu_app.send_text(api, chat_id,
-                             f"✅ Done. Live preview: {url}\n"
-                             "(opens on the host machine — public deploy is on the roadmap)")
-    elif rc == 0:
-        feishu_app.send_text(api, chat_id, "✅ Build finished.")
+                             "✅ Done — system built, verified and security-checked. Live preview:\n"
+                             f"{body}\n(opens on the host machine — public deploy is on the roadmap)")
+    elif status == "succeeded":
+        feishu_app.send_text(api, chat_id, "✅ System build finished.")
     else:
-        clar = _scope_clarifications(runs)
-        if clar:
-            feishu_app.send_text(api, chat_id,
-                                 "🤔 I need a bit more detail before building:\n"
-                                 + "\n".join(f"• {q}" for q in clar)
-                                 + "\n\nReply with the answers and I'll re-run.")
-        else:
-            feishu_app.send_text(api, chat_id, "❌ Build did not complete — see the run report on the host.")
-
-
-def _scope_clarifications(runs: Path) -> list[str]:
-    """The Scope phase's open questions, if it stopped to ask (so the ONE app bot can relay them
-    — no separate outbound webhook bot needed)."""
-    for rd in sorted(runs.glob("run-*")):
-        sj = rd / "scope.json"
-        if sj.is_file():
-            try:
-                return json.loads(sj.read_text(encoding="utf-8")).get("clarifications") or []
-            except (ValueError, OSError):
-                return []
-    return []
+        feishu_app.send_text(api, chat_id,
+                             f"❌ Build did not complete — status: {status or 'unknown'}. "
+                             "See the run report on the host.")
 
 
 def _make_handler(api: lark.Client):
@@ -203,8 +216,8 @@ def _make_handler(api: lark.Client):
         seen_messages.add(msg.message_id)
         if msg.message_type != "text":
             feishu_app.send_text(api, msg.chat_id,
-                                 "Send me a text PRD (what to build) and I'll build it live. "
-                                 "(PDF intake is on the roadmap.)")
+                                 "Send me a text requirement (what to build) and I'll design, "
+                                 "build and security-check it live. (PDF intake is on the roadmap.)")
             return
         text = _MENTION.sub("", json.loads(msg.content).get("text", "")).strip()
         # In a group, only act when the bot is @mentioned; in a DM, act on every message.
@@ -230,7 +243,7 @@ def main() -> None:
                    lark.LogLevel.INFO)
     ws = lark.ws.Client(os.environ["FEISHU_APP_ID"], os.environ["FEISHU_APP_SECRET"],
                         event_handler=handler, log_level=_lvl)
-    print("feishu bot: connecting (WebSocket long-connection)… drop a PRD in a DM or @mention me in a group.")
+    print("feishu bot: connecting (WebSocket long-connection)… drop a requirement in a DM or @mention me in a group.")
     ws.start()  # blocking
 
 

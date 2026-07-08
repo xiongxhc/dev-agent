@@ -56,16 +56,75 @@ def test_sign_is_deterministic_and_base64():
     base64.b64decode(a)  # valid base64, else raises
 
 
-def test_build_eta_bands():
-    from devagent.channels.feishu_bot import _build_eta
-    assert _build_eta(None) == "typically 5-15 min"
-    assert _build_eta(6) == "typically 3-6 min"
-    assert _build_eta(12) == "typically 6-12 min"
-    assert _build_eta(21) == "typically 12-20 min"
+def test_system_eta_bands():
+    from devagent.channels.feishu_bot import _system_eta
+    assert _system_eta(None) == "typically 5-20 min"
+    assert _system_eta(1) == "typically 4-8 min"
+    assert _system_eta(3) == "typically 8-15 min"
+    assert _system_eta(5) == "typically 15-30 min"
 
 
-def test_task_count_parses_plan_output():
-    from devagent.channels.feishu_bot import _task_count
-    assert _task_count({"output": "21 tasks"}) == 21
-    assert _task_count({"output": "Team Todos"}) is None
-    assert _task_count({}) is None
+def test_format_event_surfaces_system_level_arc():
+    from devagent.channels.feishu_bot import _format_event
+    # architect (system-level) is surfaced; a failing architect stays silent (end carries it)
+    assert "Designing" in _format_event({"event": "phase", "phase": "architect", "exit": 0})
+    assert _format_event({"event": "phase", "phase": "architect", "exit": 1}) is None
+    # the build fan-out header names the services
+    m = _format_event({"event": "system_build_start", "order": ["api", "web"]})
+    assert "2 service" in m and "api" in m and "web" in m
+    # per-node outcomes
+    assert "api built" in _format_event({"event": "node", "node": "api", "status": "succeeded"})
+    assert "web failed" in _format_event(
+        {"event": "node", "node": "web", "status": "failed", "detail": "boom"})
+    # M23 repair signal
+    rep = _format_event({"event": "system_repair_start", "attempt": 1, "nodes": ["api"]})
+    assert "repairing api" in rep and "attempt 1" in rep
+    # M24 security not-run advisory
+    assert "idor" in _format_event({"event": "security_not_run", "classes": ["idor"]})
+    # preview URLs
+    dep = _format_event({"event": "system_deploy", "urls": {"web": "http://web"}})
+    assert "Preview up" in dep and "http://web" in dep
+    # terminal failure surfaced; success handled by the completion message, not here
+    assert "integration_failed" in _format_event(
+        {"event": "system_build_end", "status": "integration_failed"})
+    assert _format_event({"event": "system_build_end", "status": "succeeded"}) is None
+
+
+def test_format_event_suppresses_per_service_subrun_noise():
+    from devagent.channels.feishu_bot import _format_event
+    # sub-run scope/plan/build/deploy phases, gates, run boundaries share the ledger and run
+    # concurrently — they must NOT be streamed to chat (only the system-level arc is).
+    assert _format_event({"event": "phase", "phase": "scope", "exit": 0}) is None
+    assert _format_event({"event": "phase", "phase": "build", "exit": 0}) is None
+    assert _format_event({"event": "gate", "phase": "build", "ok": False, "reason": "x"}) is None
+    assert _format_event({"event": "run_start", "phases": ["scope"]}) is None
+    assert _format_event({"event": "run_end", "status": "failed"}) is None
+    assert _format_event({"event": "node", "node": "db", "status": "blocked"}) is None
+
+
+def test_stream_run_invokes_build_system(monkeypatch, tmp_path):
+    from devagent.channels import feishu_bot
+    captured = {}
+
+    class _FakeProc:
+        def poll(self):
+            return 0        # already exited: the stream loop drains once and breaks, no sleep
+
+        def wait(self):
+            return 0
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    monkeypatch.setattr(feishu_bot.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(feishu_bot.feishu_app, "send_text", lambda *a, **k: None)
+    monkeypatch.setattr(feishu_bot, "_RUNS_BASE", tmp_path)
+
+    feishu_bot._stream_run(api=None, chat_id="c", prd_text="build me a polls app")
+
+    # The chat interface must drive the FULL pipeline (build-system), never the single-service
+    # `run` path — that is the only flow carrying the M23 repair loop and M24 security phase.
+    assert "build-system" in captured["cmd"]
+    assert "run" not in captured["cmd"]
+    assert captured["cmd"][:3] == [feishu_bot.sys.executable, "-m", "devagent.cli"]

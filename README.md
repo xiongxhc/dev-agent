@@ -81,23 +81,24 @@ Design + research: `../docs/planning/specs/2026-06-22-dev-agent-research-synthes
 
 ### How a request flows end-to-end
 
-A build can be triggered three ways — the first two land in the **same single-run pipeline**;
-the third runs the **system lane**, which reuses that pipeline once per service:
+A build can be triggered three ways. The CLI single run is the primitive; the **system lane**
+(`build-system`) wraps it once per service and adds the architect, cross-service integration, the
+security verify phase and the system repair loop. **Feishu — the chat interface — routes to the
+system lane**, so every chat requirement gets the full pipeline (a one-service requirement just
+yields a one-node design):
 
 - **CLI, single run:** `devagent run --build <prd.md>` (the primitive everything else wraps).
-- **Feishu:** drop a PRD into a Feishu chat → a bot triggers a single run and **streams live
-  progress back into the chat**. See "Feishu channel" below.
 - **CLI, system run:** `devagent build-system <prd.md>` (M20/M21) — an Architect designs a
-  multi-service system, each service gets the single-run pipeline as a sub-build.
+  multi-service system, each service gets the single-run pipeline as a sub-build, then bring-up,
+  cross-service integration, the security verify phase (M24) and the system repair loop (M23).
+- **Feishu:** drop a requirement into a Feishu chat → a bot spawns `build-system` and **streams
+  live progress back into the chat** (architect → per-service builds → repair/security → preview).
+  See "Feishu channel" below.
 
-The single-run chain, from a Feishu message to a running preview:
+The single-run chain (the CLI primitive the system lane wraps once per service):
 
 ```
-Feishu chat  ──@bot / DM (a PRD)──▶  feishu_bot.py            (runs on THIS host; WebSocket
-                                       │  long-connection, no public URL — lark_oapi)
-                                       │  spawns: devagent run --build <prd>
-                                       ▼
-                              orchestrator.py                 (host; LLM-brain, deterministic hands)
+CLI  ──  devagent run --build <prd>  ──▶  orchestrator.py     (host; LLM-brain, deterministic hands)
         ┌─ scope ─ plan ─┬─────────── build ───────────┬─ deploy ─┐   gate after EVERY phase
         │  (Messages API)│        Executor seam         │          │
         │  on the host   │   SdkExecutor (default)      │          │
@@ -109,9 +110,9 @@ Feishu chat  ──@bot / DM (a PRD)──▶  feishu_bot.py            (runs on
         │           + acceptance (boots the app,    (agent's    on 127.0.0.1:<port>
         │            persistence_survives_restart)   choice)         │
         └──────────────────────── ledger.jsonl (append-only event stream) ──────────────┘
-                                       │  feishu_bot tails the ledger
+                                       │  the run's ledger + runs/<id>/report.html
                                        ▼
-                     Feishu chat  ◀── 📋 scope ✓ · 🗂 plan ✓ · 🔨 build ✓ · 🚀 URL · report.html
+                              📋 scope ✓ · 🗂 plan ✓ · 🔨 build ✓ · 🚀 preview URL
 ```
 
 The system lane (`devagent build-system <prd.md>`) wraps that same pipeline per service.
@@ -140,8 +141,14 @@ PRD ─▶ architect ─▶ SystemDesign (service DAG + contracts) ─▶ [archi
     system_build_end carries the true post-integration status
 ```
 
-Feishu currently triggers **single runs only** — pasting a system-sized PRD there builds one
-fullstack monorepo, not a service DAG; routing chat PRDs to `build-system` is future wiring.
+Feishu routes every chat requirement to **`build-system`** (the chat is the product interface, so
+it gets the full pipeline — the M23 repair loop and M24 security phase live only in the system
+lane). `feishu_bot.py` spawns `devagent build-system`, tails the run's ledger, and streams the
+system-level arc back to the chat — architect → per-service builds → `system_repair_start/end`
+(M23) → `security_not_run` advisories (M24) → `system_deploy` preview URL(s) → final status —
+suppressing the concurrent per-service sub-run noise. A one-service requirement yields a one-node
+design, so simple asks still work; the architect designs an underspecified request rather than
+stalling to ask.
 
 - **Where it runs — you host the agent, Anthropic hosts the brain.** The split:
   - **Local (Docker on your machine):** the **Claude Agent SDK runtime itself**, all file
@@ -178,9 +185,10 @@ event `im.message.receive_v1` (long-connection mode), published, and added to a 
 (`FEISHU_APP_ID` / `FEISHU_APP_SECRET`), never committed.
 
 > The older `channels/feishu.py` is a one-way **group-webhook** bot used only for best-effort
-> outbound notifications (e.g. scope-clarification questions on the CLI path). It is **not
-> required** — the single app bot above covers the full Feishu UX, including relaying
-> clarification questions back to the chat. Run the bot with `python -m devagent.channels.feishu_bot`.
+> outbound notifications (e.g. scope-clarification questions on the CLI single-run path). It is
+> **not required** — the single app bot above covers the full Feishu UX. (The app bot drives
+> `build-system`, whose architect designs an underspecified request rather than asking, so there
+> is no clarification round-trip to relay.) Run the bot with `python -m devagent.channels.feishu_bot`.
 > Design: [`../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md`](../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md).
 
 ---
