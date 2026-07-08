@@ -1,10 +1,7 @@
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
-
-ROOT = Path(__file__).resolve().parent.parent
 
 
 def docker_available() -> bool:
@@ -16,7 +13,7 @@ def docker_available() -> bool:
 def pytest_collection_modifyitems(config, items):
     """Auto-skip @pytest.mark.docker tests when no daemon is reachable — UNLESS
     DEVAGENT_REQUIRE_DOCKER=1, in which case the containment suite must FAIL not skip
-    (so a Docker-less CI job can't report false-green on M1's headline guarantee)."""
+    (so a Docker-less CI job can't report false-green on the containment guarantee)."""
     if docker_available():
         return
     import os
@@ -31,13 +28,3 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip)
 
 
-@pytest.fixture(scope="session")
-def sandbox_image() -> str:
-    """Build the minimal M1 image once for the docker-marked tests."""
-    tag = "devagent-sandbox:m1"
-    proc = subprocess.run(
-        ["docker", "build", "-t", tag, str(ROOT / "sandbox")],
-        capture_output=True, text=True,
-    )
-    assert proc.returncode == 0, f"image build failed: {proc.stderr}"
-    return tag

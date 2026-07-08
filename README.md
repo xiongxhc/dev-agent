@@ -198,7 +198,7 @@ event `im.message.receive_v1` (long-connection mode), published, and added to a 
 | Module | Job | Uses Claude? |
 |---|---|---|
 | `orchestrator.py` `budget.py` `ledger.py` `gates.py` | harness: phase loop, hard ceilings, audit ledger, deterministic gates | no |
-| `sandbox.py` | hardened disposable Docker sandbox (+ `NullSandbox`) | no |
+| `sandbox.py` | `NullSandbox` for host-only brain phases (build/verify self-contain their own Docker; the M1 `Sandbox` class was retired) | no |
 | `schema.py` | pydantic `ProjectScope`/`ArtifactSpec`/`Plan` (scope is flexible + recipe-gated; Plan ownership is disjoint) | no |
 | `executor.py` | the `Executor` Protocol + frozen `BuildRequest`/`BuildResult` seam | no |
 | `llm.py` | `generate_structured()` — Messages API forced tool-use → validated pydantic | **Messages API** |

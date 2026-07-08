@@ -1,4 +1,4 @@
-"""Run configuration. Defaults are sane for M1; every field is overridable via a
+"""Run configuration. Defaults are sane out of the box; every field is overridable via a
 DEVAGENT_* environment variable so the daemon can be configured without code edits."""
 
 import os
@@ -8,7 +8,6 @@ from pathlib import Path
 
 @dataclass
 class Config:
-    image: str = "devagent-sandbox:m1"
     runs_dir: Path = Path("runs")
     max_tokens: int = 1_000_000  # runaway ceiling; counts cache-read tokens too, so multi-target
                                  # builds need headroom — a 2-target build is ~320k+ (the M6 live
@@ -29,7 +28,6 @@ class Config:
     def load(cls, env: dict | None = None) -> "Config":
         env = os.environ if env is None else env
         return cls(
-            image=env.get("DEVAGENT_IMAGE", cls.image),
             runs_dir=Path(env.get("DEVAGENT_RUNS_DIR", str(cls.runs_dir))),
             max_tokens=int(env.get("DEVAGENT_MAX_TOKENS", cls.max_tokens)),
             max_seconds=float(env.get("DEVAGENT_MAX_SECONDS", cls.max_seconds)),
