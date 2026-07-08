@@ -81,6 +81,14 @@ def _design_api_provides():
                     "type": "object", "properties": {"id": {"type": "integer"}}}}}}}}}}}})])
 
 
+def _design_no_openapi():
+    # A valid SystemDesign with a service but no openapi contract -> `probed` is False even
+    # when a security_verify is wired in, so the M24 clean re-bring-up must be skipped.
+    return SystemDesign(title="t", services=[
+        ServiceNode(id="api", name="api", kind="backend", stack="node-express", prd_slice="x")],
+        contracts=[])
+
+
 class FakeLedger:
     def __init__(self): self.events = []
     def append(self, ev): self.events.append(ev)
@@ -262,3 +270,58 @@ def test_m24_gating_finding_drives_repair_and_records_findings():
     assert rep.status == "succeeded" and repaired["n"] == 1
     # the sink the cli would populate is echoed onto the report's findings, on success
     assert rep.findings and rep.findings[0]["kind"] == "mass_assignment"
+
+
+def test_probed_false_skips_clean_rebring_up_without_openapi_contract():
+    # Guards the M24 conditional: a security_verify is wired in (not None) but the design has
+    # no openapi contract, so no probe ran against the kept preview and `probed` is False --
+    # the clean re-bring-up must be skipped and the initial bring-up's stack kept as-is.
+    from devagent.system_build import build_system
+    d = _design_no_openapi()
+    bring_calls = {"n": 0}
+    def bring_up(design):
+        bring_calls["n"] += 1
+        return {"api": "http://api"}, (lambda: None)
+    def runner(checks, urls):    # green: nothing derivable from a contract-less design anyway
+        return IntegrationReport(steps=[{"service": "api", "route": "/", "ok": True,
+                                         "detail": ""}])
+    def security_verify(design, base_urls):
+        return []                # no gating findings
+    rep = build_system("prd.md", budget=None, ledger=None,
+                       run_node=lambda n, d, repair_context=None: NodeResult(n.id, SUCCEEDED),
+                       bring_up=bring_up, architect=lambda _p: d,
+                       integration_runner=runner, security_verify=security_verify,
+                       max_system_repairs=1)
+    assert rep.status == "succeeded"
+    assert bring_calls["n"] == 1     # only the initial bring-up ran; re-bring-up was skipped
+
+
+def test_guarded_rebring_up_failure_degrades_to_integration_failed():
+    # Guards the M24 guard: `probed` is True (openapi contract present) so the clean
+    # re-bring-up is attempted; when it raises, the except must return a graceful
+    # SystemReport(status="integration_failed") rather than letting the crash propagate out
+    # of an otherwise-successful run.
+    from devagent.system_build import build_system
+    d = _design_api_provides()
+    ledger = FakeLedger()
+    torn = {"n": 0}
+    bring = {"n": 0}
+    def bring_up(design):
+        bring["n"] += 1
+        if bring["n"] == 2:      # the clean re-bring-up (post-success) crashes
+            raise RuntimeError("docker exploded")
+        return {"api": "http://api"}, (lambda: torn.__setitem__("n", torn["n"] + 1))
+    def runner(checks, urls):    # integration green throughout
+        return IntegrationReport(steps=[{"service": "api", "route": "/todos", "ok": True,
+                                         "detail": ""}])
+    def security_verify(design, base_urls):
+        return []                # no gating findings -> clean success into the re-bring-up
+    rep = build_system("prd.md", budget=None, ledger=ledger,
+                       run_node=lambda n, d, repair_context=None: NodeResult(n.id, SUCCEEDED),
+                       bring_up=bring_up, architect=lambda _p: d,
+                       integration_runner=runner, security_verify=security_verify,
+                       max_system_repairs=1)
+    assert rep.status == "integration_failed"
+    assert bring["n"] == 2
+    assert torn["n"] >= 1                                       # teardown ran
+    assert any(e["event"] == "system_build_end" for e in ledger.events)  # _finish ran
