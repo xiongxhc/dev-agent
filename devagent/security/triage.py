@@ -38,6 +38,9 @@ def triage(base_url, service, contract, deterministic_findings, *, client=None) 
         found = json.dumps([f.model_dump() for f in deterministic_findings])[:4000]
         prompt = _PROMPT.format(service=service, paths=paths, found=found)
         obj, _usage = generate_structured(prompt, TriageFindings, client=client)
-        return list(obj.findings)
+        findings = list(obj.findings)
+        for f in findings:
+            f.source = "triage"    # provenance is ours to assign, not the LLM's — it never gates
+        return findings
     except Exception:  # noqa: BLE001 — API down / malformed emit: deterministic findings stand
         return []

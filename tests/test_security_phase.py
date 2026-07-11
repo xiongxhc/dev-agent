@@ -28,6 +28,36 @@ class _ReflectHttp:
         return {"ok": False, "detail": "401"}
 
 
+class _SafeHttp:
+    # A correct app: extra fields rejected (no reflection), protected routes answer 401.
+    def api_json(self, base, route, method, body, json_path, json_equals, headers=None):
+        return {"ok": False, "detail": "", "_payload": {"error": "Unexpected field"},
+                "_status": 400}
+    def route_status(self, base, route, expected_status, headers=None):
+        return {"ok": False, "detail": "401"}
+
+
+def test_triage_speculation_on_safe_app_does_not_gate(monkeypatch):
+    # Live regression (2026-07-10, expense-app run): every deterministic probe passed against a
+    # correct api, but the triage LLM returned a high-confidence mass_assignment finding by
+    # READING the frozen OpenAPI contract. That speculation must surface as advisory, never as a
+    # gating step — otherwise the M23 repair loop re-fires it on the unchanged contract forever
+    # and a flawless build ends in integration_failed.
+    from devagent.security import phase as phase_mod
+    from devagent.security.findings import Finding
+    def fake_triage(base, service, contract, found, *, client=None):
+        return [Finding(kind="mass_assignment", service=service, route="/auth/register",
+                        method="POST", severity="critical", confidence="high",
+                        evidence="the spec likely accepts extra fields", remediation="r",
+                        source="triage")]
+    monkeypatch.setattr(phase_mod, "triage", fake_triage)
+    phase = SecurityVerifyPhase(_vuln_design(), http=_SafeHttp(),
+                                triage_client=object(), second_principal=False)
+    res = phase.verify({"api": "http://api"})
+    assert res.gating_steps == []                                   # no gate from speculation
+    assert any(f.kind == "mass_assignment" for f in res.findings)   # still surfaced as advisory
+
+
 def test_phase_gates_on_mass_assignment_and_renders_failing_step():
     phase = SecurityVerifyPhase(_vuln_design(), http=_ReflectHttp(),
                                 triage_client=None, second_principal=False)

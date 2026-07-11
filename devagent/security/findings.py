@@ -30,6 +30,11 @@ class Finding(BaseModel):
     confidence: Confidence = "medium"
     evidence: str = Field(..., min_length=1)    # what was sent and what came back
     remediation: str = Field(..., min_length=1)
+    # Provenance. Only "probe" findings — a deterministic probe that OBSERVED the defect on the
+    # live preview — may gate. Triage speculates about the frozen contract; its verdicts are a
+    # function of the spec, not the running code, so gating on them makes the M23 repair loop
+    # unwinnable (the same speculation re-fires on every re-verify). triage() stamps "triage".
+    source: Literal["probe", "triage"] = "probe"
 
     def as_failing_step(self) -> dict:
         """Render for M23's failing-step interface: {service, route, ok, detail}."""

@@ -12,6 +12,9 @@ _ESCAPE_HATCHABLE = frozenset({"missing_authz", "weak_registration"})
 def gates(finding, open_pairs) -> bool:
     """True iff this finding fails the run. A gating-kind finding gates unless its
     (route, kind) is declared intentionally-open AND the kind is escape-hatchable."""
+    if getattr(finding, "source", "probe") != "probe":
+        return False    # only deterministic probes gate; triage classifies/expands (its prompt
+                        # says so) — gating on spec speculation makes M23 repair unwinnable.
     if finding.kind not in GATING_KINDS:
         return False
     if (finding.kind in _ESCAPE_HATCHABLE

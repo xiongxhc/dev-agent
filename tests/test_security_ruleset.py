@@ -37,6 +37,28 @@ def test_partition_splits_gating_from_advisory():
     assert {a.kind for a in advisory} == {"verb_tampering"}
 
 
+def test_triage_sourced_finding_never_gates():
+    # Live regression (2026-07-10): a flawless api was failed to integration_failed because the
+    # triage LLM emitted high-confidence gating-kind findings by READING the frozen contract.
+    # Only deterministic probes (source="probe") may gate; triage speculation must not, or the
+    # M23 repair loop re-fires the same finding on every re-verify and can never converge.
+    for kind in GATING_KINDS:
+        f = Finding(kind=kind, service="api", route="/x", method="POST", severity="critical",
+                    confidence="high", evidence="the spec likely accepts extra fields",
+                    remediation="r", source="triage")
+        assert gates(f, open_pairs=set()) is False
+
+
+def test_partition_routes_triage_gating_kinds_to_advisory():
+    det = _f("mass_assignment")                                   # deterministic -> gates
+    spec = Finding(kind="idor", service="api", route="/y", method="GET", severity="high",
+                   confidence="high", evidence="ownership must be verified", remediation="r",
+                   source="triage")                              # triage -> advisory only
+    gating, advisory = partition([det, spec], open_pairs=set())
+    assert [g.kind for g in gating] == ["mass_assignment"]
+    assert [a.kind for a in advisory] == ["idor"]
+
+
 # Tests for intentional_open_pairs function
 
 def test_intentional_open_pairs_extracts_escape_hatchable_markers():

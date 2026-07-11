@@ -658,7 +658,12 @@ Remaining follow-ups (non-blocking, tracked):
   IDOR/authz) with a deterministic probe library keyed off the frozen contract — mass-assignment,
   missing-authz, cross-user IDOR, weak-registration, verb-tampering — then a fail-safe LLM triage
   pass expands/classifies (it never gates on its own; the deterministic findings still gate when
-  the triage API is down). A gating ruleset partitions the findings: `GATING_KINDS`
+  the triage API is down). Provenance is enforced, not assumed: every `Finding` carries a
+  `source` (`probe` | `triage`), `triage()` stamps its own emissions `triage`, and only `probe`
+  findings can gate — so triage's spec-reading speculation surfaces as advisory but never fails a
+  build (a live run failed a *flawless* app to `integration_failed` when triage findings gated;
+  because that speculation is a function of the frozen contract, it re-fired every re-verify and
+  made the M23 repair loop unwinnable). A gating ruleset partitions the findings: `GATING_KINDS`
   (mass_assignment, missing_authz, idor) fail the run, with a `(route, probe-class)` escape hatch
   for a design-declared intentionally-open pair — `mass_assignment` is never escape-hatchable, so
   the July-3 bug can't be waived away. Gating findings render as M23 failing steps and feed its

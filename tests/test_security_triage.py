@@ -31,3 +31,18 @@ def test_triage_returns_only_allowlisted_finding_kinds(monkeypatch):
     result = triage("http://api", "api", _contract(), [], client=object())
     assert len(result) == 1 and isinstance(result[0], Finding)
     assert result[0].kind == "mass_assignment"
+
+
+def test_triage_findings_are_stamped_source_triage(monkeypatch):
+    # Provenance is assigned by triage(), never trusted from the LLM: even if the model claims
+    # source="probe" (which would let it gate), triage() overrides it to "triage".
+    from devagent.security import triage as triage_mod
+    def fake_gs(prompt, schema, **kw):
+        obj = schema.model_validate({"findings": [{
+            "kind": "idor", "service": "api", "route": "/claims/{id}", "method": "GET",
+            "severity": "high", "confidence": "high", "evidence": "e", "remediation": "r",
+            "source": "probe"}]})                       # LLM tries to claim deterministic origin
+        return obj, {"tokens_in": 1, "tokens_out": 1}
+    monkeypatch.setattr(triage_mod, "generate_structured", fake_gs)
+    result = triage("http://api", "api", _contract(), [], client=object())
+    assert result[0].source == "triage"
