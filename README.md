@@ -92,8 +92,9 @@ yields a one-node design):
   multi-service system, each service gets the single-run pipeline as a sub-build, then bring-up,
   cross-service integration, the security verify phase (M24) and the system repair loop (M23).
 - **Feishu:** drop a requirement into a Feishu chat → a bot spawns `build-system` and **streams
-  live progress back into the chat** (architect → per-service builds → repair/security → preview).
-  See "Feishu channel" below.
+  live progress back into the chat** (architect → per-service builds → repair/security → preview);
+  a follow-up message in that same chat updates the built app in place instead of starting fresh
+  (M25). See "Feishu channel" below.
 
 The single-run chain (the CLI primitive the system lane wraps once per service):
 
@@ -148,7 +149,11 @@ system-level arc back to the chat — architect → per-service builds → `syst
 (M23) → `security_not_run` advisories (M24) → `system_deploy` preview URL(s) → final status —
 suppressing the concurrent per-service sub-run noise. A one-service requirement yields a one-node
 design, so simple asks still work; the architect designs an underspecified request rather than
-stalling to ask.
+stalling to ask. A follow-up message sent to a chat that already has a built app routes to
+`update-system` in place of a fresh `build-system` run (the bot persists `chat_id → run_dir` in
+`runs/chat-apps.json`, serialized per chat): data is preserved unless the change touches the data
+model, and explicit escapes ("new app", "start over", "from scratch", or their Chinese
+equivalents) force a fresh build (M25).
 
 - **Where it runs — you host the agent, Anthropic hosts the brain.** The split:
   - **Local (Docker on your machine):** the **Claude Agent SDK runtime itself**, all file
@@ -257,6 +262,13 @@ python -m devagent.cli build-system <prd.md>              # M20: multi-service s
 #    network, injects DATABASE_URL from design-level datastore deps, points frontend
 #    config.json at the live api, runs cross-service E2E, writes runs/<id>/system-report.json,
 #    and tears everything down (containers, volumes, network).
+
+python -m devagent.cli update-system <run_dir> <change.md>  # M25: apply a change to a prior
+#    system run, in place. Loads run_dir/design.json, re-runs the Architect in update mode
+#    (prior design + change → new SystemDesign, gated), mechanically diffs prior vs new to pick
+#    the rebuild set (changed services + their consumers, topo-ordered) and whether datastore
+#    volumes survive, rebuilds only those services in place under an UPDATE_PREFIX context, then
+#    reuses the same bring-up + integration + security reverify + M23 repair loop.
 ```
 
 `--build` is opt-in because it requires Docker (the M2 sandbox image) and spends build
@@ -675,3 +687,21 @@ Remaining follow-ups (non-blocking, tracked):
   July-3 vulnerable app (reflected `role=admin` → exactly one `mass_assignment` gating finding)
   and a safe app (no reflection, protected routes 401 → zero gating findings). Depends on M23.
   Design: [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-m24-security-verify-phase-design.md).
+
+- **M25** ✅ *(built + unit-verified 2026-07-14)* — **iterative updates (chat-stateful
+  refinement).** A follow-up chat message modifies the app already built in that chat instead of
+  building a fresh one. The bot maps `chat_id → prior run dir`; the architect gets an update mode
+  (prior `SystemDesign` + change → new design); a mechanical design diff selects only the changed
+  services, which rebuild in place (re-plan + build in the existing `out/`, the M23 repair engine
+  driven by a change request instead of a test failure); then the existing bring-up + reverify
+  loop redeploys. Data continuity is gated on a `db_schema` contract diff: **code-only updates
+  preserve the datastore; schema-changing updates reset it with an explicit chat warning** —
+  data-preserving schema migration (a generated-app migration runner + gate) is deliberately a
+  later milestone. Depends on M23.
+  Design: [2026-07-13](../docs/planning/specs/2026-07-13-dev-agent-m25-iterative-updates-design.md).
+  Shipped: `runs/chat-apps.json` chat→run binding with escape-word detection (English + Chinese)
+  and per-chat serialization; `design_diff.py`'s mechanical prior-vs-new diff picking the rebuild
+  set (changed services + their consumers, topo-ordered) and data fate; in-place selective rebuild
+  via the `UPDATE_PREFIX` build context, sharing the extracted `_verify_repair_deploy` loop with
+  `build_system`; volume preservation keyed off the `db_schema` contract; and the standalone
+  `devagent.cli update-system` entrypoint.
