@@ -215,6 +215,30 @@ def test_key_passed_by_name_never_in_argv(tmp_path, monkeypatch):
     assert "ANTHROPIC_API_KEY" in captured["argv"]  # passed by name only
 
 
+def test_update_context_writes_update_txt_not_repair_txt(tmp_path):
+    from devagent.schema import ArtifactSpec, Plan, ProjectScope, Task
+
+    class _NoDocker(SdkExecutor):
+        def _run_one(self, out, target):
+            return {"ok_stream": True}
+
+    scope = ProjectScope(title="t", targets=[
+        ArtifactSpec(type="frontend", stack="node-vite-react", name="web")])
+    plan = Plan(tasks=[Task(id="t1", description="d", owned_files=["web/src/App.tsx"])])
+    dev = tmp_path / ".devagent"
+
+    _NoDocker().build(BuildRequest(scope=scope, plan=plan, workdir=str(tmp_path), run_id="r",
+                                   repair_context="add dark mode", context_kind="update"))
+    assert (dev / "update.txt").read_text() == "add dark mode"
+    assert not (dev / "repair.txt").exists()
+
+    # a follow-up REPAIR pass must clear the stale update context
+    _NoDocker().build(BuildRequest(scope=scope, plan=plan, workdir=str(tmp_path), run_id="r",
+                                   repair_context="TRACE", context_kind="repair"))
+    assert (dev / "repair.txt").read_text() == "TRACE"
+    assert not (dev / "update.txt").exists()
+
+
 # ---------------------------------------------------------------------------
 # M12 — parallel / team build: one contained SDK session per build-target.
 # ---------------------------------------------------------------------------

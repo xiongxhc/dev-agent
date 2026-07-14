@@ -37,7 +37,8 @@ def _new_run_id() -> str:
 
 def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None, run_id=None,
                           executor=None, verifier=None, answers_path=None, consumed_contracts=(),
-                          provided_contracts=(), scope=None, plan=None, repair_context=None):
+                          provided_contracts=(), scope=None, plan=None, repair_context=None,
+                          context_kind="repair"):
     """The scope->plan[->build[->deploy]] phase list + gate map. Shared by `run` and the M20
     `build-system` per-service sub-runs so both assemble the pipeline identically. Sub-runs
     pass deploy=False: previews are pointless there, and their fixed devagent-preview-<name>
@@ -50,7 +51,9 @@ def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None,
     design is decided exactly once. `plan` (M23): likewise freezes the plan phase via
     FrozenPlanPhase for a repair sub-run reloading the persisted plan — re-planning could
     restructure what integration already half-validated. `repair_context` (M23) forwards into
-    BuildPhase to seed the first BuildRequest with prior verify/integration diagnostics."""
+    BuildPhase to seed the first BuildRequest with prior verify/integration diagnostics.
+    `context_kind` (M25) says what `repair_context` IS — "repair" (verify diagnostics) or
+    "update" (a user change request) — forwarded into BuildPhase to pick the prompt framing."""
     first = FrozenScopePhase(scope) if scope is not None \
         else ScopePhase(input_path, answers_path=answers_path)
     plan_phase = FrozenPlanPhase(plan) if plan is not None else PlanPhase()
@@ -63,7 +66,8 @@ def build_pipeline_phases(input_path, *, build=False, deploy=True, out_dir=None,
                                  verifier=verifier, max_repairs=2,
                                  consumed_contracts=consumed_contracts,
                                  provided_contracts=provided_contracts,
-                                 repair_context=repair_context))
+                                 repair_context=repair_context,
+                                 context_kind=context_kind))
         gates["build"] = VerifyGate()
         if deploy:
             # Deploy the built app to a local preview server -> URL (gated on it actually answering).

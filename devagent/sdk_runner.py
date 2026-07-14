@@ -29,6 +29,31 @@ BUILD FAILURE DIAGNOSTICS:
 ---
 """
 
+UPDATE_PREFIX = """\
+This is an UPDATE pass. The app is ALREADY BUILT and working in /out — it is not broken. \
+The user asked for the change below. Apply it by EDITING the existing files in place — do \
+not start over and do not rebuild or restructure parts the change does not touch. Keep the \
+lockfile valid (`pnpm install --frozen-lockfile` must pass).
+
+CHANGE REQUEST:
+{change}
+
+---
+"""
+
+
+def context_prefix(dev: Path) -> str:
+    """The edit-in-place framing for this session, from the context file the host executor
+    wrote: update.txt (a user change request, M25) wins over repair.txt (verify diagnostics)
+    — the executor writes exactly one per pass; the precedence is belt-and-braces. Pure and
+    host-importable for unit tests."""
+    update, repair = dev / "update.txt", dev / "repair.txt"
+    if update.exists():
+        return UPDATE_PREFIX.format(change=update.read_text()[:4000])
+    if repair.exists():
+        return REPAIR_PREFIX.format(diagnostics=repair.read_text()[:4000])
+    return ""
+
 
 def input_output_tokens(usage) -> tuple[int, int]:
     """(input, output) totals from a cumulative SDK usage dict. Input INCLUDES cache
@@ -136,9 +161,7 @@ async def run(max_turns: int, target: str | None = None) -> None:
         **({"model": os.environ["DEVAGENT_BUILD_MODEL"]} if os.environ.get("DEVAGENT_BUILD_MODEL") else {}),
     )
     prompt = build_prompt(scope, plan)
-    repair_file = DEV / "repair.txt"   # repair diagnostics are project-global (verify output)
-    if repair_file.exists():
-        prompt = REPAIR_PREFIX.format(diagnostics=repair_file.read_text()[:4000]) + prompt
+    prompt = context_prefix(DEV) + prompt
     result_usage = None  # the terminal ResultMessage carries CUMULATIVE usage for the run
     cost = None
     messages = 0

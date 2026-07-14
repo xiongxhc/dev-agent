@@ -46,6 +46,17 @@ def test_prompt_covers_each_target_with_its_recipe_hint():
     assert "dist/server.js" in p
 
 
+def test_context_prefix_selects_update_over_repair(tmp_path):
+    from devagent.sdk_runner import context_prefix, REPAIR_PREFIX, UPDATE_PREFIX
+    assert context_prefix(tmp_path) == ""
+    (tmp_path / "repair.txt").write_text("DIAG")
+    assert context_prefix(tmp_path) == REPAIR_PREFIX.format(diagnostics="DIAG")
+    (tmp_path / "update.txt").write_text("make the button blue")
+    out = context_prefix(tmp_path)
+    assert out == UPDATE_PREFIX.format(change="make the button blue")
+    assert "UPDATE pass" in out and "FAILED" not in out   # feature work isn't framed as a fix
+
+
 def test_prompt_surfaces_auth_contract_and_checks_to_the_builder():
     from devagent.sdk_runner import build_prompt
 

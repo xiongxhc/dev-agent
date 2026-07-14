@@ -57,12 +57,13 @@ class SdkExecutor:
             json.dumps(enrich_scope(req.scope, broadcast_consumed(req.scope, req.consumed_contracts),
                                     broadcast_consumed(req.scope, req.provided_contracts))))
         (dev / "plan.json").write_text(req.plan.model_dump_json())
-        repair = dev / "repair.txt"
+        repair, update = dev / "repair.txt", dev / "update.txt"
+        repair.unlink(missing_ok=True)   # stale context from a prior pass must not leak in
+        update.unlink(missing_ok=True)
         if req.repair_context:
-            # A repair pass: hand the runner the prior verify diagnostics to fix.
-            repair.write_text(req.repair_context)
-        elif repair.exists():
-            repair.unlink()  # stale diagnostics from a prior pass must not leak in
+            # The edit-in-place context: verify diagnostics (repair) or the user's change
+            # request (M25 update). The runner picks the prompt framing by filename.
+            (update if req.context_kind == "update" else repair).write_text(req.repair_context)
 
         build_targets = [t for t in req.scope.targets
                          if recipes.get(t.stack).kind == "build"]

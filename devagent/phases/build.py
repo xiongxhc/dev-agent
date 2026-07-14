@@ -27,7 +27,8 @@ class BuildPhase:
 
     def __init__(self, executor: Executor, workdir: str, run_id: str,
                  verifier=None, max_repairs: int = 2, consumed_contracts: tuple = (),
-                 provided_contracts: tuple = (), repair_context: str | None = None):
+                 provided_contracts: tuple = (), repair_context: str | None = None,
+                 context_kind: str = "repair"):
         self.executor = executor
         self.workdir = workdir
         self.run_id = run_id
@@ -36,6 +37,7 @@ class BuildPhase:
         self.consumed_contracts = tuple(consumed_contracts)
         self.provided_contracts = tuple(provided_contracts)
         self.repair_context = repair_context  # system repair: seeds the FIRST BuildRequest only
+        self.context_kind = context_kind  # M25: "update" frames repair_context as a change request
 
     def run(self, ctx: PhaseContext) -> PhaseResult:
         req = BuildRequest(
@@ -47,6 +49,7 @@ class BuildPhase:
             consumed_contracts=self.consumed_contracts,
             provided_contracts=self.provided_contracts,
             repair_context=self.repair_context,
+            context_kind=self.context_kind,
         )
         result = self._build(ctx, req)
 
@@ -67,7 +70,8 @@ class BuildPhase:
         while not report.ok and repairs < self.max_repairs:
             repairs += 1
             ctx.budget.spend_retry()  # shared retry ceiling (may raise BudgetExceeded)
-            result = self._build(ctx, replace(req, repair_context=report.log_tail))
+            result = self._build(ctx, replace(req, repair_context=report.log_tail,
+                                              context_kind="repair"))
             report = self.verifier.verify(vreq)
 
         meta = self._build_meta(result)

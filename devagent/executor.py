@@ -28,6 +28,9 @@ class BuildRequest:
     repair_context: str | None = None  # verify diagnostics for a repair pass (None = fresh build)
     consumed_contracts: tuple = ()     # M21: contract-spec dicts this service consumes (M16 seam)
     provided_contracts: tuple = ()     # contract-spec dicts this service must IMPLEMENT (producer side)
+    context_kind: str = "repair"   # M25: what repair_context IS — "repair" (verify diagnostics
+                                   # -> REPAIR_PREFIX) or "update" (a user change request ->
+                                   # UPDATE_PREFIX). Either forces the sequential session.
 
 
 @dataclass

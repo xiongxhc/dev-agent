@@ -131,6 +131,40 @@ def test_build_phase_carries_cost_and_wallclock_in_meta(tmp_path):
     assert result.meta["tokens_in"] == 10 and result.meta["tokens_out"] == 5
 
 
+def test_update_build_repairs_with_repair_kind(tmp_path):
+    """A failed UPDATE's phase-level repair pass flips context back to 'repair': the
+    re-invocation carries verify diagnostics, not the user's change request."""
+    from devagent.verifier import CheckResult, VerifyReport
+
+    scope, plan = _scope_plan()
+    out = tmp_path / "out"
+    seen = []
+
+    class _RecordingExecutor:
+        def build(self, req: BuildRequest) -> BuildResult:
+            seen.append((req.repair_context, req.context_kind))
+            return BuildResult(repo_path=str(out), success=True)
+
+    class _FailOnceVerifier:
+        def __init__(self):
+            self.calls = 0
+
+        def verify(self, req):
+            self.calls += 1
+            if self.calls == 1:
+                return VerifyReport(build_ok=False, dist_present=False, exit_code=1, log_tail="boom")
+            return VerifyReport(build_ok=True, dist_present=True, exit_code=0,
+                                checks=[CheckResult("route_status", "/", True, "status 200")])
+
+    budget = Budget(10**9, 1e9, 9)
+    phase = BuildPhase(executor=_RecordingExecutor(), workdir=str(out), run_id="r",
+                       verifier=_FailOnceVerifier(), max_repairs=2,
+                       repair_context="add dark mode", context_kind="update")
+    phase.run(_ctx(tmp_path, scope, plan, budget))
+    assert seen[0] == ("add dark mode", "update")
+    assert seen[1][1] == "repair"
+
+
 # --- BuildGate (re-checks disk; does NOT trust BuildResult.success) -------------
 
 def test_build_gate_passes_when_per_target_artifact_present(tmp_path):
