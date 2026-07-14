@@ -297,3 +297,46 @@ def test_bring_up_run_scopes_wired_target_container_names(tmp_path):
     bring(_design())
     net = f"devagent-sys-{tmp_path.name}"
     assert seen == [f"{net}-api-api", f"{net}-web-web"]
+
+
+def test_preserve_mode_passes_preserve_volume_to_start_service(tmp_path):
+    _scaffold(tmp_path)
+    seen = {}
+    def fake_ss(target, **kw):
+        seen[target.name] = kw
+        return "c1"
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
+                          start_service=fake_ss,
+                          start_target=lambda out, t, **kw: f"http://{t.name}",
+                          preserve_data=True)
+    bring(_design_with_datastore())
+    assert seen["db"].get("preserve_volume") is True
+
+
+def test_default_mode_keeps_legacy_start_service_call_shape(tmp_path):
+    _scaffold(tmp_path)
+    seen = {}
+    def fake_ss(target, **kw):
+        seen[target.name] = kw
+        return "c1"
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
+                          start_service=fake_ss,
+                          start_target=lambda out, t, **kw: f"http://{t.name}")
+    bring(_design_with_datastore())
+    assert "preserve_volume" not in seen["db"]
+
+
+def test_teardown_preserves_volumes_in_preserve_mode(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    _scaffold(tmp_path)
+    calls = []
+    monkeypatch.setattr(system_build.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv) or SimpleNamespace(returncode=0))
+    bring = make_bring_up(tmp_path, probe=lambda u: True, ensure_network=lambda n: None,
+                          start_service=lambda target, **kw: "c1",
+                          start_target=lambda out, t, **kw: f"http://{t.name}",
+                          preserve_data=True)
+    _, teardown = bring(_design_with_datastore())
+    teardown()
+    assert any(a[:3] == ["docker", "rm", "-f"] for a in calls)          # containers still removed
+    assert not any(a[:3] == ["docker", "volume", "rm"] for a in calls)  # data volumes kept

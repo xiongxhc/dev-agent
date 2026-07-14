@@ -191,7 +191,7 @@ def _real_build_service(node, design, svc_dir, budget, ledger, repair_context=No
 
 
 def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_target=None,
-                  probe=None):
+                  probe=None, preserve_data: bool = False):
     """Return bring_up(design) -> (base_urls, teardown). Starts each service on a fresh
     per-run docker network and collects {service_id -> base_url}. Build-kind nodes are driven
     from the sub-run's persisted out/.devagent/scope.json — the targets ACTUALLY built (scope
@@ -200,14 +200,22 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
     their recipe image. A node enters base_urls only once EVERY started URL answers at its
     health path (probe = DeployGate's poll; start_target returns before the app listens, and
     an E2E fired at t=0 sees nothing but connection resets — live-run finding, 2026-07-03).
-    teardown() removes every started container (+ its data volume) and the network. Deploy
-    helpers and the probe are injectable for tests."""
+    teardown() removes every started container (+ its data volume, unless preserve_data) and
+    the network. preserve_data=True (M25) keeps datastore volumes across an in-place update.
+    Deploy helpers and the probe are injectable for tests."""
     from . import deploy
     en = ensure_network or deploy.ensure_network
     ss = start_service or deploy.start_service
     st = start_target or deploy.start_target
     pr = probe or deploy._probe
     run_dir = Path(run_dir)
+
+    def _ss(target, **kw):
+        # pass preserve_volume only when preserving, so injected test fakes keep their
+        # legacy call shapes (mirrors deploy.wire_targets._naming)
+        if preserve_data:
+            kw["preserve_volume"] = True
+        return ss(target, **kw)
 
     def bring_up(design):
         net = f"devagent-sys-{run_dir.name}"              # per-run: never shared across builds
@@ -224,8 +232,9 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
                 try:
                     subprocess.run(["docker", "rm", "-f", container],
                                    capture_output=True, check=False)
-                    subprocess.run(["docker", "volume", "rm", f"{container}-data"],
-                                   capture_output=True, check=False)
+                    if not preserve_data:
+                        subprocess.run(["docker", "volume", "rm", f"{container}-data"],
+                                       capture_output=True, check=False)
                 except Exception:
                     pass
             try:
@@ -243,8 +252,8 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
                     # name like devagent-preview-db is shared with single-run previews and
                     # every other system run — each caller docker-rm-f's the other's live
                     # container (live-run finding, 2026-07-03).
-                    container = ss(node, network=net, alias=node.name,
-                                   container_name=f"{net}-{node.name}")
+                    container = _ss(node, network=net, alias=node.name,
+                                    container_name=f"{net}-{node.name}")
                     if container:
                         started.append(container)
                     continue
@@ -277,7 +286,7 @@ def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_tar
                                             alias_prefix=f"{node.name}-",
                                             container_prefix=f"{net}-{node.name}-",
                                             extra_env=extra_env, frontend_api_base=api_base,
-                                            start_target_fn=st, start_service_fn=ss)
+                                            start_target_fn=st, start_service_fn=_ss)
                 started.extend(wired.containers)
                 if not wired.primary_url:
                     continue

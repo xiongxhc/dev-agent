@@ -107,11 +107,13 @@ def _wait_service_ready(container: str, ready_cmd, timeout_s: float) -> bool:
 
 
 def start_service(target, image: str = DEFAULT_IMAGE, network: str | None = None,
-                  alias: str | None = None, container_name: str | None = None) -> str | None:
+                  alias: str | None = None, container_name: str | None = None,
+                  preserve_volume: bool = False) -> str | None:
     """Start a datastore sibling container for preview; return its container name or None.
     A named volume at the engine's data dir makes the data survive `docker restart`.
     alias/container_name (M21) let system bring-up namespace intra-node datastores per
-    service node; defaults preserve the single-run preview naming."""
+    service node; defaults preserve the single-run preview naming. preserve_volume=True
+    (M25) skips dropping the prior named volume, for in-place updates that must keep data."""
     from .recipes import get as get_recipe
 
     svc = get_recipe(target.stack).service
@@ -122,10 +124,12 @@ def start_service(target, image: str = DEFAULT_IMAGE, network: str | None = None
     for k, v in svc.env:
         env_flags += ["-e", f"{k}={v}"]
     subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, text=True)
-    # Fresh build deploy = fresh datastore: drop the prior named volume so stale data from a
-    # same-named target's previous deploy can't silently carry over. (Data still survives a
-    # `docker restart` of the container — that reuses the volume and never calls start_service.)
-    subprocess.run(["docker", "volume", "rm", vol], capture_output=True, text=True)
+    if not preserve_volume:
+        # Fresh build deploy = fresh datastore: drop the prior named volume so stale data
+        # can't silently carry over. M25 update passes preserve_volume=True when the
+        # db_schema contract is UNCHANGED — the point of an in-place update is that the
+        # data survives the container replacement.
+        subprocess.run(["docker", "volume", "rm", vol], capture_output=True, text=True)
     argv = ["docker", "run", "-d", "--restart", "unless-stopped", "--name", container_name]
     if network:
         argv += ["--network", network, "--network-alias", alias]

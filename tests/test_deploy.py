@@ -257,3 +257,21 @@ def test_sweep_preview_volumes_removes_orphans_keeps_current(monkeypatch):
     monkeypatch.setattr(deploy.subprocess, "run", fake_run)
     deploy.sweep_preview_volumes({"db"})
     assert removed == ["devagent-preview-oldpg-data"]   # only the orphan; current + non-preview untouched
+
+
+def test_start_service_preserve_volume_skips_volume_rm(monkeypatch):
+    from types import SimpleNamespace
+    from devagent import deploy
+    calls = []
+    monkeypatch.setattr(deploy.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv) or
+                        SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(deploy, "_wait_service_ready", lambda *a, **k: True)
+    t = SimpleNamespace(name="db", stack="postgres")
+
+    assert deploy.start_service(t, preserve_volume=True) is not None
+    assert not any(a[:3] == ["docker", "volume", "rm"] for a in calls)
+
+    calls.clear()
+    assert deploy.start_service(t) is not None      # default: fresh volume, as today
+    assert any(a[:3] == ["docker", "volume", "rm"] for a in calls)
