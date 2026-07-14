@@ -71,6 +71,16 @@ def test_removed_db_schema_contract_resets_data():
     assert diff_designs(_design(), new).schema_changed
 
 
+def test_db_schema_contract_flipping_kind_resets_data():
+    """Same contract id repurposed to a different kind = the schema is gone: reset."""
+    prior = _design()
+    new = _design()
+    flipped = [c.model_copy(update={"kind": "event"}) if c.id == "db.schema" else c
+               for c in new.contracts]
+    new = new.model_copy(update={"contracts": flipped})
+    assert diff_designs(prior, new).schema_changed
+
+
 def test_load_design_roundtrip(tmp_path):
     d = _design()
     (tmp_path / "design.json").write_text(d.model_dump_json(indent=2))

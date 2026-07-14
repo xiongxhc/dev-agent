@@ -54,8 +54,10 @@ _RUNS_BASE = Path(os.environ.get("DEVAGENT_FEISHU_RUNS_DIR", _ROOT / "runs"))
 _CHAT_APPS = "chat-apps.json"        # chat_id -> the inner run dir of the chat's latest app
 
 # Explicit new-app escapes; anything else in a chat WITH a prior app updates that app (M25).
+# "build me a" only counts at the message start — mid-sentence ("can you build me a CSV
+# export button") is an update request, not a fresh-build escape.
 _NEW_APP = re.compile(
-    r"(new app|start over|from scratch|start fresh|build me a|新的?应用|重新开始|从头)", re.I)
+    r"(new app|start over|from scratch|start fresh|新的?应用|重新开始|从头)|^\s*build me a", re.I)
 
 _chat_locks: dict[str, threading.Lock] = {}
 _chat_locks_guard = threading.Lock()

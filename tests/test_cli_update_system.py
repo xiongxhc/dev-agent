@@ -22,6 +22,13 @@ def test_update_system_requires_a_prior_design(tmp_path):
     assert cli.main(["update-system", str(tmp_path), str(change)]) == 2
 
 
+def test_update_system_rejects_corrupt_design(tmp_path):
+    (tmp_path / "design.json").write_text("{not json")
+    change = tmp_path / "c.md"
+    change.write_text("x")
+    assert cli.main(["update-system", str(tmp_path), str(change)]) == 2
+
+
 def test_update_system_requires_the_change_file(tmp_path):
     (tmp_path / "design.json").write_text(_design_json())
     assert cli.main(["update-system", str(tmp_path), str(tmp_path / "missing.md")]) == 2

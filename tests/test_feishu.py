@@ -147,6 +147,17 @@ def test_route_prefers_update_when_chat_has_an_app(monkeypatch, tmp_path):
     assert feishu_bot._route("c1", "add a chart") is None
 
 
+def test_build_me_a_escape_only_fires_at_message_start(monkeypatch, tmp_path):
+    from devagent.channels import feishu_bot
+    monkeypatch.setattr(feishu_bot, "_RUNS_BASE", tmp_path)
+    app = tmp_path / "feishu-run-x" / "run-1"
+    app.mkdir(parents=True)
+    (app / "design.json").write_text("{}")
+    feishu_bot._bind_chat_app("c1", str(app))
+    assert feishu_bot._route("c1", "build me a polls app") is None          # fresh build
+    assert feishu_bot._route("c1", "can you build me a CSV export button") == str(app)  # update
+
+
 def test_stream_run_routes_update_to_update_system(monkeypatch, tmp_path):
     from devagent.channels import feishu_bot
     monkeypatch.setattr(feishu_bot, "_RUNS_BASE", tmp_path)

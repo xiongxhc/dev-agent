@@ -6,7 +6,7 @@ ships next to; a diff cannot).
 
 Rules (spec 2026-07-13):
 - A service rebuilds when it is new, any of its own fields changed, or a contract it
-  provide OR consumes changed kind/spec.
+  provides OR consumes changed kind/spec.
 - schema_changed: any db_schema contract added, removed, or spec-changed — the signal that
   decides data fate (preserve the datastore volume iff unchanged).
 - A renamed service (same id, new name) is a NEW service (rebuild), never an in-place edit:
@@ -69,7 +69,9 @@ def diff_designs(prior: SystemDesign, new: SystemDesign) -> DesignDiff:
 
     schema_changed = (
         any(new_ct[cid].kind == "db_schema" for cid in changed_contracts)
-        or any(c.kind == "db_schema" and c.id not in new_ct for c in prior.contracts))
+        or any(c.kind == "db_schema"
+               and (c.id not in new_ct or new_ct[c.id].kind != "db_schema")
+               for c in prior.contracts))
 
     return DesignDiff(
         changed_ids=[sid for sid in topo_order(new) if sid in changed],

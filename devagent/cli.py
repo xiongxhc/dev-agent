@@ -169,8 +169,12 @@ def _build_system(args) -> int:
 
 def _update_system(args) -> int:
     run_dir = Path(args.run_dir)
-    if not (run_dir / "design.json").is_file():
-        print(f"error: {run_dir} has no design.json — not a prior system run", file=sys.stderr)
+    from .design_diff import load_design
+    try:
+        load_design(run_dir)
+    except (OSError, ValueError) as e:   # missing file or pydantic ValidationError
+        print(f"error: {run_dir} has no loadable design.json — not a prior system run ({e})",
+              file=sys.stderr)
         return 2
     if not Path(args.change).is_file():
         print(f"error: change file not found: {args.change}", file=sys.stderr)
