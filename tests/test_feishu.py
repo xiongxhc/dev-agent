@@ -267,11 +267,26 @@ def test_help_intents_get_the_usage_card():
         assert _help_reply(t), t
 
 
+def test_chained_help_intents_get_the_usage_card():
+    # live miss 2026-07-14: "What can you do and how to use" started a real build
+    from devagent.channels.feishu_bot import _help_reply
+    for t in ("What can you do and how to use",
+              "help, what can you do?",
+              "hi, how do I use this bot?",
+              "faq / usage",
+              "你能做什么，怎么用？"):
+        assert _help_reply(t), t
+
+
 def test_requirements_are_never_mistaken_for_help():
     from devagent.channels.feishu_bot import _help_reply
     for t in ("build a helpdesk app for IT support",
               "an expense tracker with usage reports",
               "add a help page to the app",
               "hi-priority ticket queue for the ops team",
-              "make the FAQ section collapsible"):
+              "make the FAQ section collapsible",
+              # chained-looking messages where a segment is NOT a help phrase stay builds
+              "what can you do about slow queries in my dashboard app",
+              "help me build an expense tracker",
+              "hi, build me a polls app"):
         assert _help_reply(t) is None, t

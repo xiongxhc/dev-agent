@@ -60,14 +60,19 @@ _CHAT_APPS = "chat-apps.json"        # chat_id -> the inner run dir of the chat'
 _NEW_APP = re.compile(
     r"(new app|start over|from scratch|start fresh|新的?应用|重新开始|从头)|^\s*build me a", re.I)
 
-# A lost user's "help" must NOT become a build: full-match short help/greeting intents only,
+# A lost user's "help" must NOT become a build: full-match help/greeting intents only,
 # anchored so real requirements that merely contain these words ("build a helpdesk app",
-# "an expense tracker with usage reports") never match.
-_HELP = re.compile(
-    r"^\s*(help|/help|\?|？|faq|usage|hi|hello|hey|"
+# "an expense tracker with usage reports") never match. Intents may be CHAINED by plain
+# connectors ("What can you do and how to use" — live miss, 2026-07-14): every chained
+# segment must itself be a help phrase, so the anchor-safety is unchanged.
+_HELP_PHRASE = (
+    r"(help|/help|\?|？|faq|usage|hi|hello|hey|"
     r"what (can|do) you do|what features?( are there| do you have)?|"
     r"how (do i|to) use( this| it)?( bot)?|"
-    r"帮助|怎么用|使用说明|你能做什么|你会什么)\s*[?？!！。.]*\s*$", re.I)
+    r"帮助|怎么用|使用说明|你能做什么|你会什么)")
+_HELP_CONNECTOR = r"(\s*[,，/&、]\s*|\s+(and|or)\s+|\s*(以及|和|跟)\s*)"
+_HELP = re.compile(
+    rf"^\s*{_HELP_PHRASE}({_HELP_CONNECTOR}{_HELP_PHRASE})*\s*[?？!！。.]*\s*$", re.I)
 
 _HELP_CARD = """\
 🤖 I turn plain-language requirements into working software, right here in chat.
