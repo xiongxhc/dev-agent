@@ -143,23 +143,13 @@ def make_run_node(run_dir, budget, ledger, build_service=None):
     return run_node
 
 
-def _real_build_service(node, design, svc_dir, budget, ledger, repair_context=None) -> str:
-    """Build one service through the plan->build->verify pipeline (deploy-less: system
-    bring-up starts the real containers), sharing the system budget and injecting the node's
-    contracts (M16 seam) — both the ones it consumes and the ones it provides (the producer
-    must implement its own frozen interface; live-run finding 2026-07-03: without it the api
-    invented routes/fields its consumers didn't call). The sub-run's scope is FROZEN
-    (scope_for_node): derived from the design, never re-decided by a second LLM call. In
-    REPAIR mode (repair_context set) the sub-run reloads the executor-persisted plan
-    (out/.devagent/plan.json) via FrozenPlanPhase — build+verify only, no LLM re-plan — and
-    seeds the executor's first BuildRequest with the integration report as repair_context.
-    Returns the run's terminal status string."""
+def _service_pipeline(node, design, svc_dir, *, plan, repair_context, context_kind):
+    """Assemble ONE service's pipeline (fresh, repair, or M25 update — callers differ only
+    in plan/context). Owns the Config/egress/executor/verifier/contract wiring so
+    _real_build_service and _update_build_service cannot drift apart."""
     from .cli import build_pipeline_phases
     from .config import Config
     from .contract_utils import contracts_for_node
-    from .orchestrator import Orchestrator
-    from .sandbox import NullSandbox
-    from .schema import Plan
     from .verifier import BuildVerifier
     from . import egress
     from .executor_sdk import SdkExecutor
@@ -176,15 +166,36 @@ def _real_build_service(node, design, svc_dir, budget, ledger, repair_context=No
     verifier = BuildVerifier(network=network, proxy_url=proxy)
     consumed = tuple(c.spec for c in contracts_for_node(node, design))
     provided = tuple(c.spec for c in design.contracts if c.id in node.provides)
-    plan = None
-    if repair_context is not None:
-        # Reload the plan the executor already persisted; a repair re-plans nothing.
-        plan = Plan.model_validate_json((out_dir / ".devagent" / "plan.json").read_text())
-    phases, gates = build_pipeline_phases(
+    return build_pipeline_phases(
         str(Path(svc_dir) / "prd.md"), build=True, deploy=False, out_dir=out_dir,
         run_id=f"svc-{node.name}", executor=executor, verifier=verifier,
         consumed_contracts=consumed, provided_contracts=provided,
-        scope=scope_for_node(node, design), plan=plan, repair_context=repair_context)
+        scope=scope_for_node(node, design), plan=plan, repair_context=repair_context,
+        context_kind=context_kind)
+
+
+def _real_build_service(node, design, svc_dir, budget, ledger, repair_context=None) -> str:
+    """Build one service through the plan->build->verify pipeline (deploy-less: system
+    bring-up starts the real containers), sharing the system budget and injecting the node's
+    contracts (M16 seam) — both the ones it consumes and the ones it provides (the producer
+    must implement its own frozen interface; live-run finding 2026-07-03: without it the api
+    invented routes/fields its consumers didn't call). The sub-run's scope is FROZEN
+    (scope_for_node): derived from the design, never re-decided by a second LLM call. In
+    REPAIR mode (repair_context set) the sub-run reloads the executor-persisted plan
+    (out/.devagent/plan.json) via FrozenPlanPhase — build+verify only, no LLM re-plan — and
+    seeds the executor's first BuildRequest with the integration report as repair_context.
+    Returns the run's terminal status string."""
+    from .orchestrator import Orchestrator
+    from .sandbox import NullSandbox
+    from .schema import Plan
+
+    plan = None
+    if repair_context is not None:
+        # Reload the plan the executor already persisted; a repair re-plans nothing.
+        plan = Plan.model_validate_json(
+            (Path(svc_dir) / "out" / ".devagent" / "plan.json").read_text())
+    phases, gates = _service_pipeline(node, design, svc_dir, plan=plan,
+                                      repair_context=repair_context, context_kind="repair")
     orch = Orchestrator(phases=phases, gates=gates, budget=budget, ledger=ledger,
                         sandbox=NullSandbox())
     return orch.run()
@@ -335,10 +346,8 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
     The final ledger event carries the true post-integration status (tree_build_end is the
     per-service build verdict only)."""
     from .tree import TreeOrchestrator
-    from .contract_utils import derive_integration_checks
-    from .integration import IntegrationRunner, IntegrationReport
-    from .phase_gates import ArchitectGate, IntegrationGate
-    from .phases.base import PhaseContext, PhaseResult
+    from .phase_gates import ArchitectGate
+    from .phases.base import PhaseContext
 
     def _finish(report: SystemReport) -> SystemReport:
         if ledger is not None:
@@ -377,9 +386,29 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
 
     # Build every service (M15).
     sysres = TreeOrchestrator(run_node=run_node, ledger=ledger).run(design)
-    build_ok = sysres.status == "succeeded"
-    if not build_ok:
+    if sysres.status != "succeeded":
         return _finish(SystemReport(design.title, sysres.results, False, None, "build_failed"))
+
+    # Bring up + cross-service verification wrapped in the M23 repair loop — shared with
+    # update_system (M25), which drives the identical loop over an updated system.
+    return _verify_repair_deploy(design, sysres.results, run_node=run_node, bring_up=bring_up,
+                                 integration_runner=integration_runner,
+                                 security_verify=security_verify,
+                                 security_findings=security_findings,
+                                 max_system_repairs=max_system_repairs, ledger=ledger,
+                                 finish=_finish)
+
+
+def _verify_repair_deploy(design, node_results, *, run_node, bring_up, integration_runner,
+                          security_verify, security_findings, max_system_repairs, ledger,
+                          finish) -> SystemReport:
+    """Bring the built system up and cross-verify it, wrapped in the M23 repair loop — the
+    shared tail for both a fresh build_system run and M25's update_system, which drives the
+    identical loop over an updated system's node_results."""
+    from .contract_utils import derive_integration_checks
+    from .integration import IntegrationRunner, IntegrationReport
+    from .phase_gates import IntegrationGate
+    from .phases.base import PhaseResult
 
     # Bring up + cross-service verification, wrapped in the M23 repair loop. `reverify` is the
     # single combined-verification step (integration suite + security phase via the seam); the
@@ -425,9 +454,9 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
                             "outcomes": outcomes, "integration_ok": ok})
         if not ok:
             teardown()
-            return _finish(SystemReport(design.title, sysres.results, True, report,
-                                        "integration_failed", repairs=repairs,
-                                        findings=list(security_findings or [])))
+            return finish(SystemReport(design.title, node_results, True, report,
+                                       "integration_failed", repairs=repairs,
+                                       findings=list(security_findings or [])))
     except Exception:
         # a mid-pass bring_up/reverify crash still tears down. teardown() is idempotent (the
         # injected teardown does `docker rm -f`/`network rm` with check=False) so a double-call
@@ -449,11 +478,11 @@ def build_system(prd_path, *, budget, ledger, run_node, bring_up,
             base_urls, teardown = bring_up(design)
         except Exception:
             teardown()
-            return _finish(SystemReport(design.title, sysres.results, True, report,
-                                        "integration_failed", repairs=repairs,
-                                        findings=list(security_findings or [])))
+            return finish(SystemReport(design.title, node_results, True, report,
+                                       "integration_failed", repairs=repairs,
+                                       findings=list(security_findings or [])))
     if ledger is not None:
         ledger.append({"event": "system_deploy", "urls": dict(base_urls)})
-    return _finish(SystemReport(design.title, sysres.results, True, report, "succeeded",
-                                urls=dict(base_urls), repairs=repairs,
-                                findings=list(security_findings or [])))
+    return finish(SystemReport(design.title, node_results, True, report, "succeeded",
+                               urls=dict(base_urls), repairs=repairs,
+                               findings=list(security_findings or [])))
