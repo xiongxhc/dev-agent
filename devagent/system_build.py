@@ -201,6 +201,55 @@ def _real_build_service(node, design, svc_dir, budget, ledger, repair_context=No
     return orch.run()
 
 
+def _update_build_service(node, design, svc_dir, budget, ledger, change_request) -> str:
+    """M25 — update one ALREADY-BUILT service in place: live re-plan against the new scope
+    (plan=None -> PlanPhase) with the user's change request as build context (context_kind
+    "update" -> UPDATE_PREFIX: this is feature work, not a fix — REPAIR_PREFIX would
+    mislabel it). Any context forces the sequential whole-project session, which is what
+    coherent in-place editing needs. Everything else is identical to _real_build_service."""
+    from .orchestrator import Orchestrator
+    from .sandbox import NullSandbox
+
+    phases, gates = _service_pipeline(node, design, svc_dir, plan=None,
+                                      repair_context=change_request, context_kind="update")
+    orch = Orchestrator(phases=phases, gates=gates, budget=budget, ledger=ledger,
+                        sandbox=NullSandbox())
+    return orch.run()
+
+
+def make_update_build_service(change_request):
+    """The build_service for make_run_node during an M25 update run: a fresh call (no
+    repair_context) applies the change request in place; an M23 repair call takes the
+    normal repair path (frozen plan reload + diagnostics) — the executor persisted the
+    NEW plan during the update build, so the reload is coherent."""
+    def bs(node, design, svc_dir, budget, ledger, repair_context=None):
+        if repair_context is not None:
+            return _real_build_service(node, design, svc_dir, budget, ledger,
+                                       repair_context=repair_context)
+        return _update_build_service(node, design, svc_dir, budget, ledger, change_request)
+    return bs
+
+
+def _reap_removed_services(run_dir, prior, new) -> None:
+    """docker rm -f the containers (and data volume) of services the update REMOVED or
+    RENAMED away. Bring-up replaces same-named containers, but a dropped name is never
+    re-claimed — with --restart unless-stopped the old container would outlive the update
+    forever. Injected as `reap` in update_system so unit tests never touch docker."""
+    net = f"devagent-sys-{Path(run_dir).name}"
+    kept = {s.name for s in new.services}
+    for node in prior.services:
+        if node.name in kept:
+            continue
+        # the datastore container is <net>-<name>; wired build targets are <net>-<name>-<target>
+        listing = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"name=^{net}-{node.name}(-|$)"],
+            capture_output=True, text=True, check=False)
+        for cid in (listing.stdout or "").split():
+            subprocess.run(["docker", "rm", "-f", cid], capture_output=True, check=False)
+        subprocess.run(["docker", "volume", "rm", f"{net}-{node.name}-data"],
+                       capture_output=True, check=False)
+
+
 def make_bring_up(run_dir, *, ensure_network=None, start_service=None, start_target=None,
                   probe=None, preserve_data: bool = False):
     """Return bring_up(design) -> (base_urls, teardown). Starts each service on a fresh
@@ -486,3 +535,89 @@ def _verify_repair_deploy(design, node_results, *, run_node, bring_up, integrati
     return finish(SystemReport(design.title, node_results, True, report, "succeeded",
                                urls=dict(base_urls), repairs=repairs,
                                findings=list(security_findings or [])))
+
+
+def update_system(run_dir, change_path, *, budget, ledger, run_node, bring_up_factory,
+                  architect=None, integration_runner=None, max_system_repairs=1,
+                  security_verify=None, security_findings=None, reap=None) -> SystemReport:
+    """M25 — apply a change request to the system previously built in `run_dir`, IN PLACE.
+
+    Loads the prior gated design (<run_dir>/design.json), re-architects in update mode
+    (prior design + change -> new FULL design, gated), mechanically diffs the two
+    (design_diff — never an LLM judgment), rebuilds ONLY the changed services (unchanged
+    nodes' services/<name>/out is reused untouched), then drives the SAME bring-up +
+    combined-verification + M23 repair loop as build_system (_verify_repair_deploy).
+
+    Data fate is the diff's schema_changed flag: `bring_up_factory(preserve_data)` builds
+    the bring-up AFTER the diff decides — db_schema unchanged => the datastore volume is
+    preserved (data survives); changed => the normal wipe path (the chat warns the user).
+    All side-effecting pieces are injected (defaults do the real thing), mirroring
+    build_system's unit-testability without Docker/tokens."""
+    from .design_diff import diff_designs, load_design
+    from .tree import TreeOrchestrator
+    from .phase_gates import ArchitectGate
+    from .phases.base import PhaseContext
+
+    def _finish(report: SystemReport) -> SystemReport:
+        if ledger is not None:
+            ledger.append({"event": "system_build_end", "status": report.status})
+        return report
+
+    prior = load_design(run_dir)
+
+    # Architect (update mode) -> new SystemDesign, gated — mirrors build_system.
+    if architect is None:
+        from .phases.architect import ArchitectPhase
+        ctx = PhaseContext(sandbox=None, budget=budget, ledger=ledger)
+        res = ArchitectPhase(change_path, prior_design=prior).run(ctx)
+        design = res.output_artifact
+        if ledger is not None:
+            ledger.append({"event": "phase", "phase": "architect", "exit": res.exit_code,
+                           "output": res.output, "meta": res.meta})
+        if not ArchitectGate().check(res).ok:
+            return _finish(SystemReport(getattr(design, "title", "?"), {}, False, None,
+                                        "design_failed"))
+    else:
+        design = architect(change_path, prior)
+
+    names = [s.name for s in design.services]
+    if len(names) != len(set(names)):
+        dups = sorted({n for n in names if names.count(n) > 1})
+        if ledger is not None:
+            ledger.append({"event": "design_duplicate_names", "names": dups})
+        return _finish(SystemReport(design.title, {}, False, None, "design_failed"))
+
+    diff = diff_designs(prior, design)
+    if ledger is not None:
+        by_id = {s.id: s for s in design.services}
+        ledger.append({"event": "system_update_start",
+                       "changed": [by_id[sid].name for sid in diff.changed_ids],
+                       "schema_changed": diff.schema_changed,
+                       "renamed": list(diff.renamed)})
+    try:    # the new design is now the run's authoritative record (same guard as build_system)
+        (Path(run_dir) / "design.json").write_text(design.model_dump_json(indent=2))
+    except OSError:
+        pass
+
+    changed = set(diff.changed_ids)
+
+    def update_run_node(node, design, repair_context=None):
+        # An M23 repair pass (repair_context set) must reach the real builder even for a
+        # node this update didn't change — its build may still be what integration blames.
+        if node.id not in changed and repair_context is None:
+            return NodeResult(node.id, SUCCEEDED, "unchanged: prior build reused")
+        return run_node(node, design, repair_context=repair_context)
+
+    sysres = TreeOrchestrator(run_node=update_run_node, ledger=ledger).run(design)
+    if sysres.status != "succeeded":
+        return _finish(SystemReport(design.title, sysres.results, False, None,
+                                    "build_failed"))
+
+    (reap or _reap_removed_services)(run_dir, prior, design)
+    return _verify_repair_deploy(design, sysres.results, run_node=update_run_node,
+                                 bring_up=bring_up_factory(not diff.schema_changed),
+                                 integration_runner=integration_runner,
+                                 security_verify=security_verify,
+                                 security_findings=security_findings,
+                                 max_system_repairs=max_system_repairs, ledger=ledger,
+                                 finish=_finish)
