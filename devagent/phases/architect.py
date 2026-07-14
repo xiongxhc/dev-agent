@@ -11,12 +11,15 @@ from ..schema import SystemDesign
 from .base import PhaseContext, PhaseResult
 from .scope import _recipe_catalog
 
-_PROMPT = """\
+_INTRO = """\
 You are the ARCHITECT. Turn the product requirements below into a SystemDesign: the set of
 services that together deliver them, the dependency edges between services, and the contracts
 (interfaces) each service provides and consumes. The requirements state WHAT is needed, not a
 list of services — YOU decide the service decomposition.
 
+"""
+
+_RULES = """\
 Each service picks a `stack` from these registered recipes (its `kind` MUST equal the recipe's type):
 {recipes}
 
@@ -61,25 +64,59 @@ Rules:
   reference ids that are deterministic on a fresh database (the first created record is id 1).
   `json_path` is a plain dotted path into the response body ("ok", "0.question", "items.0.id");
   array indexes are numeric segments; NEVER JSONPath syntax ($, [*], filters).
+"""
 
+_PROMPT = _INTRO + _RULES + """
 REQUIREMENTS:
 {request}
 """
+
+_UPDATE_PROMPT = """\
+You are the ARCHITECT updating an ALREADY-BUILT, running system — this is an UPDATE, not a
+new design. Below are the system's current design and the user's change request. Emit the
+FULL updated SystemDesign (every service, changed or not).
+
+Update rules:
+- KEEP every service the change does not affect IDENTICAL: same `id`, same `name`, same
+  `prd_slice`, same contracts. Directories, containers and data volumes key on `name` —
+  renaming or restructuring a service you were not asked to change orphans its built code
+  and its data.
+- Change ONLY what the change request requires: edit the affected services' `prd_slice` to
+  describe the service INCLUDING the requested change.
+- Keep contract ids stable; touch a contract's `spec` only when the interface itself must
+  change. Only change a db_schema contract when the change genuinely alters stored data —
+  a db_schema change RESETS the running app's data.
+- The change may add new services/contracts; wire them exactly per the base rules below.
+
+CURRENT SYSTEM DESIGN (JSON):
+{prior_design}
+
+CHANGE REQUEST:
+{request}
+
+The base design rules still apply to the updated design:
+""" + _RULES
 
 
 class ArchitectPhase:
     name = "architect"
 
-    def __init__(self, input_path: str, client=None):
-        self.input_path = input_path
-        self.client = client  # injectable anthropic client for tests
+    def __init__(self, input_path: str, client=None, prior_design=None):
+        self.input_path = input_path      # a PRD (fresh design) or a change-request file (update)
+        self.client = client              # injectable anthropic client for tests
+        self.prior_design = prior_design  # M25: set => update mode (redesign around the prior)
 
     def run(self, ctx: PhaseContext) -> PhaseResult:
         try:
             with open(self.input_path) as f:
                 request = f.read()
             cat, _ = _recipe_catalog()
-            prompt = _PROMPT.format(recipes=cat, request=request)
+            if self.prior_design is not None:
+                prompt = _UPDATE_PROMPT.format(
+                    recipes=cat, request=request,
+                    prior_design=self.prior_design.model_dump_json(indent=2))
+            else:
+                prompt = _PROMPT.format(recipes=cat, request=request)
             design, usage = generate_structured(
                 prompt, SystemDesign, client=self.client, max_tokens=8000)
             return PhaseResult(name=self.name, exit_code=0, output=design.title,
