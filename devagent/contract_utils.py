@@ -70,8 +70,32 @@ def _paths(contract: Contract) -> dict:
     return _resolve_refs(contract.spec.get("paths") or {}, contract.spec)
 
 
+def _loose_schema(value) -> dict:
+    """Pseudo-JSON-schema from the LOOSE contract shape the architect LLM sometimes emits
+    instead of strict OpenAPI ({"text": "string (1-500 chars, required)"} rather than
+    {"type": "string"}) — deterministic mapping so derive_checks works on both strict OpenAPI
+    and this loose shape (live-run finding, 2026-07-14: strict-only parsing silently dropped
+    the request/response schema, so the derived POST check went out body-less and unfixably
+    400'd against required-field validation)."""
+    if isinstance(value, dict):
+        return {"type": "object", "properties": {k: _loose_schema(v) for k, v in value.items()},
+                "required": list(value)}
+    if isinstance(value, list):
+        return {"type": "array", "items": _loose_schema(value[0]) if value else {}}
+    if isinstance(value, str):
+        low = value.lower()
+        if "int" in low or "number" in low or "serial" in low:
+            return {"type": "integer"}
+        if "bool" in low:
+            return {"type": "boolean"}
+    return {}   # prose string / unknown -> sample_body falls back to a name-aware string
+
+
 def _first_2xx_schema(op) -> dict | None:
-    """The JSON schema of an operation's first (lowest) 2xx application/json response."""
+    """The JSON schema of an operation's first (lowest) 2xx application/json response. Falls
+    back to a pseudo-schema built from the LOOSE `responses.<code>.body` shape the architect
+    LLM frequently emits instead of strict OpenAPI content/schema (live-run finding,
+    2026-07-14) — strict always wins when both are present."""
     if not isinstance(op, dict):
         return None
     responses = {str(k): v for k, v in (op.get("responses") or {}).items()}
@@ -80,6 +104,9 @@ def _first_2xx_schema(op) -> dict | None:
         schema = (content.get("application/json") or {}).get("schema")
         if isinstance(schema, dict):
             return schema
+        body = (responses[status] or {}).get("body")
+        if isinstance(body, (dict, list)):
+            return _loose_schema(body)
     return None
 
 
@@ -97,11 +124,18 @@ def _first_prop(schema) -> str | None:
 
 
 def _request_schema(op) -> dict | None:
+    """The operation's request-body JSON schema. Falls back to a pseudo-schema built from the
+    LOOSE `request.body` shape the architect LLM frequently emits instead of strict OpenAPI
+    requestBody/content/schema (live-run finding, 2026-07-14) — strict always wins when both
+    are present."""
     if not isinstance(op, dict):
         return None
     content = (op.get("requestBody") or {}).get("content") or {}
     schema = (content.get("application/json") or {}).get("schema")
-    return schema if isinstance(schema, dict) else None
+    if isinstance(schema, dict):
+        return schema
+    body = (op.get("request") or {}).get("body")
+    return _loose_schema(body) if isinstance(body, dict) else None
 
 
 def sample_body(schema, name: str = ""):

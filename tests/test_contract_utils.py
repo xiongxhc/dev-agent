@@ -313,3 +313,52 @@ def test_sample_strings_contain_no_spaces():
     body = sample_body({"type": "object", "required": ["username", "title"], "properties": {
         "username": {"type": "string"}, "title": {"type": "string"}}})
     assert all(" " not in v for v in body.values())
+
+
+# ---------- loose-shape architect contracts (live-run finding, 2026-07-14) ----------
+
+def _loose_notes_contract():
+    """Architect-emitted LOOSE shape (live run, 2026-07-14): request/response bodies are prose
+    value maps ({"text": "string (1-500 chars, required)"}) instead of JSON-schema. Strict-only
+    parsing derived body=None and json_path=None for the POST, so the acceptance runner sent an
+    empty body and any app with required-field validation 400'd unfixably (run-1784032978-2b5ff853,
+    cost $1.60)."""
+    from devagent.schema import Contract
+    return Contract(id="openapi_notes_loose", kind="openapi", producer="api", spec={"paths": {"/notes": {
+        "post": {"request": {"body": {"text": "string (1-500 chars, required)"}},
+                 "responses": {"201": {"body": {"id": "integer", "text": "string",
+                                                "created_at": "ISO-8601 timestamp"}},
+                               "400": {"body": {"error": "string"}}}},
+        "get": {"responses": {"200": {"body": {"items": [{"id": "integer", "text": "string"}]}}}}}}})
+
+
+def test_derive_checks_parses_loose_request_and_response_shapes():
+    from devagent.contract_utils import derive_checks
+    checks = derive_checks(_loose_notes_contract())
+    post = next(c for c in checks if c["kind"] == "api_json" and c["method"] == "POST")
+    assert isinstance(post["body"], dict)
+    assert isinstance(post["body"].get("text"), str) and post["body"]["text"]
+    assert post["json_path"] == "id"
+    get = next(c for c in checks if c["kind"] == "api_json" and c["method"] == "GET")
+    assert get["json_path"] == "items"
+
+
+def test_derive_persistence_check_gets_a_body_from_loose_shape():
+    from devagent.contract_utils import derive_persistence_check
+    p = derive_persistence_check(_loose_notes_contract())
+    assert isinstance(p["body"], dict) and "text" in p["body"]
+
+
+def test_strict_openapi_shapes_still_win():
+    from devagent.schema import Contract
+    from devagent.contract_utils import derive_checks
+    c = Contract(id="x", kind="openapi", producer="api", spec={"paths": {"/items": {
+        "post": {"requestBody": {"content": {"application/json": {"schema": {
+                     "type": "object", "properties": {"title": {"type": "string"}},
+                     "required": ["title"]}}}},
+                 "request": {"body": {"ignored": "string"}},
+                 "responses": {"201": {"content": {"application/json": {"schema": {
+                     "type": "object", "properties": {"id": {"type": "integer"}}}}}}}}}}})
+    checks = derive_checks(c)
+    post = next(k for k in checks if k["kind"] == "api_json" and k["method"] == "POST")
+    assert "title" in post["body"] and "ignored" not in post["body"]
