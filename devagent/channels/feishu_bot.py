@@ -7,7 +7,8 @@ built + verified, the system is brought up and cross-service integration-checked
 verify phase red-teams the preview, and any gating failure drives the system repair loop — then the
 deployed preview URL(s) come back. The bot TAILS that run's `ledger.jsonl` and posts each milestone
 to the same chat as it happens. The pipeline itself is untouched (the ledger is already the event
-stream); this module only listens, spawns, tails, and replies.
+stream); this module only listens, spawns, tails, and replies. A help/greeting message ("help",
+"what can you do?", "怎么用") gets a usage card instead of triggering a build.
 
 M25: chat state carries across messages. Once a chat's build succeeds, the bot binds that chat to
 the app's run dir; a follow-up message in the same chat is routed to `update-system` against that
@@ -58,6 +59,31 @@ _CHAT_APPS = "chat-apps.json"        # chat_id -> the inner run dir of the chat'
 # export button") is an update request, not a fresh-build escape.
 _NEW_APP = re.compile(
     r"(new app|start over|from scratch|start fresh|新的?应用|重新开始|从头)|^\s*build me a", re.I)
+
+# A lost user's "help" must NOT become a build: full-match short help/greeting intents only,
+# anchored so real requirements that merely contain these words ("build a helpdesk app",
+# "an expense tracker with usage reports") never match.
+_HELP = re.compile(
+    r"^\s*(help|/help|\?|？|faq|usage|hi|hello|hey|"
+    r"what (can|do) you do|what features?( are there| do you have)?|"
+    r"how (do i|to) use( this| it)?( bot)?|"
+    r"帮助|怎么用|使用说明|你能做什么|你会什么)\s*[?？!！。.]*\s*$", re.I)
+
+_HELP_CARD = """\
+🤖 I turn plain-language requirements into working software, right here in chat.
+
+• Build: describe the app you want (e.g. "an expense tracker for my team — employees submit, managers approve"). I design the architecture, build + verify each service, security-check it, and post a live preview URL (typically 5-20 min).
+• Update: once this chat has built an app, just reply with changes ("make the header blue", "add a CSV export"). I update the app in place — your data survives unless the change alters the data model (I warn you first).
+• Start fresh: say "start over" or "new app" to leave this chat's app behind and build a new one.
+• In a group, @mention me; in a DM, just type.
+
+On the roadmap: PDF requirements intake, public deploys, data-preserving schema migrations."""
+
+
+def _help_reply(text: str) -> str | None:
+    """The usage card for a help/greeting intent, else None (the message is a requirement)."""
+    return _HELP_CARD if _HELP.match(text or "") else None
+
 
 _chat_locks: dict[str, threading.Lock] = {}
 _chat_locks_guard = threading.Lock()
@@ -354,6 +380,10 @@ def _make_handler(api: lark.Client):
         if msg.chat_type != "p2p" and not msg.mentions:
             return
         if not text:
+            return
+        card = _help_reply(text)
+        if card:
+            feishu_app.send_text(api, msg.chat_id, card)
             return
         threading.Thread(target=_stream_run, args=(api, msg.chat_id, text), daemon=True).start()
 

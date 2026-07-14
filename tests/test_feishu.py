@@ -257,3 +257,21 @@ def test_bind_writes_atomically(monkeypatch, tmp_path):
     assert not list(tmp_path.glob("*.tmp"))
     apps = feishu_bot._load_chat_apps()
     assert apps == {"c": "/run/x"}
+
+
+def test_help_intents_get_the_usage_card():
+    from devagent.channels.feishu_bot import _help_reply
+    for t in ("help", "Help?", "/help", "?", "faq", "usage", "hi", "Hello!",
+              "what can you do", "What features are there?", "How do I use this?",
+              "帮助", "怎么用", "你能做什么？"):
+        assert _help_reply(t), t
+
+
+def test_requirements_are_never_mistaken_for_help():
+    from devagent.channels.feishu_bot import _help_reply
+    for t in ("build a helpdesk app for IT support",
+              "an expense tracker with usage reports",
+              "add a help page to the app",
+              "hi-priority ticket queue for the ops team",
+              "make the FAQ section collapsible"):
+        assert _help_reply(t) is None, t

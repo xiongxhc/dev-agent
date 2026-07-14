@@ -153,7 +153,8 @@ stalling to ask. A follow-up message sent to a chat that already has a built app
 `update-system` in place of a fresh `build-system` run (the bot persists `chat_id → run_dir` in
 `runs/chat-apps.json`, serialized per chat): data is preserved unless the change touches the data
 model, and explicit escapes ("new app", "start over", "from scratch", or their Chinese
-equivalents) force a fresh build (M25).
+equivalents) force a fresh build (M25). A help/greeting message ("help", "what can you do?",
+"怎么用") gets a usage card back instead of being treated as a requirement.
 
 - **Where it runs — you host the agent, Anthropic hosts the brain.** The split:
   - **Local (Docker on your machine):** the **Claude Agent SDK runtime itself**, all file
