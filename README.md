@@ -675,3 +675,13 @@ Remaining follow-ups (non-blocking, tracked):
   July-3 vulnerable app (reflected `role=admin` → exactly one `mass_assignment` gating finding)
   and a safe app (no reflection, protected routes 401 → zero gating findings). Depends on M23.
   Design: [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-m24-security-verify-phase-design.md).
+- **M25** ⬜ — **iterative updates (chat-stateful refinement).** A follow-up chat message modifies
+  the app already built in that chat instead of building a fresh one. The bot maps `chat_id →
+  prior run dir`; the architect gets an update mode (prior `SystemDesign` + change → new design);
+  a mechanical design diff selects only the changed services, which rebuild in place (re-plan +
+  build in the existing `out/`, the M23 repair engine driven by a change request instead of a test
+  failure); then the existing bring-up + reverify loop redeploys. Data continuity is gated on a
+  `db_schema` contract diff: **code-only updates preserve the datastore; schema-changing updates
+  reset it with an explicit chat warning** — data-preserving schema migration (a generated-app
+  migration runner + gate) is deliberately a later milestone. Depends on M23.
+  Design: [2026-07-13](../docs/planning/specs/2026-07-13-dev-agent-m25-iterative-updates-design.md).
