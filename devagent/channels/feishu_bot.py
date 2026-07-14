@@ -9,6 +9,11 @@ deployed preview URL(s) come back. The bot TAILS that run's `ledger.jsonl` and p
 to the same chat as it happens. The pipeline itself is untouched (the ledger is already the event
 stream); this module only listens, spawns, tails, and replies.
 
+M25: chat state carries across messages. Once a chat's build succeeds, the bot binds that chat to
+the app's run dir; a follow-up message in the same chat is routed to `update-system` against that
+run dir instead of starting a fresh build. Say "start over" (or "new app", "from scratch", …) to
+escape back to a fresh build.
+
 Always `build-system`, never the single-service `run` path: `build-system` is the superset (a
 one-service requirement yields a one-node design) and it is the ONLY flow that carries the system
 repair loop (M23) and the security verify phase (M24). Routing chat requests anywhere else would
@@ -45,6 +50,50 @@ _HEARTBEAT_S = 180.0     # progress ping cadence during the long build phase
 # predictable path so you can `tail -f` the ledger and open the run report — unlike a random
 # system tempdir that's unfindable and OS-cleaned mid-preview.
 _RUNS_BASE = Path(os.environ.get("DEVAGENT_FEISHU_RUNS_DIR", _ROOT / "runs"))
+
+_CHAT_APPS = "chat-apps.json"        # chat_id -> the inner run dir of the chat's latest app
+
+# Explicit new-app escapes; anything else in a chat WITH a prior app updates that app (M25).
+_NEW_APP = re.compile(
+    r"(new app|start over|from scratch|start fresh|build me a|新的?应用|重新开始|从头)", re.I)
+
+_chat_locks: dict[str, threading.Lock] = {}
+_chat_locks_guard = threading.Lock()
+
+
+def _chat_lock(chat_id: str) -> threading.Lock:
+    with _chat_locks_guard:
+        return _chat_locks.setdefault(chat_id, threading.Lock())
+
+
+def _chat_apps_path() -> Path:
+    # derived per call (never module-level) so tests monkeypatching _RUNS_BASE take effect
+    return _RUNS_BASE / _CHAT_APPS
+
+
+def _load_chat_apps() -> dict:
+    try:
+        return json.loads(_chat_apps_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _bind_chat_app(chat_id: str, run_dir: str) -> None:
+    apps = _load_chat_apps()
+    apps[chat_id] = run_dir
+    _RUNS_BASE.mkdir(parents=True, exist_ok=True)
+    _chat_apps_path().write_text(json.dumps(apps, indent=2), encoding="utf-8")
+
+
+def _route(chat_id: str, text: str) -> str | None:
+    """The prior run dir this message should UPDATE, or None for a fresh build. Update iff
+    the chat already built an app (still on disk) and the text doesn't ask to start over."""
+    if _NEW_APP.search(text):
+        return None
+    run_dir = _load_chat_apps().get(chat_id)
+    if run_dir and (Path(run_dir) / "design.json").is_file():
+        return run_dir
+    return None
 
 
 def _load_dotenv() -> None:
@@ -96,6 +145,8 @@ def _format_event(ev: dict) -> str | None:
     if kind == "node":
         node, status = ev.get("node"), ev.get("status")
         if status == "succeeded":
+            if str(ev.get("detail", "")).startswith("unchanged"):
+                return f"  ↩️ {node} unchanged — reused"
             return f"  ✅ {node} built"
         if status == "failed":
             return f"  ❌ {node} failed — {str(ev.get('detail', ''))[:100]}"
@@ -104,6 +155,15 @@ def _format_event(ev: dict) -> str | None:
         nodes = ", ".join(ev.get("nodes") or [])
         return (f"🔧 Verification failed — repairing {nodes} "
                 f"(attempt {ev.get('attempt')}), then re-verifying…")
+    if kind == "system_update_start":
+        changed = ", ".join(ev.get("changed") or [])
+        head = (f"🔁 Change mapped to: {changed} — rebuilding just those service(s)…"
+                if changed else
+                "🔁 No service needs rebuilding — re-verifying and redeploying…")
+        if ev.get("schema_changed"):
+            head += ("\n⚠️ This change alters the data model — existing data will be "
+                     "cleared. (Data-preserving migrations are on the roadmap.)")
+        return head
     if kind == "security_not_run":
         classes = ", ".join(ev.get("classes") or [])
         return (f"🔐 Note: {classes} security probe(s) did not run (no second principal available) "
@@ -119,24 +179,12 @@ def _format_event(ev: dict) -> str | None:
     return None
 
 
-def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
-    """Run the full `build-system` pipeline on *prd_text* and stream its ledger to *chat_id*."""
-    _RUNS_BASE.mkdir(parents=True, exist_ok=True)
-    runs = Path(tempfile.mkdtemp(prefix="feishu-run-", dir=str(_RUNS_BASE)))
-    prd = runs / "prd.md"
-    prd.write_text(prd_text, encoding="utf-8")
-    feishu_app.send_text(api, chat_id,
-                         "🛠️ Got it — starting an autonomous system build. Designing the architecture…")
-
-    env = {**os.environ, "DEVAGENT_RUNS_DIR": str(runs)}
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "devagent.cli", "build-system", str(prd)],
-        cwd=str(_ROOT), env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-
+def _tail(api, chat_id, proc, find_ledger, seen: int = 0):
+    """Tail the run's ledger while `proc` runs, posting each system-level event to chat.
+    `find_ledger()` resolves the ledger path (None until it exists — the build path globs
+    for the run dir the CLI creates). `seen` skips lines already present BEFORE this run
+    (an update appends to the prior run's ledger). Returns (ledger_path, urls, status)."""
     ledger: Path | None = None
-    seen = 0
     announced = False
     build_started_at: float | None = None
     build_done = False
@@ -176,9 +224,7 @@ def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
     last_heartbeat = time.monotonic()
     while True:
         if ledger is None:
-            found = sorted(runs.glob("run-*"))
-            if found:
-                ledger = found[0] / "ledger.jsonl"
+            ledger = find_ledger()
         drain()
         # Heartbeat while the long build phase runs, so the chat is never silent for many minutes.
         if announced and not build_done \
@@ -193,17 +239,87 @@ def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
         time.sleep(_POLL_S)
 
     proc.wait()
+    return ledger, urls, status
+
+
+def _stream_build(api: lark.Client, chat_id: str, prd_text: str) -> None:
+    """Run the full `build-system` pipeline on *prd_text* and stream its ledger to *chat_id*."""
+    _RUNS_BASE.mkdir(parents=True, exist_ok=True)
+    runs = Path(tempfile.mkdtemp(prefix="feishu-run-", dir=str(_RUNS_BASE)))
+    prd = runs / "prd.md"
+    prd.write_text(prd_text, encoding="utf-8")
+    feishu_app.send_text(api, chat_id,
+                         "🛠️ Got it — starting an autonomous system build. Designing the architecture…")
+
+    env = {**os.environ, "DEVAGENT_RUNS_DIR": str(runs)}
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "devagent.cli", "build-system", str(prd)],
+        cwd=str(_ROOT), env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+    def find_ledger() -> Path | None:
+        found = sorted(runs.glob("run-*"))
+        return (found[0] / "ledger.jsonl") if found else None
+
+    ledger, urls, status = _tail(api, chat_id, proc, find_ledger)
+    if status == "succeeded" and ledger is not None:
+        # this run dir (design.json + services/) IS the chat's app state; follow-ups update it
+        _bind_chat_app(chat_id, str(ledger.parent))
     if urls:
         body = "\n".join(f"• {sid}: {u}" for sid, u in urls.items())
         feishu_app.send_text(api, chat_id,
                              "✅ Done — system built, verified and security-checked. Live preview:\n"
-                             f"{body}\n(opens on the host machine — public deploy is on the roadmap)")
+                             f"{body}\n(opens on the host machine — public deploy is on the roadmap)\n"
+                             "Reply in this chat with changes and I'll update the app in place.")
     elif status == "succeeded":
-        feishu_app.send_text(api, chat_id, "✅ System build finished.")
+        feishu_app.send_text(api, chat_id,
+                             "✅ System build finished.\n"
+                             "Reply in this chat with changes and I'll update the app in place.")
     else:
         feishu_app.send_text(api, chat_id,
                              f"❌ Build did not complete — status: {status or 'unknown'}. "
                              "See the run report on the host.")
+
+
+def _stream_update(api, chat_id, change_text: str, run_dir: Path) -> None:
+    """M25 update: run `update-system` against the chat's bound run dir and stream the
+    SAME (appended) ledger from where the prior run left off."""
+    change = run_dir / "change.md"
+    change.write_text(change_text, encoding="utf-8")
+    ledger_path = run_dir / "ledger.jsonl"
+    seen = (len(ledger_path.read_text(encoding="utf-8").splitlines())
+            if ledger_path.exists() else 0)
+    feishu_app.send_text(api, chat_id,
+                         "🔁 Got it — updating the app built in this chat. "
+                         "Re-designing around your change…")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "devagent.cli", "update-system", str(run_dir), str(change)],
+        cwd=str(_ROOT), env={**os.environ},
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    _, urls, status = _tail(api, chat_id, proc, lambda: ledger_path, seen=seen)
+    if urls:
+        body = "\n".join(f"• {sid}: {u}" for sid, u in urls.items())
+        feishu_app.send_text(api, chat_id,
+                             f"✅ Updated, re-verified and redeployed. Live preview:\n{body}")
+    elif status == "succeeded":
+        feishu_app.send_text(api, chat_id, "✅ Update finished.")
+    else:
+        feishu_app.send_text(api, chat_id,
+                             f"❌ Update did not complete — status: {status or 'unknown'}. "
+                             "Say \"start over\" to rebuild from scratch.")
+
+
+def _stream_run(api: lark.Client, chat_id: str, prd_text: str) -> None:
+    """Per-message entry: route new-vs-update, serialized per chat (two rapid messages
+    must not race the same app's run dir)."""
+    with _chat_lock(chat_id):
+        prior = _route(chat_id, prd_text)
+        if prior is not None:
+            _stream_update(api, chat_id, prd_text, Path(prior))
+        else:
+            _stream_build(api, chat_id, prd_text)
 
 
 def _make_handler(api: lark.Client):

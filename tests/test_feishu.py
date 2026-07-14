@@ -1,6 +1,7 @@
 """Feishu notifier unit tests — urllib mocked, no network, no real webhook."""
 
 import json
+from pathlib import Path
 
 from devagent.channels import feishu
 
@@ -128,3 +129,91 @@ def test_stream_run_invokes_build_system(monkeypatch, tmp_path):
     assert "build-system" in captured["cmd"]
     assert "run" not in captured["cmd"]
     assert captured["cmd"][:3] == [feishu_bot.sys.executable, "-m", "devagent.cli"]
+
+
+def test_route_prefers_update_when_chat_has_an_app(monkeypatch, tmp_path):
+    from devagent.channels import feishu_bot
+    monkeypatch.setattr(feishu_bot, "_RUNS_BASE", tmp_path)
+    app = tmp_path / "feishu-run-x" / "run-1"
+    app.mkdir(parents=True)
+    (app / "design.json").write_text("{}")
+    feishu_bot._bind_chat_app("c1", str(app))
+
+    assert feishu_bot._route("c1", "add a chart to the dashboard") == str(app)
+    assert feishu_bot._route("c1", "start over — new app please") is None   # explicit escape
+    assert feishu_bot._route("c2", "add a chart") is None                   # unknown chat
+    # a bound dir whose design.json vanished (cleanup) falls back to a fresh build
+    (app / "design.json").unlink()
+    assert feishu_bot._route("c1", "add a chart") is None
+
+
+def test_stream_run_routes_update_to_update_system(monkeypatch, tmp_path):
+    from devagent.channels import feishu_bot
+    monkeypatch.setattr(feishu_bot, "_RUNS_BASE", tmp_path)
+    monkeypatch.setattr(feishu_bot.feishu_app, "send_text", lambda *a, **k: None)
+    app = tmp_path / "feishu-run-x" / "run-1"
+    app.mkdir(parents=True)
+    (app / "design.json").write_text("{}")
+    feishu_bot._bind_chat_app("c1", str(app))
+
+    captured = {}
+
+    class _FakeProc:
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    monkeypatch.setattr(feishu_bot.subprocess, "Popen", fake_popen)
+    feishu_bot._stream_run(api=None, chat_id="c1", prd_text="make the header blue")
+
+    assert "update-system" in captured["cmd"] and str(app) in captured["cmd"]
+    assert (app / "change.md").read_text() == "make the header blue"
+
+
+def test_successful_build_binds_the_chat_app(monkeypatch, tmp_path):
+    import json as _json
+    from devagent.channels import feishu_bot
+    monkeypatch.setattr(feishu_bot, "_RUNS_BASE", tmp_path)
+    monkeypatch.setattr(feishu_bot.feishu_app, "send_text", lambda *a, **k: None)
+
+    class _FakeProc:
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+    def fake_popen(cmd, **kw):
+        runs = Path(cmd[-1]).parent            # the prd path sits in the mkdtemp'd runs dir
+        run = runs / "run-1"
+        run.mkdir(parents=True)
+        (run / "ledger.jsonl").write_text(_json.dumps(
+            {"event": "system_build_end", "status": "succeeded"}) + "\n")
+        return _FakeProc()
+
+    monkeypatch.setattr(feishu_bot.subprocess, "Popen", fake_popen)
+    feishu_bot._stream_run(api=None, chat_id="c9", prd_text="an expense tracker for my team")
+    bound = feishu_bot._load_chat_apps()["c9"]
+    assert bound.endswith("run-1")
+
+
+def test_format_event_update_arc():
+    from devagent.channels.feishu_bot import _format_event
+    m = _format_event({"event": "system_update_start", "changed": ["web"],
+                       "schema_changed": False})
+    assert "web" in m and "rebuilding" in m.lower()
+    warn = _format_event({"event": "system_update_start", "changed": ["db", "api"],
+                          "schema_changed": True})
+    assert "data" in warn.lower() and "cleared" in warn.lower()
+    none_changed = _format_event({"event": "system_update_start", "changed": [],
+                                  "schema_changed": False})
+    assert "re-verifying" in none_changed.lower()
+    reused = _format_event({"event": "node", "node": "api", "status": "succeeded",
+                            "detail": "unchanged: prior build reused"})
+    assert "unchanged" in reused
