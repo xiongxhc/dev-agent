@@ -59,6 +59,11 @@ _NEW_APP = re.compile(
 
 _chat_locks: dict[str, threading.Lock] = {}
 _chat_locks_guard = threading.Lock()
+# _chat_lock(chat_id) only serializes messages within the SAME chat; the bot spawns a thread per
+# inbound message regardless of chat, so two different chats' builds finishing concurrently can
+# still interleave load->mutate->write on the one shared chat-apps.json. This dedicated guard
+# serializes ALL writers to that file across chats.
+_chat_apps_guard = threading.Lock()
 
 
 def _chat_lock(chat_id: str) -> threading.Lock:
@@ -79,10 +84,17 @@ def _load_chat_apps() -> dict:
 
 
 def _bind_chat_app(chat_id: str, run_dir: str) -> None:
-    apps = _load_chat_apps()
-    apps[chat_id] = run_dir
-    _RUNS_BASE.mkdir(parents=True, exist_ok=True)
-    _chat_apps_path().write_text(json.dumps(apps, indent=2), encoding="utf-8")
+    with _chat_apps_guard:
+        apps = _load_chat_apps()
+        apps[chat_id] = run_dir
+        _RUNS_BASE.mkdir(parents=True, exist_ok=True)
+        # Write to a same-dir temp file then atomically replace, so a crash mid-write can't
+        # corrupt chat-apps.json — _load_chat_apps' broad except would otherwise treat every
+        # chat as unbound.
+        path = _chat_apps_path()
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(apps, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
 
 
 def _route(chat_id: str, text: str) -> str | None:

@@ -217,3 +217,32 @@ def test_format_event_update_arc():
     reused = _format_event({"event": "node", "node": "api", "status": "succeeded",
                             "detail": "unchanged: prior build reused"})
     assert "unchanged" in reused
+
+
+def test_concurrent_bindings_from_different_chats_all_survive(monkeypatch, tmp_path):
+    import threading
+    from devagent.channels import feishu_bot
+    monkeypatch.setattr(feishu_bot, "_RUNS_BASE", tmp_path)
+
+    threads = [
+        threading.Thread(target=feishu_bot._bind_chat_app, args=(f"chat-{i}", f"/run/{i}"))
+        for i in range(8)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    apps = feishu_bot._load_chat_apps()
+    assert apps == {f"chat-{i}": f"/run/{i}" for i in range(8)}
+
+
+def test_bind_writes_atomically(monkeypatch, tmp_path):
+    from devagent.channels import feishu_bot
+    monkeypatch.setattr(feishu_bot, "_RUNS_BASE", tmp_path)
+
+    feishu_bot._bind_chat_app("c", "/run/x")
+
+    assert not list(tmp_path.glob("*.tmp"))
+    apps = feishu_bot._load_chat_apps()
+    assert apps == {"c": "/run/x"}
