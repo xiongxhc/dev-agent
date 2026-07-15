@@ -70,7 +70,7 @@ PRD/URL ─▶ scope ─▶ plan ─▶ [ Executor ] ─▶ verify ─▶ deploy
   default, all caps dropped, read-only rootfs, non-root, `out/` the only writable mount.
   Brain phases use a `NullSandbox` (host-side, no container).
 
-Design + research: `../docs/planning/specs/2026-06-22-dev-agent-research-synthesis.md`.
+Design + research: `../docs/planning/dev-agent/specs/2026-06-22-dev-agent-research-synthesis.md`.
 
 > **One-page overview:** [`../docs/how-dev-agent-works.html`](../docs/how-dev-agent-works.html)
 > — a self-contained slide deck explaining **what dev-agent is and how to use it**: the pipeline,
@@ -195,7 +195,7 @@ event `im.message.receive_v1` (long-connection mode), published, and added to a 
 > **not required** — the single app bot above covers the full Feishu UX. (The app bot drives
 > `build-system`, whose architect designs an underspecified request rather than asking, so there
 > is no clarification round-trip to relay.) Run the bot with `python -m devagent.channels.feishu_bot`.
-> Design: [`../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md`](../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md).
+> Design: [`../docs/planning/dev-agent/specs/2026-06-23-dev-agent-feishu-channel-design.md`](../docs/planning/dev-agent/specs/2026-06-23-dev-agent-feishu-channel-design.md).
 
 ---
 
@@ -419,7 +419,7 @@ are disposable (`docker run --rm`) — nothing persists between runs except the 
   all 6 per-target acceptance checks green, deployed (`DEVAGENT_RUN_LIVE=1`, ~$0.13/~4 min). The
   first run surfaced a real calibration fix — the default `max_tokens` ceiling was raised
   200k→1M (it counts cache-read tokens, and a 2-target build is ~320k+). Design:
-  [`../docs/planning/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md`](../docs/planning/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md).
+  [`../docs/planning/dev-agent/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md`](../docs/planning/dev-agent/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md).
 #### Persistence seam (agent-decided storage)
 
 Storage is **the agent's per-PRD decision** — the Scope phase chooses one of three options:
@@ -454,7 +454,7 @@ ceiling was double-counting cache-read tokens (~0.1× cost), so a legitimate cac
 token_in, 1.33M cache-read) falsely aborted at 1M; the budget now counts expensive tokens only
 (`BuildResult.budget_tokens`). Unit suite: 173 passed, 3 skipped (the 3 skips are operator-gated live).
 
-Design: [`../docs/planning/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md`](../docs/planning/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md).
+Design: [`../docs/planning/dev-agent/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md`](../docs/planning/dev-agent/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md).
 Remaining follow-ups (non-blocking, tracked):
   - ⬜ **live-validate the managed-datastore path** — run `examples/tasks.md`
     (`DEVAGENT_RUN_LIVE=1`); its shared-data requirement nudges the agent to pick Postgres/Mongo, so
@@ -483,7 +483,7 @@ Remaining follow-ups (non-blocking, tracked):
     swallow + a supervisor loop that rebinds on any crash, and deploy runs preview/datastore containers
     with `--restart unless-stopped`.
 
-- **Feishu channel** ✅ *(shipped + live-verified 2026-06-30; design [2026-06-23](../docs/planning/specs/2026-06-23-dev-agent-feishu-channel-design.md))* —
+- **Feishu channel** ✅ *(shipped + live-verified 2026-06-30; design [2026-06-23](../docs/planning/dev-agent/specs/2026-06-23-dev-agent-feishu-channel-design.md))* —
   a **single Feishu app bot** (`channels/feishu_bot.py` + `feishu_app.py`) where a member drops a PRD
   into a DM (or @mentions the bot in a group) → autonomous build → **preview URL + report posted
   back in-thread**, with **live phase-by-phase progress** streamed from the ledger as the run executes.
@@ -492,7 +492,7 @@ Remaining follow-ups (non-blocking, tracked):
   scope→plan→build→deploy run with progress streamed back. (The older `channels/feishu.py` group-webhook
   is outbound-only and now superseded.)
 
-- **M5** ◐ *(harness built + unit-verified 2026-07-01 — design [2026-07-01](../docs/planning/specs/2026-07-01-dev-agent-m5-eval-ab-test-design.md))* —
+- **M5** ◐ *(harness built + unit-verified 2026-07-01 — design [2026-07-01](../docs/planning/dev-agent/specs/2026-07-01-dev-agent-m5-eval-ab-test-design.md))* —
   **eval corpus + the A/B test** (the two empirical unknowns: quality, cost). `devagent eval
   <corpus>` freezes scope+plan ONCE per fixture (both arms build byte-identical bytes — the
   fairness rule), builds each arm **N=2×**, and scores each run on three axes: **deterministic
@@ -564,7 +564,7 @@ Remaining follow-ups (non-blocking, tracked):
   - ✅ **declarative auth styles**: closed by M10 — the runner dispatches on `AuthFlow.mode` via the
     `_CRED_BUILDERS` table against the open `KNOWN_AUTH_MODES` vocabulary, so an auth style is a
     dispatch-table entry (data-not-code), exactly like a stack is a recipe.
-- **M12** ✅ *(built + unit-verified 2026-06-30 — design [2026-06-30](../docs/planning/specs/2026-06-30-dev-agent-m12-parallel-team-build-design.md))* —
+- **M12** ✅ *(built + unit-verified 2026-06-30 — design [2026-06-30](../docs/planning/dev-agent/specs/2026-06-30-dev-agent-m12-parallel-team-build-design.md))* —
   **Parallel / team build.** `PlanGate` already enforces **pairwise-disjoint file ownership**
   *precisely so parallel build agents never collide*. M12 uses the seam: a **fresh** build whose
   plan **cleanly partitions** across its `kind=="build"` targets (every target owns ≥1 task, every
@@ -599,7 +599,7 @@ Remaining follow-ups (non-blocking, tracked):
   - **Not needed until the team actually gets it** — captured now so the managed arm, per-user
     scoping, and the M5 baseline are lined up before rollout, not scrambled for after.
 - **M14–M19** ⬜ — **Long-horizon multi-service builder** (design
-  [2026-07-02](../docs/planning/specs/2026-07-02-dev-agent-long-horizon-builder-design.md)).
+  [2026-07-02](../docs/planning/dev-agent/specs/2026-07-02-dev-agent-long-horizon-builder-design.md)).
   One PRD → dev-agent **designs the services itself** and builds a whole system over a
   long-horizon (hours→days) autonomous run — **N bounded sub-builds under a durable
   architecture**, not one flat mega-build (budget was never the blocker; flat plans lose
@@ -626,13 +626,13 @@ Remaining follow-ups (non-blocking, tracked):
   Architect → per-service sub-builds (M15 tree, one shared Budget) → docker bring-up on a
   per-run `devagent-sys-<run_id>` network → cross-service E2E (M17) →
   `runs/<id>/system-report.json`, with teardown on every path (including exceptions). Design:
-  [2026-07-02](../docs/planning/specs/2026-07-02-dev-agent-system-build-wiring-design.md).
+  [2026-07-02](../docs/planning/dev-agent/specs/2026-07-02-dev-agent-system-build-wiring-design.md).
 
 - **M21** ✅ — system-build live path: datastore nodes from recipe images (no LLM build),
   deploy-less sub-runs (no preview collisions), consumed-contract injection into sub-builds,
   bring-up wired from each sub-run's scope.json via the extracted `deploy.wire_targets`
   (conn env + frontend apiBase + per-node namespacing). Design:
-  [2026-07-02](../docs/planning/specs/2026-07-02-dev-agent-m21-system-live-path-design.md).
+  [2026-07-02](../docs/planning/dev-agent/specs/2026-07-02-dev-agent-m21-system-live-path-design.md).
 
 - **One-flow** ✅ (2026-07-03) — **the design is decided once; checks derive from contracts.**
   Live Team Polls runs failed 4/4 because THREE independent LLM calls specced the same route
@@ -644,7 +644,7 @@ Remaining follow-ups (non-blocking, tracked):
   only as fallback); success keeps the brought-up system as the preview (urls in report +
   ledger `system_deploy`); design datastore nodes get per-run container names; the ledger's
   final `system_build_end` is post-integration truth (tree verdict renamed `tree_build_end`).
-  Review: [2026-07-03](../docs/planning/specs/2026-07-03-dev-agent-single-flow-review.md).
+  Review: [2026-07-03](../docs/planning/dev-agent/specs/2026-07-03-dev-agent-single-flow-review.md).
 
 - **M22** ⬜ — **Eval as change-gate (extends M5 — no scheduled burn).** Two halves: (a) **free
   telemetry** — aggregate pass-rate / retries / cost-per-phase from real run ledgers
@@ -662,7 +662,7 @@ Remaining follow-ups (non-blocking, tracked):
   (integration + security once M24 lands). Bounded by its own counter, `max_system_repairs`
   (default 1) — not the shared retry budget. `SystemReport.repairs` records every pass; ledger
   events `system_repair_start`/`system_repair_end` trace it.
-  Design: [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-system-repair-loop-design.md).
+  Design: [2026-07-06](../docs/planning/dev-agent/specs/2026-07-06-dev-agent-system-repair-loop-design.md).
 
 - **M24** ✅ — **security verify phase (red-team).** Functional checks verify the contract was
   *met*, never that it's *safe* — a live run shipped `POST /auth/register` accepting `role=admin`
@@ -687,7 +687,7 @@ Remaining follow-ups (non-blocking, tracked):
   advisory) regardless of outcome. Regression-guarded: `test_security_probes.py` fixtures pin the
   July-3 vulnerable app (reflected `role=admin` → exactly one `mass_assignment` gating finding)
   and a safe app (no reflection, protected routes 401 → zero gating findings). Depends on M23.
-  Design: [2026-07-06](../docs/planning/specs/2026-07-06-dev-agent-m24-security-verify-phase-design.md).
+  Design: [2026-07-06](../docs/planning/dev-agent/specs/2026-07-06-dev-agent-m24-security-verify-phase-design.md).
 
 - **M25** ✅ *(built + unit-verified 2026-07-14)* — **iterative updates (chat-stateful
   refinement).** A follow-up chat message modifies the app already built in that chat instead of
@@ -699,7 +699,7 @@ Remaining follow-ups (non-blocking, tracked):
   preserve the datastore; schema-changing updates reset it with an explicit chat warning** —
   data-preserving schema migration (a generated-app migration runner + gate) is deliberately a
   later milestone. Depends on M23.
-  Design: [2026-07-13](../docs/planning/specs/2026-07-13-dev-agent-m25-iterative-updates-design.md).
+  Design: [2026-07-13](../docs/planning/dev-agent/specs/2026-07-13-dev-agent-m25-iterative-updates-design.md).
   Shipped: `runs/chat-apps.json` chat→run binding with escape-word detection (English + Chinese)
   and per-chat serialization; `design_diff.py`'s mechanical prior-vs-new diff picking the rebuild
   set (changed services + their consumers, topo-ordered) and data fate; in-place selective rebuild
