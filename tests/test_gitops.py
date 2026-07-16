@@ -439,3 +439,35 @@ def test_finalize_zero_services_writes_readme_only_snapshot(tmp_path):
     subjects = _remote_subjects(forge, "expense-tracker-6ee72423")
     assert len(subjects) == 1
     assert "README" in subjects[0] or "metadata" in subjects[0]
+
+
+def test_rebase_url_reanchors_http_hosts_only():
+    from devagent.gitops import rebase_url
+    # live finding 2026-07-16: external_url host may not resolve from this machine
+    assert (rebase_url("https://gitlab.internal.example/g/p.git", "https://192.0.2.10")
+            == "https://192.0.2.10/g/p.git")
+    assert rebase_url("https://gitlab.test/g/p", "https://gitlab.test") == "https://gitlab.test/g/p"
+    assert rebase_url("file:///tmp/bare.git", "https://192.0.2.10") == "file:///tmp/bare.git"
+    assert rebase_url("https://gitlab.test/g/p", None) == "https://gitlab.test/g/p"
+
+
+def test_binding_rebases_forge_reported_urls(tmp_path):
+    run_dir = tmp_path / "run-1-abc"
+    (run_dir / "services").mkdir(parents=True)
+
+    class ForeignHostForge:
+        base_url = "https://10.0.0.9"
+
+        def create_project(self, name):
+            return {"web_url": f"https://gitlab.internal.example/apps/{name}",
+                    "http_url_to_repo": f"https://gitlab.internal.example/apps/{name}.git",
+                    "path_with_namespace": f"apps/{name}", "default_branch": "master"}
+
+    ledger = []
+    pub = GitPublisher(run_dir, ForeignHostForge(), ledger=ledger)
+    pub._ensure_repo("Expense Tracker")      # binding built here; no push (host unreachable)
+
+    binding = json.loads((run_dir / "repo.json").read_text())
+    assert binding["remote"] == "https://10.0.0.9/apps/expense-tracker-abc.git"
+    assert binding["url"] == "https://10.0.0.9/apps/expense-tracker-abc"
+    assert ledger[0]["url"] == "https://10.0.0.9/apps/expense-tracker-abc"

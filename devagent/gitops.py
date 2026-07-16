@@ -32,6 +32,21 @@ def slugify(title: str) -> str:
     return s[:60].strip("-") or "app"
 
 
+def rebase_url(url: str, base: str | None) -> str:
+    """GitLab reports web/repo URLs at its configured external_url, which may not resolve
+    from this host (live finding 2026-07-16: instance reached by IP reported
+    gitlab.internal.example — git push died on DNS). Re-anchor scheme+host onto the
+    operator's DEVAGENT_GITLAB_URL, which is reachable by definition. http(s) only —
+    file:// remotes (tests) pass through untouched."""
+    if not base:
+        return url
+    u = urllib.parse.urlsplit(url)
+    if u.scheme not in ("http", "https"):
+        return url
+    b = urllib.parse.urlsplit(base)
+    return urllib.parse.urlunsplit((b.scheme, b.netloc, u.path, u.query, u.fragment))
+
+
 class ForgeClient:
     """Minimal GitLab REST client (urllib — house convention, no new deps)."""
 
@@ -99,8 +114,9 @@ class GitPublisher:
                 return                      # clone already materialized the worktree
             name = f"{slugify(title)}-{self.run_dir.name.rsplit('-', 1)[-1]}"
             proj = self.forge.create_project(name)
-            self.binding = {"url": proj["web_url"],
-                            "remote": proj["http_url_to_repo"],   # credential-free
+            base = getattr(self.forge, "base_url", None)
+            self.binding = {"url": rebase_url(proj["web_url"], base),
+                            "remote": rebase_url(proj["http_url_to_repo"], base),  # credential-free
                             "project_path": proj["path_with_namespace"],
                             "mode": "new",
                             "default_branch": proj.get("default_branch") or "master"}
