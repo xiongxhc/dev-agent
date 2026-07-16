@@ -285,3 +285,53 @@ def test_token_never_lands_on_disk(tmp_path, monkeypatch):
     # the helper is passed per-invocation via `-c` (never written to config), and it
     # reads the env var by NAME at push time — so no credential config may persist:
     assert "credential" not in (run_dir / "repo" / ".git" / "config").read_text()
+
+
+def _report(title="Expense Tracker", urls=None):
+    return SimpleNamespace(title=title, status="succeeded", urls=urls or {})
+
+
+def test_finalize_syncs_readme_metadata_and_deletes_removed(tmp_path):
+    pub, run_dir, forge, ledger = _mkpub(tmp_path)
+    (run_dir / "design.json").write_text('{"title": "Expense Tracker"}')
+    _green_out(run_dir, "api")
+    _green_out(run_dir, "web")
+    inner, _ = _inner()
+    wrapped = pub.wrap(inner)
+    wrapped(_node("api"), _DESIGN)
+    wrapped(_node("web"), _DESIGN)
+
+    shutil.rmtree(run_dir / "services" / "web")          # e.g. _reap_removed_services ran
+    prd = tmp_path / "prd.md"
+    prd.write_text("Build me an expense tracker.")
+    pub.finalize(_report(urls={"api": "http://localhost:59001"}), prd_path=prd)
+
+    tree = subprocess.run(["git", "-C", str(run_dir / "repo"), "ls-files"],
+                          capture_output=True, text=True).stdout
+    assert "services/api/app.py" in tree
+    assert "services/web" not in tree                    # delete-sync removed it
+    assert ".devagent/design.json" in tree and ".devagent/prd.md" in tree
+    readme = (run_dir / "repo" / "README.md").read_text()
+    assert "Expense Tracker" in readme and "http://localhost:59001" in readme
+    assert {"event": "repo", "url": pub.binding["url"]} in ledger
+
+
+def test_finalize_creates_repo_when_no_service_was_rebuilt(tmp_path):
+    # An update that rebuilt zero services on a pre-M7 app: the wrapper never fired,
+    # finalize alone must still create + publish (spec: finalize ensures the repo).
+    pub, run_dir, forge, _ = _mkpub(tmp_path)
+    _green_out(run_dir, "api")                           # prior build's out/ exists on disk
+    pub.finalize(_report())
+    assert forge.created == ["expense-tracker-6ee72423"]
+    tree = subprocess.run(["git", "-C", str(run_dir / "repo"), "ls-files"],
+                          capture_output=True, text=True).stdout
+    assert "services/api/app.py" in tree and "README.md" in tree
+
+
+def test_finalize_appends_change_history(tmp_path):
+    pub, run_dir, forge, _ = _mkpub(tmp_path, commit_prefix="add a count endpoint")
+    _green_out(run_dir, "api")
+    pub.finalize(_report(), change_note="add a count endpoint")
+    pub.finalize(_report(), change_note="rename count to total")
+    changes = (run_dir / "repo" / ".devagent" / "change.md").read_text()
+    assert changes == "- add a count endpoint\n- rename count to total\n"

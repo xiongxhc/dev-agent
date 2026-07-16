@@ -165,3 +165,48 @@ class GitPublisher:
         if self._git("status", "--porcelain").strip():
             self._git("commit", "-m", message)
         self._git("push", "-u", "origin", self.binding["default_branch"])
+
+    # -- deliverable snapshot ------------------------------------------------
+    def finalize(self, report, prd_path=None, change_note=None) -> None:
+        """Full-tree sync + README + .devagent metadata. Call only on a succeeded run."""
+        self._guarded(self._finalize, report, prd_path, change_note)
+
+    def _finalize(self, report, prd_path, change_note) -> None:
+        # Ensure-first: an update that rebuilt zero services on a pre-M7 app never
+        # triggered the wrapper, so the repo may not exist yet.
+        self._ensure_repo(getattr(report, "title", None) or "app")
+        services_root = self.repo_dir / "services"
+        if services_root.exists():        # sync WITH DELETE: self-heals renames/reaps
+            shutil.rmtree(services_root)
+        for out in sorted((self.run_dir / "services").glob("*/out")):
+            self._copy_service(out.parent.name, out)
+        meta = self.repo_dir / ".devagent"
+        meta.mkdir(exist_ok=True)
+        design = self.run_dir / "design.json"
+        if design.is_file():
+            shutil.copy(design, meta / "design.json")
+        if prd_path is not None and Path(prd_path).is_file():
+            shutil.copy(prd_path, meta / "prd.md")
+        if change_note:
+            with (meta / "change.md").open("a", encoding="utf-8") as f:
+                f.write(f"- {change_note}\n")
+        (self.repo_dir / "README.md").write_text(self._readme(report), encoding="utf-8")
+        self._commit_push("publish: README + .devagent metadata")
+        if self.ledger is not None:   # re-announce so an update's tail also sees the URL
+            self.ledger.append({"event": "repo", "url": self.binding["url"]})
+
+    def _readme(self, report) -> str:
+        urls = getattr(report, "urls", None) or {}
+        previews = ("\n".join(f"- **{sid}**: {url}" for sid, url in sorted(urls.items()))
+                    or "- (no live preview)")
+        services = "\n".join(
+            f"- `services/{p.name}/`"
+            for p in sorted((self.repo_dir / "services").iterdir()) if p.is_dir())
+        return (f"# {getattr(report, 'title', 'app')}\n\n"
+                "Built autonomously by dev-agent. Each service lives under "
+                "`services/<name>/`; the gated design (incl. contracts) is "
+                "`.devagent/design.json`, the original request `.devagent/prd.md`.\n\n"
+                "> **One-way repo:** dev-agent publishes here but never reads back. "
+                "Commits pushed directly to `services/` will be replaced by the next "
+                "chat-driven update. Request changes in the app's chat instead.\n\n"
+                f"## Services\n{services}\n\n## Preview (dev-agent host)\n{previews}\n")
