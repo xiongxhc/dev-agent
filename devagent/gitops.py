@@ -111,3 +111,51 @@ class GitPublisher:
         if res.returncode != 0:
             raise RuntimeError(f"git {args[0]} failed: {res.stderr.strip()[:400]}")
         return res.stdout
+
+    # -- run_node seam -----------------------------------------------------
+    def wrap(self, run_node):
+        """A run_node that publishes the service after the inner builder returns SUCCEEDED.
+        In update-system, unchanged-node skips return before the inner run_node
+        (system_build.update_run_node), so they can never re-commit here."""
+
+        def wrapped(node, design, repair_context=None):
+            nr = run_node(node, design, repair_context=repair_context)
+            if getattr(nr, "status", None) == SUCCEEDED:
+                self._guarded(self._publish_service, node, design,
+                              repaired=repair_context is not None)
+            return nr
+
+        return wrapped
+
+    def _guarded(self, fn, *a, **kw):
+        if self.dormant:
+            return
+        try:
+            fn(*a, **kw)
+        except Exception as e:  # additive publishing: never fail a green build
+            self.dormant = True
+            if self.ledger is not None:
+                self.ledger.append({"event": "repo_error", "detail": repr(e)})
+
+    def _publish_service(self, node, design, repaired: bool) -> None:
+        out = self.run_dir / "services" / node.name / "out"
+        if not out.is_dir():
+            return  # datastore-style node: no buildable artifact (make_run_node docstring)
+        self._ensure_repo(getattr(design, "title", None) or "app")
+        self._copy_service(node.name, out)
+        what = f"{node.name}: repaired" if repaired else f"{node.name}: verified green"
+        self._commit_push(what)
+
+    def _copy_service(self, name: str, out) -> None:
+        dst = self.repo_dir / "services" / name
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(out, dst, ignore=shutil.ignore_patterns(*_EXCLUDES))
+
+    def _commit_push(self, message: str) -> None:
+        if self.commit_prefix:
+            message = f'update "{self.commit_prefix}": {message}'
+        self._git("add", "-A")
+        if self._git("status", "--porcelain").strip():
+            self._git("commit", "-m", message)
+        self._git("push", "-u", "origin", self.binding["default_branch"])

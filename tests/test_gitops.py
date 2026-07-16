@@ -137,3 +137,73 @@ def test_ensure_repo_reuses_persisted_binding_and_reinits_clone(tmp_path):
     pub2._ensure_repo("Notes")
     assert forge.created == ["notes-6ee72423"]                   # no second project
     assert (run_dir / "repo" / ".git").is_dir()
+
+
+def _node(name):
+    return SimpleNamespace(id=name, name=name)
+
+
+_DESIGN = SimpleNamespace(title="Expense Tracker")
+
+
+def _green_out(run_dir, name, files=("app.py",)):
+    out = run_dir / "services" / name / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        p = out / f
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"# {f}\n")
+    return out
+
+
+def _inner(status=SUCCEEDED):
+    calls = []
+
+    def run_node(node, design, repair_context=None):
+        calls.append((node.name, repair_context))
+        return NodeResult(node.id, status)
+
+    return run_node, calls
+
+
+def test_wrap_publishes_on_green(tmp_path):
+    pub, run_dir, forge, _ = _mkpub(tmp_path)
+    _green_out(run_dir, "api")
+    inner, _ = _inner()
+    nr = pub.wrap(inner)(_node("api"), _DESIGN)
+    assert nr.status == SUCCEEDED                                # inner result untouched
+    assert forge.created == ["expense-tracker-6ee72423"]         # lazy create on first green
+    assert _remote_subjects(forge, "expense-tracker-6ee72423") == ["api: verified green"]
+    clone = subprocess.run(["git", "-C", str(run_dir / "repo"), "show", "--stat", "HEAD"],
+                           capture_output=True, text=True).stdout
+    assert "services/api/app.py" in clone
+
+
+def test_wrap_skips_failed_and_datastore_nodes(tmp_path):
+    pub, run_dir, forge, _ = _mkpub(tmp_path)
+    _green_out(run_dir, "api")
+    failed, _ = _inner(status=FAILED)
+    pub.wrap(failed)(_node("api"), _DESIGN)                      # FAILED -> no publish
+    green, _ = _inner()
+    pub.wrap(green)(_node("db"), _DESIGN)                        # green but no out/ -> skip
+    assert forge.created == []
+
+
+def test_wrap_excludes_junk_dirs(tmp_path):
+    pub, run_dir, forge, _ = _mkpub(tmp_path)
+    _green_out(run_dir, "api", files=("app.py", "node_modules/x/i.js", "__pycache__/a.pyc"))
+    inner, _ = _inner()
+    pub.wrap(inner)(_node("api"), _DESIGN)
+    tree = subprocess.run(["git", "-C", str(run_dir / "repo"), "ls-files"],
+                          capture_output=True, text=True).stdout
+    assert "services/api/app.py" in tree
+    assert "node_modules" not in tree and "__pycache__" not in tree
+
+
+def test_wrap_repair_and_update_prefix_messages(tmp_path):
+    pub, run_dir, forge, _ = _mkpub(tmp_path, commit_prefix="add a count endpoint")
+    _green_out(run_dir, "api")
+    inner, _ = _inner()
+    pub.wrap(inner)(_node("api"), _DESIGN, repair_context="integration said so")
+    subjects = _remote_subjects(forge, "expense-tracker-6ee72423")
+    assert subjects == ['update "add a count endpoint": api: repaired']
