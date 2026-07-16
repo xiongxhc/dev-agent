@@ -203,6 +203,10 @@ class GitPublisher:
         self._git("add", "-A")
         if self._git("status", "--porcelain").strip():
             self._git("commit", "-m", message)
+        try:
+            self._git("rev-parse", "--verify", "-q", "HEAD")
+        except RuntimeError:
+            return  # nothing ever committed (empty first artifact): nothing to push
         self._git("push", "-u", "origin", self.binding["default_branch"])
 
     # -- deliverable snapshot ------------------------------------------------
@@ -237,9 +241,13 @@ class GitPublisher:
         urls = getattr(report, "urls", None) or {}
         previews = ("\n".join(f"- **{sid}**: {url}" for sid, url in sorted(urls.items()))
                     or "- (no live preview)")
-        services = "\n".join(
-            f"- `services/{p.name}/`"
-            for p in sorted((self.repo_dir / "services").iterdir()) if p.is_dir())
+        services_dir = self.repo_dir / "services"
+        if services_dir.is_dir():
+            services = "\n".join(
+                f"- `services/{p.name}/`"
+                for p in sorted(services_dir.iterdir()) if p.is_dir())
+        else:
+            services = "- (none)"
         return (f"# {getattr(report, 'title', 'app')}\n\n"
                 "Built autonomously by dev-agent. Each service lives under "
                 "`services/<name>/`; the gated design (incl. contracts) is "

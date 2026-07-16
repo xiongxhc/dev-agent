@@ -404,3 +404,38 @@ def test_existing_repo_without_develop_uses_default_branch(tmp_path):
                           capture_output=True, text=True).stdout
     assert "README.md" in tree and "services/api/app.py" in tree  # based on main
     assert json.loads((run_dir / "repo.json").read_text())["base"] == "main"
+
+
+def test_publish_empty_artifact_does_not_kill_the_run(tmp_path):
+    # First service produces zero tracked files (all-excluded): publish should not crash.
+    # Then a real service: verify the remote has only the second commit (first was skipped).
+    pub, run_dir, forge, ledger = _mkpub(tmp_path)
+    api_out = run_dir / "services" / "api" / "out"
+    api_out.mkdir(parents=True, exist_ok=True)
+    (api_out / "node_modules" / "x.js").parent.mkdir(parents=True, exist_ok=True)
+    (api_out / "node_modules" / "x.js").write_text("// excluded\n")  # all-excluded
+    inner, _ = _inner()
+    wrapped = pub.wrap(inner)
+    nr = wrapped(_node("api"), _DESIGN)
+    assert nr.status == SUCCEEDED
+    assert pub.dormant is False
+    assert not any(e.get("event") == "repo_error" for e in ledger)
+
+    _green_out(run_dir, "web")
+    wrapped(_node("web"), _DESIGN)
+    subjects = _remote_subjects(forge, "expense-tracker-6ee72423")
+    assert subjects == ["web: verified green"]  # only the second commit (first was empty)
+
+
+def test_finalize_zero_services_writes_readme_only_snapshot(tmp_path):
+    # All-datastore system: no services/ output at all. finalize must not crash.
+    pub, run_dir, forge, ledger = _mkpub(tmp_path)
+    pub.finalize(_report())
+    assert pub.dormant is False
+    assert not any(e.get("event") == "repo_error" for e in ledger)
+    assert (run_dir / "repo" / "README.md").exists()
+    readme = (run_dir / "repo" / "README.md").read_text()
+    assert "- (none)" in readme  # services list should say none
+    subjects = _remote_subjects(forge, "expense-tracker-6ee72423")
+    assert len(subjects) == 1
+    assert "README" in subjects[0] or "metadata" in subjects[0]
