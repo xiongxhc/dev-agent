@@ -280,6 +280,30 @@ it in a gitignored `dev-agent/.env` (`ANTHROPIC_API_KEY=...`) and `source` it, o
 it. Billing is **pay-per-token** — the Agent SDK / Managed Agents both require an API key
 (Pro/Max subscription auth is not permitted for programmatic/headless use).
 
+## Configuration
+
+### Git publishing (M7)
+
+Set all three and every system build publishes to its own private GitLab project
+(created lazily on the first green service; updates keep committing to the same repo):
+
+    DEVAGENT_GITLAB_URL=https://gitlab.example.com
+    DEVAGENT_GITLAB_TOKEN=<group access token, `api` scope, Maintainer>
+    DEVAGENT_GITLAB_GROUP=<group id or full path>
+
+To publish into an existing repo instead, include its URL (same GitLab host) in the
+build message — dev-agent branches off `develop` (or the default branch) as
+`devagent/<app>-<id>` and never touches your branches. CLI: `build-system --repo <url>`.
+
+Unset ⇒ publishing is off and the pipeline behaves exactly as before. Layout:
+`services/<name>/` per service, `README.md`, `.devagent/` (prd, design + contracts,
+change history). Per-green-service commits during builds/repairs; a finalize commit on
+success. Publish failures never fail a build — the chat gets one ⚠️ line; the done
+message carries `📦 Code: <repo url>`. The token is injected per push from the
+environment and never written to disk. The repo is a one-way projection: dev-agent
+writes it, never reads it — direct pushes to `services/` are replaced by the next
+chat-driven update (request changes via chat instead).
+
 ## Test
 
 ```bash
