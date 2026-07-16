@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -70,6 +71,10 @@ class GitPublisher:
         self.ledger = ledger
         self.commit_prefix = commit_prefix
         self.dormant = False
+        # TreeOrchestrator runs sibling run_nodes concurrently in a thread pool (tree.py);
+        # all of them publish through this one publisher onto one shared clone, so the
+        # copy->add->commit->push sequence must be serialized per publisher.
+        self._lock = threading.Lock()
         binding_file = self.run_dir / "repo.json"
         self.binding = (json.loads(binding_file.read_text())
                         if binding_file.is_file() else None)
@@ -128,14 +133,15 @@ class GitPublisher:
         return wrapped
 
     def _guarded(self, fn, *a, **kw):
-        if self.dormant:
-            return
-        try:
-            fn(*a, **kw)
-        except Exception as e:  # additive publishing: never fail a green build
-            self.dormant = True
-            if self.ledger is not None:
-                self.ledger.append({"event": "repo_error", "detail": repr(e)})
+        with self._lock:
+            if self.dormant:
+                return
+            try:
+                fn(*a, **kw)
+            except Exception as e:  # additive publishing: never fail a green build
+                self.dormant = True
+                if self.ledger is not None:
+                    self.ledger.append({"event": "repo_error", "detail": repr(e)})
 
     def _publish_service(self, node, design, repaired: bool) -> None:
         out = self.run_dir / "services" / node.name / "out"

@@ -3,6 +3,7 @@ import io
 import json
 import shutil
 import subprocess
+import threading
 import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
@@ -207,3 +208,44 @@ def test_wrap_repair_and_update_prefix_messages(tmp_path):
     pub.wrap(inner)(_node("api"), _DESIGN, repair_context="integration said so")
     subjects = _remote_subjects(forge, "expense-tracker-6ee72423")
     assert subjects == ['update "add a count endpoint": api: repaired']
+
+
+def test_wrap_serializes_concurrent_sibling_publishes(tmp_path):
+    # TreeOrchestrator runs sibling run_nodes concurrently (ThreadPoolExecutor, tree.py),
+    # all sharing one GitPublisher/clone. Without a lock, concurrent copy->add->commit->push
+    # sequences race on the working tree and .git/index.lock -> repo_error + dormancy.
+    pub, run_dir, forge, ledger = _mkpub(tmp_path)
+    names = [f"svc{i}" for i in range(4)]
+    for name in names:
+        _green_out(run_dir, name, files=(f"{name}.py",))
+    inner, _ = _inner()
+    wrapped = pub.wrap(inner)
+    barrier = threading.Barrier(len(names))
+
+    def publish(name):
+        barrier.wait()                # line all 4 threads up before they hit the publisher
+        wrapped(_node(name), _DESIGN)
+
+    threads = [threading.Thread(target=publish, args=(n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not any(e.get("event") == "repo_error" for e in ledger)
+    assert pub.dormant is False
+
+    repo_name = "expense-tracker-6ee72423"
+    subjects = _remote_subjects(forge, repo_name)
+    assert set(subjects) == {f"{n}: verified green" for n in names}
+    assert len(subjects) == 4
+
+    bare = forge.remotes_dir / f"{repo_name}.git"
+    log = subprocess.run(["git", "-C", str(bare), "log", "--format=%H", "master"],
+                         capture_output=True, text=True).stdout.split()
+    for sha in log:
+        paths = subprocess.run(
+            ["git", "-C", str(bare), "show", "--name-only", "--format=", sha],
+            capture_output=True, text=True).stdout.split()
+        prefixes = {p.split("/")[1] for p in paths if p.startswith("services/")}
+        assert len(prefixes) == 1                # each commit touches one service only
