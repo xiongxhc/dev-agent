@@ -321,3 +321,35 @@ def test_requirements_are_never_mistaken_for_help():
               "help me build an expense tracker",
               "hi, build me a polls app"):
         assert _help_reply(t) is None, t
+
+
+def test_extract_repo_url_requires_configured_host(monkeypatch):
+    from devagent.channels import feishu_bot
+    monkeypatch.setenv("DEVAGENT_GITLAB_URL", "https://gitlab.test")
+    text = "build a notes app and push to https://gitlab.test/team/notes.git please"
+    assert feishu_bot._extract_repo_url(text) == "https://gitlab.test/team/notes.git"
+    assert feishu_bot._extract_repo_url("push to https://github.com/x/y.git") is None
+    monkeypatch.delenv("DEVAGENT_GITLAB_URL")
+    assert feishu_bot._extract_repo_url(text) is None            # unconfigured: never extract
+
+
+def test_stream_build_appends_repo_flag(monkeypatch, tmp_path):
+    # mirror test_stream_run_invokes_build_system's fakes (FakeProc/Popen/_RUNS_BASE)
+    from devagent.channels import feishu_bot
+    monkeypatch.setenv("DEVAGENT_GITLAB_URL", "https://gitlab.test")
+    cmds = []
+
+    class FakeProc:
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(feishu_bot.subprocess, "Popen",
+                        lambda cmd, **kw: (cmds.append(cmd), FakeProc())[1])
+    monkeypatch.setattr(feishu_bot.feishu_app, "send_text", lambda *a, **k: None)
+    monkeypatch.setattr(feishu_bot, "_RUNS_BASE", tmp_path)
+    feishu_bot._stream_build(None, "chat-1",
+                             "build x, push to https://gitlab.test/team/app.git")
+    assert cmds[0][-2:] == ["--repo", "https://gitlab.test/team/app.git"]

@@ -335,3 +335,72 @@ def test_finalize_appends_change_history(tmp_path):
     pub.finalize(_report(), change_note="rename count to total")
     changes = (run_dir / "repo" / ".devagent" / "change.md").read_text()
     assert changes == "- add a count endpoint\n- rename count to total\n"
+
+
+def _seed_remote(tmp_path, with_develop=True):
+    """A bare 'existing repo' with main (+ optional develop) history, like a user's repo."""
+    bare = tmp_path / "existing.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)],
+                   check=True, capture_output=True)
+    work = tmp_path / "seed"
+    subprocess.run(["git", "clone", str(bare), str(work)], check=True, capture_output=True)
+
+    def g(*a):
+        subprocess.run(["git", "-C", str(work), "-c", "user.name=t",
+                        "-c", "user.email=t@t", *a], check=True, capture_output=True)
+
+    (work / "README.md").write_text("theirs\n")
+    g("add", "-A"); g("commit", "-m", "initial"); g("push", "origin", "main")
+    if with_develop:
+        g("checkout", "-b", "develop")
+        (work / "dev.txt").write_text("d\n")
+        g("add", "-A"); g("commit", "-m", "develop tip"); g("push", "origin", "develop")
+    return bare
+
+
+def _heads(bare):
+    out = subprocess.run(["git", "-C", str(bare), "branch", "--format=%(refname:short)"],
+                         capture_output=True, text=True)
+    return set(out.stdout.split())
+
+
+def test_existing_repo_branches_off_develop(tmp_path):
+    bare = _seed_remote(tmp_path)
+    run_dir = tmp_path / "run-1-6ee72423"
+    (run_dir / "services").mkdir(parents=True)
+    forge = FakeForge(tmp_path / "r")
+    ledger = []
+    pub = GitPublisher(run_dir, forge, ledger=ledger, repo_url=f"file://{bare}")
+    _green_out(run_dir, "api")
+    inner, _ = _inner()
+    pub.wrap(inner)(_node("api"), _DESIGN)
+
+    assert forge.created == []                                   # no new project
+    branch = "devagent/expense-tracker-6ee72423"
+    assert branch in _heads(bare)
+    tree = subprocess.run(["git", "-C", str(bare), "ls-tree", "-r", "--name-only", branch],
+                          capture_output=True, text=True).stdout
+    assert "dev.txt" in tree                                     # based on develop
+    assert "services/api/app.py" in tree
+    develop = subprocess.run(["git", "-C", str(bare), "log", "--format=%s", "develop"],
+                             capture_output=True, text=True).stdout.splitlines()
+    assert develop == ["develop tip", "initial"]                 # their branches untouched
+    web = f"file://{bare}"[:-4]                                  # binding strips ".git"
+    assert ledger[0] == {"event": "repo", "url": f"{web}/-/tree/{branch}"}
+
+
+def test_existing_repo_without_develop_uses_default_branch(tmp_path):
+    bare = _seed_remote(tmp_path, with_develop=False)
+    run_dir = tmp_path / "run-1-abc"
+    (run_dir / "services").mkdir(parents=True)
+    pub = GitPublisher(run_dir, FakeForge(tmp_path / "r"), repo_url=f"file://{bare}")
+    _green_out(run_dir, "api")
+    inner, _ = _inner()
+    pub.wrap(inner)(_node("api"), _DESIGN)
+
+    branch = "devagent/expense-tracker-abc"
+    assert branch in _heads(bare)
+    tree = subprocess.run(["git", "-C", str(bare), "ls-tree", "-r", "--name-only", branch],
+                          capture_output=True, text=True).stdout
+    assert "README.md" in tree and "services/api/app.py" in tree  # based on main
+    assert json.loads((run_dir / "repo.json").read_text())["base"] == "main"

@@ -35,6 +35,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 import lark_oapi as lark
@@ -293,6 +294,17 @@ def _tail(api, chat_id, proc, find_ledger, seen: int = 0):
     return ledger, urls, status, repo_url
 
 
+def _extract_repo_url(text: str) -> str | None:
+    """A repo URL in a build message binds the app to that existing repo — but only on
+    the configured forge host (the token works nowhere else)."""
+    base = os.environ.get("DEVAGENT_GITLAB_URL")
+    if not base:
+        return None
+    host = re.escape(urllib.parse.urlparse(base).netloc)
+    m = re.search(rf"https?://{host}/[^\s>\"']+", text)
+    return m.group(0).rstrip(".,;)") if m else None
+
+
 def _stream_build(api: lark.Client, chat_id: str, prd_text: str) -> None:
     """Run the full `build-system` pipeline on *prd_text* and stream its ledger to *chat_id*."""
     _RUNS_BASE.mkdir(parents=True, exist_ok=True)
@@ -303,8 +315,12 @@ def _stream_build(api: lark.Client, chat_id: str, prd_text: str) -> None:
                          "🛠️ Got it — starting an autonomous system build. Designing the architecture…")
 
     env = {**os.environ, "DEVAGENT_RUNS_DIR": str(runs)}
+    cmd = [sys.executable, "-m", "devagent.cli", "build-system", str(prd)]
+    repo_url = _extract_repo_url(prd_text)
+    if repo_url:
+        cmd += ["--repo", repo_url]
     proc = subprocess.Popen(
-        [sys.executable, "-m", "devagent.cli", "build-system", str(prd)],
+        cmd,
         cwd=str(_ROOT), env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )

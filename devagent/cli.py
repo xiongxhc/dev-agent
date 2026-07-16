@@ -151,7 +151,8 @@ def _build_system(args) -> int:
 
     security_verify, security_findings = _system_security(ledger)
 
-    publisher = GitPublisher.from_env(run_dir, ledger=ledger)
+    publisher = GitPublisher.from_env(run_dir, ledger=ledger,
+                                      repo_url=getattr(args, "repo", None))
     run_node = make_run_node(run_dir, budget, ledger)
     if publisher is not None:
         run_node = publisher.wrap(run_node)
@@ -241,6 +242,9 @@ def main(argv: list[str] | None = None) -> int:
 
     bs_p = sub.add_parser("build-system", help="M20: design + build a multi-service system from a PRD")
     bs_p.add_argument("input", help="path to a PRD/requirement file")
+    bs_p.add_argument("--repo", default=None,
+                      help="existing GitLab repo URL to publish into "
+                           "(new branch devagent/* off develop; default: create a new repo)")
 
     us_p = sub.add_parser("update-system",
                           help="M25: apply a change request to a previously built system, in place")

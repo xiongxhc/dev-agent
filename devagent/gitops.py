@@ -64,12 +64,14 @@ class GitPublisher:
     """Owns everything git for one run dir. Callers use only from_env()/wrap()/finalize();
     wrap and finalize never raise (additive publishing — see _guarded)."""
 
-    def __init__(self, run_dir, forge, ledger=None, commit_prefix: str | None = None):
+    def __init__(self, run_dir, forge, ledger=None, commit_prefix: str | None = None,
+                repo_url: str | None = None):
         self.run_dir = Path(run_dir)
         self.repo_dir = self.run_dir / "repo"
         self.forge = forge
         self.ledger = ledger
         self.commit_prefix = commit_prefix
+        self.repo_url = repo_url.strip() if repo_url else None
         self.dormant = False
         # TreeOrchestrator runs sibling run_nodes concurrently in a thread pool (tree.py);
         # all of them publish through this one publisher onto one shared clone, so the
@@ -80,7 +82,7 @@ class GitPublisher:
                         if binding_file.is_file() else None)
 
     @classmethod
-    def from_env(cls, run_dir, ledger=None, commit_prefix=None, env=None):
+    def from_env(cls, run_dir, ledger=None, commit_prefix=None, env=None, repo_url=None):
         env = os.environ if env is None else env
         url = env.get("DEVAGENT_GITLAB_URL")
         token = env.get("DEVAGENT_GITLAB_TOKEN")
@@ -88,31 +90,68 @@ class GitPublisher:
         if not (url and token and group):
             return None
         return cls(run_dir, ForgeClient(url, token, group),
-                   ledger=ledger, commit_prefix=commit_prefix)
+                   ledger=ledger, commit_prefix=commit_prefix, repo_url=repo_url)
 
     def _ensure_repo(self, title: str) -> None:
         if self.binding is None:
+            if self.repo_url:
+                self._bind_existing(title)
+                return                      # clone already materialized the worktree
             name = f"{slugify(title)}-{self.run_dir.name.rsplit('-', 1)[-1]}"
             proj = self.forge.create_project(name)
             self.binding = {"url": proj["web_url"],
                             "remote": proj["http_url_to_repo"],   # credential-free
                             "project_path": proj["path_with_namespace"],
+                            "mode": "new",
                             "default_branch": proj.get("default_branch") or "master"}
             (self.run_dir / "repo.json").write_text(json.dumps(self.binding, indent=2))
-            if self.ledger is not None:
-                self.ledger.append({"event": "repo", "url": self.binding["url"]})
+            self._announce()
         if not (self.repo_dir / ".git").is_dir():
-            # First creation, or the clone was lost: re-init. If the remote already has
-            # history the next push is rejected (non-FF) -> repo_error; never force-push.
-            self.repo_dir.mkdir(parents=True, exist_ok=True)
-            self._git("init", "-b", self.binding["default_branch"])
-            self._git("remote", "add", "origin", self.binding["remote"])
+            if self.binding.get("mode") == "existing":
+                # clone was lost: re-clone our branch (exists remotely after first push)
+                self._git("clone", "--branch", self.binding["default_branch"],
+                          self.binding["remote"], str(self.repo_dir), cwd=self.run_dir)
+            else:
+                # First creation, or the clone was lost: re-init. If the remote already
+                # has history the next push is rejected (non-FF) -> repo_error; never
+                # force-push.
+                self.repo_dir.mkdir(parents=True, exist_ok=True)
+                self._git("init", "-b", self.binding["default_branch"])
+                self._git("remote", "add", "origin", self.binding["remote"])
 
-    def _git(self, *args: str) -> str:
+    def _bind_existing(self, title: str) -> None:
+        """User-supplied repo: publish on a fresh branch off develop (fallback: default
+        branch); the user's branches are never pushed to. Empty repo (no base commit) ->
+        checkout fails -> repo_error via _guarded (use new-repo mode for empty repos)."""
+        self._git("clone", self.repo_url, str(self.repo_dir), cwd=self.run_dir)
+        has_develop = self._git("ls-remote", "--heads", "origin", "develop").strip()
+        base = "develop" if has_develop else self._default_branch()
+        branch = f"devagent/{slugify(title)}-{self.run_dir.name.rsplit('-', 1)[-1]}"
+        self._git("checkout", "-b", branch, f"origin/{base}")
+        web = self.repo_url[:-4] if self.repo_url.endswith(".git") else self.repo_url
+        # default_branch is "the branch pushes go to" throughout this class
+        self.binding = {"url": web, "remote": self.repo_url, "mode": "existing",
+                        "base": base, "default_branch": branch}
+        (self.run_dir / "repo.json").write_text(json.dumps(self.binding, indent=2))
+        self._announce()
+
+    def _default_branch(self) -> str:
+        out = self._git("symbolic-ref", "refs/remotes/origin/HEAD")  # set by clone
+        return out.strip().rsplit("/", 1)[-1]
+
+    def _announce(self) -> None:
+        if self.ledger is None:
+            return
+        url = self.binding["url"]
+        if self.binding.get("mode") == "existing":
+            url = f"{url}/-/tree/{self.binding['default_branch']}"  # link lands on our branch
+        self.ledger.append({"event": "repo", "url": url})
+
+    def _git(self, *args: str, cwd=None) -> str:
         res = subprocess.run(
             ["git", "-c", f"credential.helper={_CRED_HELPER}",
              "-c", "user.name=dev-agent", "-c", "user.email=dev-agent@local", *args],
-            cwd=self.repo_dir, capture_output=True, text=True, timeout=120)
+            cwd=cwd or self.repo_dir, capture_output=True, text=True, timeout=120)
         if res.returncode != 0:
             raise RuntimeError(f"git {args[0]} failed: {res.stderr.strip()[:400]}")
         return res.stdout
@@ -192,8 +231,7 @@ class GitPublisher:
                 f.write(f"- {change_note}\n")
         (self.repo_dir / "README.md").write_text(self._readme(report), encoding="utf-8")
         self._commit_push("publish: README + .devagent metadata")
-        if self.ledger is not None:   # re-announce so an update's tail also sees the URL
-            self.ledger.append({"event": "repo", "url": self.binding["url"]})
+        self._announce()              # re-announce so an update's tail also sees the URL
 
     def _readme(self, report) -> str:
         urls = getattr(report, "urls", None) or {}

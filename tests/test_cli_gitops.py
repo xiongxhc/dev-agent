@@ -110,3 +110,14 @@ def test_update_system_skips_finalize_on_failure(monkeypatch, tmp_path):
 def test_update_system_unconfigured_env_composes_todays_pipeline(monkeypatch, tmp_path):
     args = _wire_update(monkeypatch, tmp_path, "succeeded", None)  # from_env -> None
     assert cli._update_system(args) == 0                           # no publisher, no crash
+
+
+def test_build_system_passes_repo_url_to_publisher(monkeypatch, tmp_path):
+    seen = {}
+    pub = FakePub()
+    args = _wire_build(monkeypatch, tmp_path, "succeeded", pub)
+    monkeypatch.setattr(cli.GitPublisher, "from_env",
+                        classmethod(lambda c, run_dir, **kw: (seen.update(kw), pub)[1]))
+    args.repo = "https://gitlab.test/team/app.git"
+    assert cli._build_system(args) == 0
+    assert seen.get("repo_url") == "https://gitlab.test/team/app.git"
