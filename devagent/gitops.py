@@ -57,3 +57,57 @@ class ForgeClient:
                                      headers={"PRIVATE-TOKEN": self.token})
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
+
+
+class GitPublisher:
+    """Owns everything git for one run dir. Callers use only from_env()/wrap()/finalize();
+    wrap and finalize never raise (additive publishing — see _guarded)."""
+
+    def __init__(self, run_dir, forge, ledger=None, commit_prefix: str | None = None):
+        self.run_dir = Path(run_dir)
+        self.repo_dir = self.run_dir / "repo"
+        self.forge = forge
+        self.ledger = ledger
+        self.commit_prefix = commit_prefix
+        self.dormant = False
+        binding_file = self.run_dir / "repo.json"
+        self.binding = (json.loads(binding_file.read_text())
+                        if binding_file.is_file() else None)
+
+    @classmethod
+    def from_env(cls, run_dir, ledger=None, commit_prefix=None, env=None):
+        env = os.environ if env is None else env
+        url = env.get("DEVAGENT_GITLAB_URL")
+        token = env.get("DEVAGENT_GITLAB_TOKEN")
+        group = env.get("DEVAGENT_GITLAB_GROUP")
+        if not (url and token and group):
+            return None
+        return cls(run_dir, ForgeClient(url, token, group),
+                   ledger=ledger, commit_prefix=commit_prefix)
+
+    def _ensure_repo(self, title: str) -> None:
+        if self.binding is None:
+            name = f"{slugify(title)}-{self.run_dir.name.rsplit('-', 1)[-1]}"
+            proj = self.forge.create_project(name)
+            self.binding = {"url": proj["web_url"],
+                            "remote": proj["http_url_to_repo"],   # credential-free
+                            "project_path": proj["path_with_namespace"],
+                            "default_branch": proj.get("default_branch") or "master"}
+            (self.run_dir / "repo.json").write_text(json.dumps(self.binding, indent=2))
+            if self.ledger is not None:
+                self.ledger.append({"event": "repo", "url": self.binding["url"]})
+        if not (self.repo_dir / ".git").is_dir():
+            # First creation, or the clone was lost: re-init. If the remote already has
+            # history the next push is rejected (non-FF) -> repo_error; never force-push.
+            self.repo_dir.mkdir(parents=True, exist_ok=True)
+            self._git("init", "-b", self.binding["default_branch"])
+            self._git("remote", "add", "origin", self.binding["remote"])
+
+    def _git(self, *args: str) -> str:
+        res = subprocess.run(
+            ["git", "-c", f"credential.helper={_CRED_HELPER}",
+             "-c", "user.name=dev-agent", "-c", "user.email=dev-agent@local", *args],
+            cwd=self.repo_dir, capture_output=True, text=True, timeout=120)
+        if res.returncode != 0:
+            raise RuntimeError(f"git {args[0]} failed: {res.stderr.strip()[:400]}")
+        return res.stdout

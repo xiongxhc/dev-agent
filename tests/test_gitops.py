@@ -1,9 +1,16 @@
 """M7 gitops: slug/forge-client unit tests (zero-network: urlopen is monkeypatched)."""
 import io
 import json
+import shutil
+import subprocess
 import urllib.parse
+from pathlib import Path
+from types import SimpleNamespace
 
-from devagent.gitops import ForgeClient, slugify
+import pytest
+
+from devagent.gitops import ForgeClient, GitPublisher, slugify
+from devagent.tree import FAILED, SUCCEEDED, NodeResult
 
 
 def test_slugify_normalizes_titles():
@@ -63,3 +70,70 @@ def test_group_path_is_resolved_to_id(monkeypatch):
 
     assert calls[0].full_url == "https://gitlab.test/api/v4/groups/dev-agent%2Fapps"
     assert dict(urllib.parse.parse_qsl(calls[1].data.decode()))["namespace_id"] == "7"
+
+
+class FakeForge:
+    """create_project() backed by a local bare repo — pushes go over file://, no network."""
+
+    def __init__(self, remotes_dir, fail=False):
+        self.remotes_dir = Path(remotes_dir)
+        self.created: list[str] = []
+        self.fail = fail
+
+    def create_project(self, name):
+        if self.fail:
+            raise RuntimeError("forge down")
+        self.remotes_dir.mkdir(parents=True, exist_ok=True)
+        bare = self.remotes_dir / f"{name}.git"
+        subprocess.run(["git", "init", "--bare", "-b", "master", str(bare)],
+                       check=True, capture_output=True)
+        self.created.append(name)
+        return {"web_url": f"https://gitlab.test/apps/{name}",
+                "http_url_to_repo": f"file://{bare}",
+                "path_with_namespace": f"apps/{name}", "default_branch": "master"}
+
+
+def _mkpub(tmp_path, **kw):
+    run_dir = tmp_path / "run-1783944614-6ee72423"
+    (run_dir / "services").mkdir(parents=True)
+    forge = FakeForge(tmp_path / "remotes")
+    ledger = []                      # Ledger's only used surface is .append(dict)
+    return GitPublisher(run_dir, forge, ledger=ledger, **kw), run_dir, forge, ledger
+
+
+def _remote_subjects(forge, name):
+    bare = forge.remotes_dir / f"{name}.git"
+    out = subprocess.run(["git", "-C", str(bare), "log", "--format=%s", "master"],
+                         capture_output=True, text=True)
+    return out.stdout.strip().splitlines()
+
+
+def test_from_env_none_unless_fully_configured(tmp_path):
+    env = {"DEVAGENT_GITLAB_URL": "https://g", "DEVAGENT_GITLAB_TOKEN": "t"}
+    assert GitPublisher.from_env(tmp_path, env=env) is None      # group missing
+    env["DEVAGENT_GITLAB_GROUP"] = "7"
+    pub = GitPublisher.from_env(tmp_path, env=env)
+    assert pub is not None and pub.forge.group == "7"
+
+
+def test_ensure_repo_creates_once_and_persists_binding(tmp_path):
+    pub, run_dir, forge, ledger = _mkpub(tmp_path)
+    pub._ensure_repo("Expense Tracker")
+    pub._ensure_repo("Expense Tracker")                          # idempotent
+    assert forge.created == ["expense-tracker-6ee72423"]         # slug + run-id suffix
+    binding = json.loads((run_dir / "repo.json").read_text())
+    assert binding["url"] == "https://gitlab.test/apps/expense-tracker-6ee72423"
+    assert binding["default_branch"] == "master"
+    assert "sekrit" not in (run_dir / "repo.json").read_text()   # no token material
+    assert (run_dir / "repo" / ".git").is_dir()
+    assert {"event": "repo", "url": binding["url"]} in ledger
+
+
+def test_ensure_repo_reuses_persisted_binding_and_reinits_clone(tmp_path):
+    pub, run_dir, forge, _ = _mkpub(tmp_path)
+    pub._ensure_repo("Notes")
+    shutil.rmtree(run_dir / "repo")                              # clone lost (host moved)
+    pub2 = GitPublisher(run_dir, forge)                          # fresh publisher, same run
+    pub2._ensure_repo("Notes")
+    assert forge.created == ["notes-6ee72423"]                   # no second project
+    assert (run_dir / "repo" / ".git").is_dir()
