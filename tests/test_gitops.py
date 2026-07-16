@@ -265,6 +265,7 @@ def test_forge_failure_never_fails_green_build_and_goes_dormant(tmp_path):
     assert [e["event"] for e in ledger] == ["repo_error"]
     assert pub.dormant
 
+    _green_out(run_dir, "web")
     wrapped(_node("web"), _DESIGN)                       # dormant: no retry storm
     assert [e["event"] for e in ledger] == ["repo_error"]  # still exactly one
     assert len(calls) == 2                               # inner builder always runs
