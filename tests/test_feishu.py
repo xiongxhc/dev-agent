@@ -230,6 +230,37 @@ def test_format_event_update_arc():
     assert "unchanged" in reused
 
 
+def test_format_event_repo_events():
+    from devagent.channels.feishu_bot import _format_event
+    assert _format_event({"event": "repo", "url": "https://g/x"}) is None  # silent: URL rides the done message
+    warn = _format_event({"event": "repo_error", "detail": "push rejected"})
+    assert warn is not None and "push" in warn.lower() and "rejected" in warn
+
+
+def test_tail_captures_repo_url(monkeypatch, tmp_path):
+    from devagent.channels import feishu_bot
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(
+        '{"event": "repo", "url": "https://gitlab.test/apps/x"}\n'
+        '{"event": "system_deploy", "urls": {"api": "http://h:1"}}\n'
+        '{"event": "system_build_end", "status": "succeeded"}\n')
+
+    class DoneProc:
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+    sent = []
+    monkeypatch.setattr(feishu_bot.feishu_app, "send_text",
+                        lambda api, chat, msg: sent.append(msg))
+    got_ledger, urls, status, repo_url = feishu_bot._tail(
+        None, "chat-1", DoneProc(), lambda: ledger)
+    assert repo_url == "https://gitlab.test/apps/x"
+    assert urls == {"api": "http://h:1"} and status == "succeeded"
+
+
 def test_concurrent_bindings_from_different_chats_all_survive(monkeypatch, tmp_path):
     import threading
     from devagent.channels import feishu_bot

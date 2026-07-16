@@ -221,6 +221,9 @@ def _format_event(ev: dict) -> str | None:
         return f"🚀 Preview up:\n{body}"
     if kind == "system_build_end" and ev.get("status") != "succeeded":
         return f"❌ Build ended: {ev.get('status')}"
+    if kind == "repo_error":
+        return ("⚠️ The app built fine, but pushing its code to GitLab failed: "
+                f"{str(ev.get('detail', ''))[:120]}")
     return None
 
 
@@ -228,7 +231,7 @@ def _tail(api, chat_id, proc, find_ledger, seen: int = 0):
     """Tail the run's ledger while `proc` runs, posting each system-level event to chat.
     `find_ledger()` resolves the ledger path (None until it exists — the build path globs
     for the run dir the CLI creates). `seen` skips lines already present BEFORE this run
-    (an update appends to the prior run's ledger). Returns (ledger_path, urls, status)."""
+    (an update appends to the prior run's ledger). Returns (ledger_path, urls, status, repo_url)."""
     ledger: Path | None = None
     announced = False
     build_started_at: float | None = None
@@ -236,9 +239,10 @@ def _tail(api, chat_id, proc, find_ledger, seen: int = 0):
     eta = _system_eta(None)
     urls: dict = {}
     status: str | None = None
+    repo_url: str | None = None
 
     def drain() -> None:
-        nonlocal seen, announced, build_started_at, build_done, eta, urls, status
+        nonlocal seen, announced, build_started_at, build_done, eta, urls, status, repo_url
         if ledger is None or not ledger.exists():
             return
         lines = ledger.read_text(encoding="utf-8").splitlines()
@@ -261,6 +265,8 @@ def _tail(api, chat_id, proc, find_ledger, seen: int = 0):
                                      f"the slow part ({eta}). I'll post progress as I go.")
             if kind == "system_deploy":
                 urls = dict(ev.get("urls") or {})
+            if kind == "repo":
+                repo_url = ev.get("url")
             if kind == "system_build_end":
                 status = ev.get("status")
                 build_done = True
@@ -284,7 +290,7 @@ def _tail(api, chat_id, proc, find_ledger, seen: int = 0):
         time.sleep(_POLL_S)
 
     proc.wait()
-    return ledger, urls, status
+    return ledger, urls, status, repo_url
 
 
 def _stream_build(api: lark.Client, chat_id: str, prd_text: str) -> None:
@@ -307,19 +313,21 @@ def _stream_build(api: lark.Client, chat_id: str, prd_text: str) -> None:
         found = sorted(runs.glob("run-*"))
         return (found[0] / "ledger.jsonl") if found else None
 
-    ledger, urls, status = _tail(api, chat_id, proc, find_ledger)
+    ledger, urls, status, repo_url = _tail(api, chat_id, proc, find_ledger)
     if status == "succeeded" and ledger is not None:
         # this run dir (design.json + services/) IS the chat's app state; follow-ups update it
         _bind_chat_app(chat_id, str(ledger.parent))
+    code_line = f"\n📦 Code: {repo_url}" if repo_url else ""
     if urls:
         body = "\n".join(f"• {sid}: {u}" for sid, u in urls.items())
         feishu_app.send_text(api, chat_id,
                              "✅ Done — system built, verified and security-checked. Live preview:\n"
-                             f"{body}\n(opens on the host machine — public deploy is on the roadmap)\n"
+                             f"{body}\n(opens on the host machine — public deploy is on the roadmap)"
+                             f"{code_line}\n"
                              "Reply in this chat with changes and I'll update the app in place.")
     elif status == "succeeded":
         feishu_app.send_text(api, chat_id,
-                             "✅ System build finished.\n"
+                             f"✅ System build finished.{code_line}\n"
                              "Reply in this chat with changes and I'll update the app in place.")
     else:
         feishu_app.send_text(api, chat_id,
@@ -343,13 +351,14 @@ def _stream_update(api, chat_id, change_text: str, run_dir: Path) -> None:
         cwd=str(_ROOT), env={**os.environ},
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    _, urls, status = _tail(api, chat_id, proc, lambda: ledger_path, seen=seen)
+    _, urls, status, repo_url = _tail(api, chat_id, proc, lambda: ledger_path, seen=seen)
+    code_line = f"\n📦 Code: {repo_url}" if repo_url else ""
     if urls:
         body = "\n".join(f"• {sid}: {u}" for sid, u in urls.items())
         feishu_app.send_text(api, chat_id,
-                             f"✅ Updated, re-verified and redeployed. Live preview:\n{body}")
+                             f"✅ Updated, re-verified and redeployed. Live preview:\n{body}{code_line}")
     elif status == "succeeded":
-        feishu_app.send_text(api, chat_id, "✅ Update finished.")
+        feishu_app.send_text(api, chat_id, f"✅ Update finished.{code_line}")
     else:
         feishu_app.send_text(api, chat_id,
                              f"❌ Update did not complete — status: {status or 'unknown'}. "
