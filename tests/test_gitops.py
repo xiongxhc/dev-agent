@@ -249,3 +249,38 @@ def test_wrap_serializes_concurrent_sibling_publishes(tmp_path):
             capture_output=True, text=True).stdout.split()
         prefixes = {p.split("/")[1] for p in paths if p.startswith("services/")}
         assert len(prefixes) == 1                # each commit touches one service only
+
+
+def test_forge_failure_never_fails_green_build_and_goes_dormant(tmp_path):
+    run_dir = tmp_path / "run-1-x"
+    (run_dir / "services").mkdir(parents=True)
+    ledger = []
+    pub = GitPublisher(run_dir, FakeForge(tmp_path / "r", fail=True), ledger=ledger)
+    _green_out(run_dir, "api")
+    inner, calls = _inner()
+    wrapped = pub.wrap(inner)
+
+    nr = wrapped(_node("api"), _DESIGN)
+    assert nr.status == SUCCEEDED                        # the build outcome is untouched
+    assert [e["event"] for e in ledger] == ["repo_error"]
+    assert pub.dormant
+
+    wrapped(_node("web"), _DESIGN)                       # dormant: no retry storm
+    assert [e["event"] for e in ledger] == ["repo_error"]  # still exactly one
+    assert len(calls) == 2                               # inner builder always runs
+
+
+def test_token_never_lands_on_disk(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVAGENT_GITLAB_TOKEN", "sekrit-token-xyz")
+    pub, run_dir, forge, _ = _mkpub(tmp_path)
+    _green_out(run_dir, "api")
+    inner, _ = _inner()
+    pub.wrap(inner)(_node("api"), _DESIGN)
+
+    hits = [p for p in (run_dir / "repo").rglob("*")
+            if p.is_file() and "sekrit-token-xyz" in p.read_text(errors="ignore")]
+    assert hits == []
+    assert "sekrit-token-xyz" not in (run_dir / "repo.json").read_text()
+    # the helper is passed per-invocation via `-c` (never written to config), and it
+    # reads the env var by NAME at push time — so no credential config may persist:
+    assert "credential" not in (run_dir / "repo" / ".git" / "config").read_text()
