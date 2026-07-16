@@ -17,6 +17,7 @@ from .budget import Budget
 from .config import Config
 from .deploy import DeployGate
 from .executor_sdk import SdkExecutor
+from .gitops import GitPublisher
 from .ledger import Ledger
 from .managed_executor import ManagedExecutor
 from .orchestrator import SUCCEEDED, Orchestrator
@@ -150,12 +151,18 @@ def _build_system(args) -> int:
 
     security_verify, security_findings = _system_security(ledger)
 
+    publisher = GitPublisher.from_env(run_dir, ledger=ledger)
+    run_node = make_run_node(run_dir, budget, ledger)
+    if publisher is not None:
+        run_node = publisher.wrap(run_node)
     report = build_system(
         args.input, budget=budget, ledger=ledger,
-        run_node=make_run_node(run_dir, budget, ledger),
+        run_node=run_node,
         bring_up=make_bring_up(run_dir), run_dir=run_dir,
         max_system_repairs=cfg.max_system_repairs,
         security_verify=security_verify, security_findings=security_findings)
+    if publisher is not None and report.status == "succeeded":
+        publisher.finalize(report, prd_path=args.input)
     _write_system_report(run_dir, report)
     print(f"{run_id} {report.status}")
     print(f"  -> services: " + ", ".join(
@@ -187,13 +194,20 @@ def _update_system(args) -> int:
     security_verify, security_findings = _system_security(ledger)
     change_request = Path(args.change).read_text()
 
+    first_line = change_request.strip().splitlines()[0][:72] if change_request.strip() else None
+    publisher = GitPublisher.from_env(run_dir, ledger=ledger, commit_prefix=first_line)
+    run_node = make_run_node(run_dir, budget, ledger,
+                             build_service=make_update_build_service(change_request))
+    if publisher is not None:
+        run_node = publisher.wrap(run_node)
     report = update_system(
         run_dir, args.change, budget=budget, ledger=ledger,
-        run_node=make_run_node(run_dir, budget, ledger,
-                               build_service=make_update_build_service(change_request)),
+        run_node=run_node,
         bring_up_factory=lambda preserve: make_bring_up(run_dir, preserve_data=preserve),
         max_system_repairs=cfg.max_system_repairs,
         security_verify=security_verify, security_findings=security_findings)
+    if publisher is not None and report.status == "succeeded":
+        publisher.finalize(report, change_note=first_line)
     _write_system_report(run_dir, report)
     print(f"{run_dir.name} {report.status}")
     for svc, url in report.urls.items():
