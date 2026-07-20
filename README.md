@@ -187,8 +187,9 @@ does **both** directions: it **receives** PRDs (event subscription over a WebSoc
 long-connection — no public URL) and **sends** progress/results back into the same chat via the
 app message API. Setup: a custom app with Bot enabled, scopes `im:message` + `im:message:send_as_bot`,
 event `im.message.receive_v1` (long-connection mode), published, and added to a DM or group
-(in a group it acts on **@mentions**; in a DM, on any message). Credentials live in `.env`
-(`FEISHU_APP_ID` / `FEISHU_APP_SECRET`), never committed.
+(in a group it acts on **@mentions**; in a DM, on any message). Credentials live in
+`~/.config/local-agent-team/dev-agent.env` (`FEISHU_APP_ID` / `FEISHU_APP_SECRET`; template
+in `.env.example`), never committed — source it before starting the bot.
 
 > The older `channels/feishu.py` is a one-way **group-webhook** bot used only for best-effort
 > outbound notifications (e.g. scope-clarification questions on the CLI single-run path). It is
@@ -276,9 +277,9 @@ python -m devagent.cli update-system <run_dir> <change.md>  # M25: apply a chang
 tokens. Without it, the default run stops after `plan` (still spends brain tokens).
 
 Brain phases spend tokens (Messages API). The key is read from `ANTHROPIC_API_KEY` — put
-it in a gitignored `dev-agent/.env` (`ANTHROPIC_API_KEY=...`) and `source` it, or export
-it. Billing is **pay-per-token** — the Agent SDK / Managed Agents both require an API key
-(Pro/Max subscription auth is not permitted for programmatic/headless use).
+it in `~/.config/local-agent-team/dev-agent.env` (template in `.env.example`) and `source`
+it, or export it. Billing is **pay-per-token** — the Agent SDK / Managed Agents both require
+an API key (Pro/Max subscription auth is not permitted for programmatic/headless use).
 
 ## Test
 
