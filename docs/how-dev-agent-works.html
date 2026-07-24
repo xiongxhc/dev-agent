@@ -1,0 +1,620 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>dev-agent · how it works</title><style>
+:root{
+  --paper:#EBF1F5; --panel:#F6FAFC; --panel2:#E2EBF1; --line:#cdd9e2; --line2:#b7c8d3;
+  --ink:#152430; --dim:#5c6d7a; --faint:#8da0ad;
+  --accent:#0072BC; /* Acme blue */ --pass:#3f7d4e; --run:#b07a2c; --fail:#b23a2e;
+  --serif:"Tiempos Headline", ui-serif, Georgia, "Times New Roman", serif;
+  --mono:ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans:ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+*{ box-sizing:border-box; }
+html,body{ margin:0; height:100%; }
+body{ background:
+        radial-gradient(1100px 640px at 82% -8%, #f2f8fc 0%, rgba(242,248,252,0) 60%),
+        var(--paper);
+      color:var(--ink); font-family:var(--sans); line-height:1.5; overflow:hidden;
+      -webkit-font-smoothing:antialiased; }
+.slide{ position:fixed; inset:0; opacity:0; visibility:hidden; transform:translateY(14px);
+        transition:opacity .5s ease, transform .5s ease; overflow:auto;
+        display:flex; flex-direction:column; justify-content:center; padding:5vh 6vw; }
+.slide.active{ opacity:1; visibility:visible; transform:none; }
+.deck{ width:100%; max-width:1060px; margin:0 auto; }
+@keyframes rise{ from{opacity:0; transform:translateY(10px)} to{opacity:1; transform:none} }
+.slide.active .deck>*{ animation:rise .45s ease both; }
+.slide.active .deck>*:nth-child(2){ animation-delay:.05s; }
+.slide.active .deck>*:nth-child(3){ animation-delay:.1s; }
+.slide.active .deck>*:nth-child(4){ animation-delay:.15s; }
+.slide.active .deck>*:nth-child(5){ animation-delay:.2s; }
+@media (prefers-reduced-motion:reduce){ .slide{ transition:opacity .2s; } .slide.active .deck>*{ animation:none; } }
+
+/* top status strip — like a CI run header, on every slide */
+.bar{ display:flex; align-items:center; gap:.7rem; font-family:var(--mono); font-size:.76rem;
+      color:var(--dim); padding-bottom:.9rem; margin-bottom:2rem; border-bottom:1px solid var(--line);
+      letter-spacing:.02em; }
+.bar .logo{ color:var(--ink); font-weight:600; letter-spacing:.06em; }
+.bar .logo b{ color:var(--accent); }
+.bar .sp{ margin-left:auto; }
+.bar .tag{ color:var(--faint); }
+
+.eyebrow{ font-family:var(--mono); font-size:.74rem; letter-spacing:.16em; text-transform:uppercase;
+          color:var(--accent); margin:0 0 1rem; }
+h1{ font-family:var(--serif); font-weight:500; font-size:clamp(2.1rem,4.8vw,3.5rem); letter-spacing:-.02em;
+    line-height:1.14; margin:0; }
+h2{ font-family:var(--serif); font-weight:500; font-size:clamp(1.6rem,3.2vw,2.4rem); letter-spacing:-.01em;
+    line-height:1.2; margin:0 0 1.3rem; max-width:26ch; }
+.sub{ font-size:clamp(1rem,1.5vw,1.18rem); color:var(--dim); max-width:58ch; margin:1.2rem 0 0; }
+.kbd{ font-family:var(--mono); background:var(--panel2); border:1px solid var(--line); border-radius:5px;
+      padding:.08em .45em; font-size:.85em; color:var(--ink); }
+
+/* signature: the pipeline spine */
+.pipe{ display:flex; align-items:stretch; gap:0; margin-top:2.2rem; flex-wrap:wrap; }
+.node{ flex:1 1 0; min-width:118px; background:var(--panel); border:1px solid var(--line);
+       border-radius:10px; padding:.9rem 1rem; position:relative; }
+.node + .node{ margin-left:.6rem; }
+.node .n{ font-family:var(--mono); font-size:.72rem; color:var(--faint); }
+.node .ph{ font-family:var(--mono); font-size:1.02rem; font-weight:600; color:var(--ink);
+           margin-top:.2rem; display:flex; align-items:center; gap:.5rem; }
+.node .ph::before{ content:""; width:.5rem; height:.5rem; border-radius:50%; background:var(--accent); }
+.node .meta{ font-family:var(--mono); font-size:.72rem; color:var(--dim); margin-top:.5rem; }
+@media (max-width:720px){ .node{ flex:1 1 40%; } .node + .node{ margin-left:0; } .pipe{ gap:.5rem; } }
+
+/* phase table */
+.panel{ background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; margin-top:.3rem; }
+table{ width:100%; border-collapse:collapse; font-size:.92rem; }
+thead th{ text-align:left; padding:.6rem .95rem; color:var(--dim); font-weight:500; font-size:.68rem;
+          text-transform:uppercase; letter-spacing:.06em; background:var(--panel2);
+          font-family:var(--mono); border-bottom:1px solid var(--line); }
+tbody td{ padding:.6rem .95rem; border-bottom:1px solid var(--line); vertical-align:top; color:var(--ink); }
+tbody tr:last-child td{ border-bottom:0; }
+td.ph{ font-family:var(--mono); font-weight:600; white-space:nowrap; }
+td.gate{ font-family:var(--mono); font-size:.82rem; color:var(--pass); white-space:nowrap; }
+td.gate::before{ content:"▲ "; color:var(--faint); }
+.reason{ color:var(--dim); }
+
+.line-item{ font-family:var(--mono); font-size:.82rem; color:var(--dim); margin-top:1.1rem; }
+.line-item b{ color:var(--ink); }
+
+.flow{ font-family:var(--mono); font-size:clamp(.6rem,.95vw,.82rem); line-height:1.7; white-space:pre;
+       overflow-x:auto; background:var(--panel); border:1px solid var(--line); border-radius:10px;
+       padding:1.1rem 1.3rem; color:var(--ink); margin-top:1.6rem; }
+.flow .c{ color:var(--accent); } .flow .g{ color:var(--faint); }
+
+.split{ display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:.3rem; }
+.col{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:1.1rem 1.3rem; }
+.col.api{ border-top:3px solid var(--accent); }
+.col.local{ border-top:3px solid var(--pass); }
+.col .h{ font-family:var(--mono); font-size:.7rem; letter-spacing:.05em; text-transform:uppercase;
+         color:var(--dim); margin-bottom:.7rem; }
+.col ul{ list-style:none; margin:0; padding:0; }
+.col li{ font-size:.92rem; padding:.3rem 0 .3rem 1.1rem; position:relative; color:var(--ink); }
+.col li::before{ content:"›"; position:absolute; left:0; color:var(--accent); }
+.oneline{ font-family:var(--serif); font-size:clamp(1.05rem,1.7vw,1.3rem); color:var(--ink); margin:1.2rem 0 0; }
+.oneline b{ color:var(--accent); font-weight:600; }
+
+.points{ list-style:none; padding:0; margin:.4rem 0 0; }
+.points li{ font-size:clamp(.95rem,1.4vw,1.1rem); padding:.6rem 0 .6rem 1.6rem; position:relative;
+            border-top:1px solid var(--line); color:var(--ink); }
+.points li:first-child{ border-top:0; }
+.points li::before{ content:""; position:absolute; left:0; top:1.05rem; width:.4rem; height:.4rem;
+            background:var(--accent); transform:rotate(45deg); }
+.points li b{ color:var(--ink); }
+
+.cards{ display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:.3rem; }
+.cards.three{ grid-template-columns:1fr 1fr 1fr; }
+.tile{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:1.2rem 1.3rem; }
+.tile .k{ font-family:var(--mono); font-size:.72rem; color:var(--accent); letter-spacing:.04em; text-transform:uppercase; }
+.tile .t{ font-family:var(--mono); font-size:1.02rem; font-weight:600; margin:.4rem 0 .35rem; color:var(--ink); }
+.tile .d{ font-size:.9rem; color:var(--dim); line-height:1.5; }
+.tile .cmd{ font-family:var(--mono); font-size:.82rem; color:var(--ink); background:var(--panel2);
+            border:1px solid var(--line); border-radius:6px; padding:.4rem .6rem; margin:.5rem 0 .6rem; display:block;
+            white-space:nowrap; overflow-x:auto; }
+
+.foot{ display:flex; justify-content:space-between; align-items:center; margin-top:2rem;
+       padding-top:1rem; border-top:1px solid var(--line); font-family:var(--mono); font-size:.7rem;
+       color:var(--faint); }
+.nav{ position:fixed; left:50%; bottom:2.2vh; transform:translateX(-50%); display:flex; gap:.45rem; z-index:6; }
+.dot{ width:6px; height:6px; border-radius:50%; background:var(--line2); border:0; padding:0; cursor:pointer;
+      transition:background .25s, transform .25s; }
+.dot:focus-visible{ outline:2px solid var(--accent); outline-offset:3px; }
+.dot.on{ background:var(--accent); transform:scale(1.4); }
+.hint{ position:fixed; right:1.1rem; bottom:1.7vh; font-family:var(--mono); font-size:.66rem;
+       color:var(--faint); z-index:6; }
+.langsw{ position:fixed; top:1rem; right:1.1rem; z-index:7; display:flex; gap:.3rem;
+         font-family:var(--mono); font-size:.72rem; }
+.langsw button{ background:var(--panel); border:1px solid var(--line); border-radius:6px;
+                color:var(--dim); padding:.25rem .6rem; cursor:pointer; }
+.langsw button.on{ background:var(--accent); border-color:var(--accent); color:#fff; }
+a{ color:var(--accent); }
+@media (max-width:640px){ .split,.cards,.cards.three{ grid-template-columns:1fr; } }
+</style></head><body>
+
+<!-- ======================= ENGLISH DECK ======================= -->
+
+<!-- 1 · TITLE -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>LLM brain, deterministic hands</span></div>
+  <p class='eyebrow'>how it works</p>
+  <h1>A PRD goes in.<br>A working app — or a whole system — comes out.</h1>
+  <div class="pipe">
+    <div class="node"><div class="n">01</div><div class="ph">scope</div></div>
+    <div class="node"><div class="n">02</div><div class="ph">plan</div></div>
+    <div class="node"><div class="n">03</div><div class="ph">build</div></div>
+    <div class="node"><div class="n">04</div><div class="ph">verify</div></div>
+    <div class="node"><div class="n">05</div><div class="ph">deploy</div></div>
+  </div>
+  <p class='sub'>dev-agent is a headless, autonomous web-app builder. Hand it a product description and it scopes, plans, builds, verifies, and deploys the app — unattended, with a deterministic gate after every step. Hand it a bigger PRD and it designs a <b>multi-service system</b> and builds every service the same way. This deck explains what it is and how to use it.</p>
+  <div class='foot'><span>dev-agent · how it works</span><span>01 / 11</span></div>
+</div></section>
+
+<!-- 2 · THE CORE IDEA -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>the core idea</span></div>
+  <p class='eyebrow'>the core idea</p>
+  <h2>LLM brain, deterministic hands.</h2>
+  <p class='sub'>The model decides <i>what</i> to build. Plain Python owns <i>how the run proceeds</i> — the sequence of phases, the budget ceilings, and a hard pass/fail gate after each one. The build's own claim of "it worked" is never trusted: a gate re-checks the real artifact on disk.</p>
+  <div class='flow'><span class='c'>PRD</span> ─▶ scope ─▶ plan ─▶ build ─▶ verify ─▶ deploy ─▶ <span class='c'>preview + report</span>
+   <span class='g'>└──── fail any gate, the run stops and says why ────┘</span></div>
+  <p class='line-item'>Modules that call Claude: <b>scope</b>, <b>plan</b>, and the <b>build executor</b>. Everything else — orchestrator, budget, ledger, gates, sandbox, verifier, egress — runs <b>no model at all</b>.</p>
+  <div class='foot'><span>dev-agent · how it works</span><span>02 / 11</span></div>
+</div></section>
+
+<!-- 3 · THE PIPELINE -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>the pipeline</span></div>
+  <p class='eyebrow'>the pipeline</p>
+  <h2>Five phases, a gate after each.</h2>
+  <div class='panel'><table>
+    <thead><tr><th>phase</th><th>what it does</th><th>gate</th></tr></thead>
+    <tbody>
+      <tr><td class='ph'>scope</td><td class='reason'>Classifies any request into a confirmed <b>ProjectScope</b> — deliverable type(s), stack, storage. Asks clarifying questions if ambiguous.</td><td class='gate'>recipe known</td></tr>
+      <tr><td class='ph'>plan</td><td class='reason'>Breaks the scope into tasks; each task owns a disjoint set of files so parallel build agents never collide.</td><td class='gate'>file owners disjoint</td></tr>
+      <tr><td class='ph'>build</td><td class='reason'>The executor writes the app and runs the real toolchain build. A repair loop (cap 2) feeds failures back in.</td><td class='gate'>bundle exists</td></tr>
+      <tr><td class='ph'>verify</td><td class='reason'>Rebuilds from source in a clean container, boots the app, runs the spec's machine-checkable acceptance checks.</td><td class='gate'>build + checks green</td></tr>
+      <tr><td class='ph'>deploy</td><td class='reason'>Serves the build from a preview container on the host and proves the URL actually answers.</td><td class='gate'>HTTP 200</td></tr>
+    </tbody>
+  </table></div>
+  <p class='line-item'>The orchestrator stays dumb: <b>one pass per phase</b>, stop on a red gate or a budget breach. A gate is pure pass/fail code over the artifact — <b>never</b> the model's self-assessment. In a <b>system build</b>, this exact pipeline runs once per service.</p>
+  <div class='foot'><span>dev-agent · how it works</span><span>03 / 11</span></div>
+</div></section>
+
+<!-- 4 · HOW TO USE IT -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>how to use it</span></div>
+  <p class='eyebrow'>two ways in</p>
+  <h2>Trigger from the CLI, or from a chat.</h2>
+  <div class='cards three'>
+    <div class='tile'>
+      <div class='k'>cli · the primitive</div>
+      <div class='t'>devagent run --build</div>
+      <span class='cmd'>python -m devagent.cli run --build examples/tasks.md</span>
+      <div class='d'>One PRD file, one built + verified + deployed app under <span class="kbd">runs/&lt;id&gt;/</span>. Needs Docker and an <span class="kbd">ANTHROPIC_API_KEY</span>. Without <span class="kbd">--build</span> it stops after <span class="kbd">plan</span> (brain only).</div>
+    </div>
+    <div class='tile'>
+      <div class='k'>cli · system scale · new</div>
+      <div class='t'>devagent build-system</div>
+      <span class='cmd'>python -m devagent.cli build-system prd.md</span>
+      <div class='d'>One PRD, a whole <b>system</b>: an Architect designs the service DAG, every service gets the full pipeline under one shared budget, then they boot together and the cross-service E2E runs.</div>
+    </div>
+    <div class='tile'>
+      <div class='k'>feishu · drop a PRD in chat</div>
+      <div class='t'>@bot &lt;your PRD&gt;</div>
+      <span class='cmd'>python -m devagent.channels.feishu_bot</span>
+      <div class='d'>A bot receives the PRD over a WebSocket connection (no public URL), runs this <i>exact</i> pipeline, and streams phase-by-phase progress + the preview URL back into the same chat, live. <b>Text messages only</b> — paste the PRD as the message body.</div>
+    </div>
+  </div>
+  <p class='oneline'>Same pipeline underneath — the channel only changes <b>how a run is triggered.</b></p>
+  <p class='line-item'>Two build arms behind one seam: <b>DEVAGENT_EXECUTOR=sdk</b> (local Docker, default) or <b>managed</b> (Anthropic's hosted sandbox) — and <b>devagent eval</b> A/B-compares them on a task suite.</p>
+  <div class='foot'><span>dev-agent · how it works</span><span>04 / 11</span></div>
+</div></section>
+
+<!-- 5 · WHERE IT RUNS -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>where it runs</span></div>
+  <p class='eyebrow'>where it runs</p>
+  <h2>You host the agent. Anthropic hosts the brain.</h2>
+  <div class='split'>
+    <div class='col local'><div class='h'>local · docker on your machine</div><ul>
+      <li>the Claude <b>Agent SDK</b> runtime itself</li>
+      <li>writing files, <span class='kbd'>pnpm</span> / <span class='kbd'>tsc</span> builds</li>
+      <li>verify: rebuild from source + boot the app</li>
+      <li>deploy: the preview container(s) + any datastore</li>
+      <li>the scope/plan brain, the Feishu bot, the harness</li>
+    </ul></div>
+    <div class='col api'><div class='h'>remote · the anthropic api</div><ul>
+      <li>the Claude <b>model</b> — all inference</li>
+      <li>reached with your <span class='kbd'>ANTHROPIC_API_KEY</span></li>
+      <li>the per-build cost (cents to ~$0.50)</li>
+      <li>the only thing that leaves the box,</li>
+      <li>via an egress allowlist (the API + npm)</li>
+      <li>arm B: <span class='kbd'>DEVAGENT_EXECUTOR=managed</span> moves the build itself into Anthropic's hosted sandbox</li>
+    </ul></div>
+  </div>
+  <p class='oneline'>By default the agent and the build run on <b>your hardware</b>; the thinking happens on <b>Anthropic's servers</b>. One env var moves the build into Anthropic's <b>managed sandbox</b> — same pipeline, same gates.</p>
+  <div class='foot'><span>dev-agent · how it works</span><span>05 / 11</span></div>
+</div></section>
+
+<!-- 6 · WHAT IT CAN BUILD -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>what it builds</span></div>
+  <p class='eyebrow'>scope-first</p>
+  <h2>The request decides the shape.</h2>
+  <p class='sub'>The scope phase reads the PRD and picks the deliverable — it isn't locked to one kind of app. Each scope type maps to a <b>recipe</b> that provisions the right toolchain; the registry is open, so new targets drop in without touching the pipeline.</p>
+  <div class='cards three'>
+    <div class='tile'><div class='k'>frontend</div><div class='t'>node-vite-react</div><div class='d'>A Vite + React + Tailwind SPA, served as a static bundle.</div></div>
+    <div class='tile'><div class='k'>backend</div><div class='t'>node-express</div><div class='d'>An Express API, booted and probed with real HTTP + JSON checks.</div></div>
+    <div class='tile'><div class='k'>fullstack</div><div class='t'>api + web</div><div class='d'>Both at once in a monorepo, built and verified target-by-target.</div></div>
+  </div>
+  <p class='line-item'>Storage is <b>the agent's per-PRD decision</b>: none, in-process <b>SQLite</b>, or a managed <b>Postgres / Mongo</b> datastore — chosen by the scope model, never by an operator flag. A PRD that needs <b>several services</b> escalates to the system level — next slide.</p>
+  <div class='foot'><span>dev-agent · how it works</span><span>06 / 11</span></div>
+</div></section>
+
+<!-- 7 · SYSTEM BUILDS -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>system builds · new</span></div>
+  <p class='eyebrow'>the new ability · build-system</p>
+  <h2>One PRD in. A system of services out.</h2>
+  <div class="pipe">
+    <div class="node"><div class="n">01</div><div class="ph">architect</div><div class="meta">PRD → service DAG + contracts</div></div>
+    <div class="node"><div class="n">02</div><div class="ph">build tree</div><div class="meta">full pipeline per service</div></div>
+    <div class="node"><div class="n">03</div><div class="ph">bring up</div><div class="meta">per-run docker network</div></div>
+    <div class="node"><div class="n">04</div><div class="ph">integrate</div><div class="meta">cross-service E2E</div></div>
+  </div>
+  <ul class='points'>
+    <li><b>The Architect designs, a gate re-checks.</b> The model emits a <b>SystemDesign</b> — services (api, web, db…), a dependency DAG, and the <b>contracts</b> between them (OpenAPI, db schema, auth). Deterministic code re-validates all of it: known stacks, resolvable dependencies, acyclic, contracts consistent.</li>
+    <li><b>Every service gets the whole five-phase pipeline</b> as its own sub-build — in dependency order, independent siblings concurrently — under <b>one shared, thread-safe budget</b>. A failed service blocks only its dependents; the rest still build.</li>
+    <li><b>Then the system proves itself together:</b> the built services boot on a fresh per-run network, the declared cross-service checks run over real HTTP, and teardown always runs — containers and network removed even on failure.</li>
+  </ul>
+  <p class='line-item'><b>build-system prd.md</b> → per-service verdicts + integration evidence in <b>runs/&lt;id&gt;/system-report.json</b>. Unit-verified end-to-end; live multi-service hardening is the current work.</p>
+  <div class='foot'><span>dev-agent · how it works</span><span>07 / 11</span></div>
+</div></section>
+
+<!-- 8 · ARCHITECTURE -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>architecture</span></div>
+  <p class='eyebrow'>the architecture</p>
+  <h2>The complete picture.</h2>
+  <div class='flow'><span class='g'>triggers</span>
+  <span class='c'>CLI</span>    run --build &lt;prd&gt; ─────────────────────▶ <span class='g'>the single-run lane</span>
+  <span class='c'>Feishu</span> @bot &lt;PRD&gt; ─▶ feishu_bot.py ─ spawns ─▶ <span class='g'>the single-run lane</span>   <span class='g'>· tails ledger.jsonl, streams</span>
+                                                                       <span class='g'>each phase + the URL to the chat</span>
+  <span class='c'>CLI</span>    build-system &lt;prd&gt; ────────────────────▶ <span class='g'>the system lane</span>
+
+<span class='g'>single-run lane · a gate after every phase</span>
+  scope ─▶ plan ─▶ build <span class='g'>(executor seam: SDK arm in local Docker · managed arm hosted)</span> ─▶ verify
+  <span class='g'>(rebuild from source + boot + acceptance)</span> ─▶ deploy ─▶ <span class='c'>preview URL · report.html · ledger.jsonl</span>
+
+<span class='g'>system lane · the single-run lane once per service</span>
+  architect ─▶ SystemDesign <span class='g'>(DAG + contracts)</span> ─▶ <span class='g'>[architect gate]</span>
+  ├─ per service, dependency order <span class='g'>(siblings concurrent · one shared budget)</span>:
+  │     scope ─▶ plan ─▶ build ─▶ verify <span class='g'>— deploy-less sub-run · provided + consumed contracts injected;</span>
+  │     <span class='g'>datastore nodes skip the LLM build (recipe image at bring-up)</span>
+  ├─ bring up the <b>built</b> targets <span class='g'>(per-run network · DATABASE_URL · frontend apiBase · health-probed)</span>
+  │     ─▶ cross-service E2E ─▶ <span class='g'>[integration gate]</span>
+  └─ <span class='c'>system-report.json + design.json</span> <span class='g'>· teardown always (containers + volumes + network)</span></div>
+  <div class='split'>
+    <div class='col api'><div class='h'>calls the model</div><ul>
+      <li><b>architect</b> — designs the system</li>
+      <li><b>scope + plan</b> — the per-service brain</li>
+      <li><b>build executor</b> — writes the code (SDK or managed arm)</li>
+    </ul></div>
+    <div class='col local'><div class='h'>never calls a model</div><ul>
+      <li>both orchestrators — the phase loop and the build tree</li>
+      <li>every gate, the budget, the ledger</li>
+      <li>verifier, deploy, sandbox, egress proxy</li>
+      <li>integration runner — plain HTTP checks</li>
+    </ul></div>
+  </div>
+  <p class='oneline'>Every seam is an <b>injectable callable</b> — run_node, bring_up, the executor — so the orchestration is unit-tested with fakes and the <b>same code</b> runs live.</p>
+  <div class='foot'><span>dev-agent · how it works</span><span>08 / 11</span></div>
+</div></section>
+
+<!-- 9 · WHY YOU CAN TRUST IT -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>trust model</span></div>
+  <p class='eyebrow'>why you can trust it</p>
+  <h2>Verify doesn't trust the build.</h2>
+  <ul class='points'>
+    <li><b>Rebuild from source</b> in a clean container, with no API key — <span class="kbd">rm -rf dist && pnpm install --frozen-lockfile && pnpm build</span>. A stale, drifted, or hand-faked bundle can't survive this.</li>
+    <li><b>Boot the real app</b> and exercise it — HTTP status codes, JSON response bodies, and rendered DOM selectors. The model isn't asked whether it worked; the checks compute a verdict.</li>
+    <li><b>Persistence is proven, not promised:</b> if the scope picked a datastore, verify writes a record, <b>restarts the app</b> while the store stays up, and reads it back — so the state truly lives in storage, not memory.</li>
+  </ul>
+  <p class='line-item'>The executor's own <b>success</b> claim is ignored everywhere — <b>the gate, not the model, is the oracle.</b> At the system level too: the architect's design, each service's build, and the cross-service E2E each face their own deterministic gate.</p>
+  <div class='foot'><span>dev-agent · how it works</span><span>09 / 11</span></div>
+</div></section>
+
+<!-- 10 · CONTAINMENT -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>containment</span></div>
+  <p class='eyebrow'>how it stays contained</p>
+  <h2>Disposable, secret-safe, deny-by-default.</h2>
+  <div class='cards three'>
+    <div class='tile'><div class='k'>disposable</div><div class='t'>docker run --rm</div><div class='d'>Every build runs in a throwaway non-root container. Nothing persists between runs but the app under <span class="kbd">runs/&lt;id&gt;/out/</span>.</div></div>
+    <div class='tile'><div class='k'>secret hygiene</div><div class='t'>key by env name</div><div class='d'>The API key is passed by environment name, never on the command line — and verify and deploy carry no key at all.</div></div>
+    <div class='tile'><div class='k'>egress allowlist</div><div class='t'>api + npm only</div><div class='d'>Build and verify sit on an internal network behind a CONNECT proxy that permits only <span class="kbd">api.anthropic.com</span> and the npm registry. Everything else is refused.</div></div>
+  </div>
+  <p class='line-item'>The deterministic spine that holds the model in: <b>orchestrator</b> (one pass per phase), <b>budget</b> (hard token / cost / time ceilings — one budget spans every concurrent sub-build of a system run), <b>ledger</b> (an append-only JSONL audit trail), and the <b>gates</b>.</p>
+  <div class='foot'><span>dev-agent · how it works</span><span>10 / 11</span></div>
+</div></section>
+
+<!-- 11 · WHAT YOU GET -->
+<section class='slide' data-lang='en'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>the output</span></div>
+  <p class='eyebrow'>what a green run leaves you</p>
+  <h2>A real, running app — and the receipts.</h2>
+  <div class='cards'>
+    <div class='tile'><div class='k'>the built app</div><div class='t'>runs/&lt;id&gt;/out/</div><div class='d'>The full source plus a pinned, rebuilt bundle — not a sketch, an app that compiles from scratch.</div></div>
+    <div class='tile'><div class='k'>a live preview</div><div class='t'>http://127.0.0.1:&lt;port&gt;</div><div class='d'>A preview container serves it on the host, gated on a real HTTP 200. Public, shareable hosting is a later pluggable adapter.</div></div>
+    <div class='tile'><div class='k'>a run report</div><div class='t'>report.html</div><div class='d'>A self-contained page: every phase, gate result, token + cost total, acceptance check, and the preview URL. System runs add <span class="kbd">system-report.json</span> — per-service verdicts + integration evidence.</div></div>
+    <div class='tile'><div class='k'>the audit trail</div><div class='t'>ledger.jsonl</div><div class='d'>An append-only event stream — every phase, gate, and terminal status. The complete trace of what happened, and why.</div></div>
+  </div>
+  <p class='oneline'>A PRD goes in. A built, verified, deployed app — or a whole system — comes out, <b>unattended.</b></p>
+  <div class='foot'><span>dev-agent · how it works</span><span>11 / 11</span></div>
+</div></section>
+
+<!-- ======================= 中文版 ======================= -->
+
+<!-- 1 · 封面 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>LLM 大脑 · 确定性双手</span></div>
+  <p class='eyebrow'>工作原理</p>
+  <h1>输入一份 PRD，<br>输出一个能跑的应用——甚至一整套系统。</h1>
+  <div class="pipe">
+    <div class="node"><div class="n">01</div><div class="ph">scope</div></div>
+    <div class="node"><div class="n">02</div><div class="ph">plan</div></div>
+    <div class="node"><div class="n">03</div><div class="ph">build</div></div>
+    <div class="node"><div class="n">04</div><div class="ph">verify</div></div>
+    <div class="node"><div class="n">05</div><div class="ph">deploy</div></div>
+  </div>
+  <p class='sub'>dev-agent 是一个无人值守的自主 Web 应用构建器。给它一份产品描述，它会自动完成需求界定、任务规划、编码构建、验证与部署——每一步之后都有一道确定性的闸门。给它一份更大的 PRD，它会自行设计出一个<b>多服务系统</b>，并用同样的方式构建每个服务。本文档介绍它是什么、怎么用。</p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>01 / 11</span></div>
+</div></section>
+
+<!-- 2 · 核心理念 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>核心理念</span></div>
+  <p class='eyebrow'>核心理念</p>
+  <h2>LLM 是大脑，确定性代码是双手。</h2>
+  <p class='sub'>模型决定<i>造什么</i>；纯 Python 掌控<i>流程怎么走</i>——阶段顺序、预算上限、以及每个阶段之后一道硬性的通过/失败闸门。构建过程自己说"成功了"从不被采信：闸门会重新检查磁盘上的真实产物。</p>
+  <div class='flow'><span class='c'>PRD</span> ─▶ scope ─▶ plan ─▶ build ─▶ verify ─▶ deploy ─▶ <span class='c'>预览 + 报告</span>
+   <span class='g'>└──── 任何一道闸门失败，运行立即停止并说明原因 ────┘</span></div>
+  <p class='line-item'>会调用 Claude 的模块：<b>scope</b>、<b>plan</b>、以及 <b>build 执行器</b>。其余一切——编排器、预算、账本、闸门、沙箱、验证器、出网代理——<b>完全不跑模型</b>。</p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>02 / 11</span></div>
+</div></section>
+
+<!-- 3 · 流水线 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>流水线</span></div>
+  <p class='eyebrow'>流水线</p>
+  <h2>五个阶段，每段之后一道闸门。</h2>
+  <div class='panel'><table>
+    <thead><tr><th>阶段</th><th>做什么</th><th>闸门</th></tr></thead>
+    <tbody>
+      <tr><td class='ph'>scope</td><td class='reason'>把任意请求归类为一份确认过的 <b>ProjectScope</b>——交付物类型、技术栈、存储方案；有歧义时会先提出澄清问题。</td><td class='gate'>recipe 已注册</td></tr>
+      <tr><td class='ph'>plan</td><td class='reason'>把 scope 拆成任务；每个任务独占一组互不重叠的文件，并行构建的 agent 之间永不冲突。</td><td class='gate'>文件所有权不相交</td></tr>
+      <tr><td class='ph'>build</td><td class='reason'>执行器编写应用并跑真实的工具链构建；修复循环（上限 2 次）把失败信息喂回去。</td><td class='gate'>产物存在</td></tr>
+      <tr><td class='ph'>verify</td><td class='reason'>在干净容器里从源码重新构建、启动应用、执行规格中机器可查的验收检查。</td><td class='gate'>构建 + 检查全绿</td></tr>
+      <tr><td class='ph'>deploy</td><td class='reason'>用预览容器在宿主机上提供服务，并证明 URL 真的有响应。</td><td class='gate'>HTTP 200</td></tr>
+    </tbody>
+  </table></div>
+  <p class='line-item'>编排器保持"笨"：<b>每个阶段只跑一遍</b>，闸门变红或预算超限即停。闸门是对产物的纯 pass/fail 代码——<b>绝不</b>采用模型的自我评价。在<b>系统级构建</b>中，同一条流水线会对每个服务各跑一次。</p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>03 / 11</span></div>
+</div></section>
+
+<!-- 4 · 使用方式 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>使用方式</span></div>
+  <p class='eyebrow'>两种入口</p>
+  <h2>从命令行触发，或从聊天触发。</h2>
+  <div class='cards three'>
+    <div class='tile'>
+      <div class='k'>cli · 最基本形式</div>
+      <div class='t'>devagent run --build</div>
+      <span class='cmd'>python -m devagent.cli run --build examples/tasks.md</span>
+      <div class='d'>一份 PRD 文件，产出一个构建 + 验证 + 部署完毕的应用，位于 <span class="kbd">runs/&lt;id&gt;/</span>。需要 Docker 和 <span class="kbd">ANTHROPIC_API_KEY</span>。不加 <span class="kbd">--build</span> 则跑到 <span class="kbd">plan</span> 为止（只用大脑）。</div>
+    </div>
+    <div class='tile'>
+      <div class='k'>cli · 系统级 · 新能力</div>
+      <div class='t'>devagent build-system</div>
+      <span class='cmd'>python -m devagent.cli build-system prd.md</span>
+      <div class='d'>一份 PRD，一整套<b>系统</b>：Architect 设计服务依赖图（DAG），每个服务在同一份共享预算下各跑完整流水线，然后一起启动、执行跨服务 E2E。</div>
+    </div>
+    <div class='tile'>
+      <div class='k'>飞书 · 在聊天里丢一份 PRD</div>
+      <div class='t'>@bot &lt;你的 PRD&gt;</div>
+      <span class='cmd'>python -m devagent.channels.feishu_bot</span>
+      <div class='d'>机器人通过 WebSocket 长连接接收 PRD（无需公网地址），跑<i>同一条</i>流水线，并把逐阶段进度和预览 URL 实时推回同一个聊天。<b>仅支持文本消息</b>——把 PRD 内容直接粘贴为消息正文。</div>
+    </div>
+  </div>
+  <p class='oneline'>底层是同一条流水线——渠道只改变<b>运行如何被触发。</b></p>
+  <p class='line-item'>一个接缝后面有两条构建臂：<b>DEVAGENT_EXECUTOR=sdk</b>（本地 Docker，默认）或 <b>managed</b>（Anthropic 托管沙箱）——<b>devagent eval</b> 用任务集对两者做 A/B 对比。</p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>04 / 11</span></div>
+</div></section>
+
+<!-- 5 · 运行位置 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>运行位置</span></div>
+  <p class='eyebrow'>运行位置</p>
+  <h2>Agent 跑在你的机器上，大脑在 Anthropic。</h2>
+  <div class='split'>
+    <div class='col local'><div class='h'>本地 · 你机器上的 docker</div><ul>
+      <li>Claude <b>Agent SDK</b> 运行时本身</li>
+      <li>写文件、<span class='kbd'>pnpm</span> / <span class='kbd'>tsc</span> 构建</li>
+      <li>verify：从源码重建 + 启动应用</li>
+      <li>deploy：预览容器 + 数据库容器（如有）</li>
+      <li>scope/plan 大脑、飞书机器人、整个 harness</li>
+    </ul></div>
+    <div class='col api'><div class='h'>远端 · anthropic api</div><ul>
+      <li>Claude <b>模型</b>——所有推理</li>
+      <li>用你的 <span class='kbd'>ANTHROPIC_API_KEY</span> 访问</li>
+      <li>单次构建成本（几美分到约 $0.50）</li>
+      <li>唯一离开本机的流量，</li>
+      <li>且经过出网白名单（API + npm）</li>
+      <li>B 臂：<span class='kbd'>DEVAGENT_EXECUTOR=managed</span> 把构建本身搬进 Anthropic 托管沙箱</li>
+    </ul></div>
+  </div>
+  <p class='oneline'>默认情况下 agent 和构建都跑在<b>你的硬件</b>上；思考发生在 <b>Anthropic 的服务器</b>上。一个环境变量即可把构建切到 Anthropic 的<b>托管沙箱</b>——同一条流水线，同样的闸门。</p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>05 / 11</span></div>
+</div></section>
+
+<!-- 6 · 能构建什么 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>构建目标</span></div>
+  <p class='eyebrow'>scope 优先</p>
+  <h2>需求决定形态。</h2>
+  <p class='sub'>scope 阶段读 PRD 并选定交付物——它不锁死在某一种应用形态。每种 scope 类型对应一个 <b>recipe</b>，负责准备正确的工具链；注册表是开放的，新目标类型可以直接加入而不动流水线。</p>
+  <div class='cards three'>
+    <div class='tile'><div class='k'>前端</div><div class='t'>node-vite-react</div><div class='d'>Vite + React + Tailwind 单页应用，以静态产物方式提供服务。</div></div>
+    <div class='tile'><div class='k'>后端</div><div class='t'>node-express</div><div class='d'>Express API，会被真实启动，并用 HTTP + JSON 检查探测。</div></div>
+    <div class='tile'><div class='k'>全栈</div><div class='t'>api + web</div><div class='d'>Monorepo 中两者兼有，逐目标构建、逐目标验证。</div></div>
+  </div>
+  <p class='line-item'>存储方案由 <b>agent 按 PRD 自行决定</b>：不用存储、进程内 <b>SQLite</b>、或托管 <b>Postgres / Mongo</b> 数据库——由 scope 模型选择，绝不靠操作员开关。需要<b>多个服务</b>的 PRD 会升级到系统级——见下一页。</p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>06 / 11</span></div>
+</div></section>
+
+<!-- 7 · 系统级构建 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>系统级构建 · 新能力</span></div>
+  <p class='eyebrow'>新能力 · build-system</p>
+  <h2>一份 PRD 进，一套服务体系出。</h2>
+  <div class="pipe">
+    <div class="node"><div class="n">01</div><div class="ph">architect</div><div class="meta">PRD → 服务 DAG + 契约</div></div>
+    <div class="node"><div class="n">02</div><div class="ph">build tree</div><div class="meta">每服务完整流水线</div></div>
+    <div class="node"><div class="n">03</div><div class="ph">bring up</div><div class="meta">每次运行独立网络</div></div>
+    <div class="node"><div class="n">04</div><div class="ph">integrate</div><div class="meta">跨服务 E2E</div></div>
+  </div>
+  <ul class='points'>
+    <li><b>Architect 负责设计，闸门负责复核。</b>模型产出一份 <b>SystemDesign</b>——服务（api、web、db…）、依赖 DAG、以及服务间的<b>契约</b>（OpenAPI、数据库 schema、认证）。确定性代码会全部重新校验：技术栈已注册、依赖可解析、无环、契约自洽。</li>
+    <li><b>每个服务都作为独立子构建</b>跑完整的五阶段流水线——按依赖顺序，无依赖的兄弟服务并发——共享<b>同一份线程安全预算</b>。某个服务失败只阻塞它的下游；其余照常构建。</li>
+    <li><b>最后整个系统一起自证：</b>构建好的服务在全新的每次运行专属网络上启动，声明的跨服务检查用真实 HTTP 执行，且清理必然发生——失败也会移除容器和网络。</li>
+  </ul>
+  <p class='line-item'><b>build-system prd.md</b> → 每服务判定 + 集成证据，写入 <b>runs/&lt;id&gt;/system-report.json</b>。端到端单测已验证；多服务实跑加固是当前的工作。</p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>07 / 11</span></div>
+</div></section>
+
+<!-- 8 · 架构 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>架构</span></div>
+  <p class='eyebrow'>整体架构</p>
+  <h2>完整全景。</h2>
+  <div class='flow'><span class='g'>触发方式</span>
+  <span class='c'>CLI</span>    run --build &lt;prd&gt; ─────────────────────▶ <span class='g'>单次运行通道</span>
+  <span class='c'>飞书</span>   @bot &lt;PRD&gt; ─▶ feishu_bot.py ─ 派生 ──▶ <span class='g'>单次运行通道</span>   <span class='g'>· 尾随 ledger.jsonl，把每个阶段</span>
+                                                                     <span class='g'>+ 预览 URL 实时推回聊天</span>
+  <span class='c'>CLI</span>    build-system &lt;prd&gt; ────────────────────▶ <span class='g'>系统级通道</span>
+
+<span class='g'>单次运行通道 · 每个阶段之后一道闸门</span>
+  scope ─▶ plan ─▶ build <span class='g'>（执行器接缝：SDK 臂在本地 Docker · managed 臂在托管沙箱）</span> ─▶ verify
+  <span class='g'>（从源码重建 + 启动 + 验收检查）</span> ─▶ deploy ─▶ <span class='c'>预览 URL · report.html · ledger.jsonl</span>
+
+<span class='g'>系统级通道 · 对每个服务各跑一次单次运行通道</span>
+  architect ─▶ SystemDesign <span class='g'>（DAG + 契约）</span> ─▶ <span class='g'>[architect 闸门]</span>
+  ├─ 按依赖顺序逐服务 <span class='g'>（兄弟服务并发 · 共享一份预算）</span>：
+  │     scope ─▶ plan ─▶ build ─▶ verify <span class='g'>— 免 deploy 子运行 · 注入其提供 + 消费的契约；</span>
+  │     <span class='g'>数据库节点跳过 LLM 构建（bring-up 时直接用 recipe 镜像）</span>
+  ├─ 启动<b>实际构建出的</b>目标 <span class='g'>（每次运行独立网络 · DATABASE_URL · 前端 apiBase · 健康探测）</span>
+  │     ─▶ 跨服务 E2E ─▶ <span class='g'>[集成闸门]</span>
+  └─ <span class='c'>system-report.json + design.json</span> <span class='g'>· 清理必然执行（容器 + 卷 + 网络）</span></div>
+  <div class='split'>
+    <div class='col api'><div class='h'>调用模型的部分</div><ul>
+      <li><b>architect</b> —— 设计整个系统</li>
+      <li><b>scope + plan</b> —— 每个服务的大脑</li>
+      <li><b>build 执行器</b> —— 写代码（SDK 或 managed 臂）</li>
+    </ul></div>
+    <div class='col local'><div class='h'>永不调用模型的部分</div><ul>
+      <li>两个编排器——阶段循环与构建树</li>
+      <li>所有闸门、预算、账本</li>
+      <li>验证器、部署、沙箱、出网代理</li>
+      <li>集成运行器——纯 HTTP 检查</li>
+    </ul></div>
+  </div>
+  <p class='oneline'>每个接缝都是<b>可注入的可调用对象</b>——run_node、bring_up、执行器——编排逻辑用假实现做单元测试，<b>同一份代码</b>直接实跑。</p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>08 / 11</span></div>
+</div></section>
+
+<!-- 9 · 信任模型 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>信任模型</span></div>
+  <p class='eyebrow'>为什么可以信任它</p>
+  <h2>Verify 不信任 Build。</h2>
+  <ul class='points'>
+    <li><b>在干净容器里从源码重建</b>，不带 API key——<span class="kbd">rm -rf dist && pnpm install --frozen-lockfile && pnpm build</span>。过期的、漂移的、或手工伪造的产物都过不了这一关。</li>
+    <li><b>真实启动应用</b>并实际调用它——HTTP 状态码、JSON 响应体、渲染后的 DOM 选择器。不问模型"成功了吗"；由检查计算出判定。</li>
+    <li><b>持久化靠证明，不靠承诺：</b>如果 scope 选了数据库，verify 会写入一条记录、在数据库保持运行的同时<b>重启应用</b>、再把它读回来——状态确实存在存储里，而不是内存里。</li>
+  </ul>
+  <p class='line-item'>执行器自己的 <b>success</b> 声明在任何地方都被忽略——<b>判定者是闸门，不是模型。</b>系统级同理：architect 的设计、每个服务的构建、跨服务 E2E，各自面对自己的确定性闸门。</p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>09 / 11</span></div>
+</div></section>
+
+<!-- 10 · 隔离 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>隔离与约束</span></div>
+  <p class='eyebrow'>如何保持受控</p>
+  <h2>用完即弃、密钥安全、默认拒绝。</h2>
+  <div class='cards three'>
+    <div class='tile'><div class='k'>用完即弃</div><div class='t'>docker run --rm</div><div class='d'>每次构建都在一次性的非 root 容器里进行。除 <span class="kbd">runs/&lt;id&gt;/out/</span> 下的应用外，运行之间不留任何东西。</div></div>
+    <div class='tile'><div class='k'>密钥卫生</div><div class='t'>按环境变量名传递</div><div class='d'>API key 只按环境变量名传入，从不出现在命令行——verify 和 deploy 则完全不携带任何 key。</div></div>
+    <div class='tile'><div class='k'>出网白名单</div><div class='t'>仅 api + npm</div><div class='d'>build 和 verify 位于内部网络，经 CONNECT 代理只放行 <span class="kbd">api.anthropic.com</span> 和 npm 仓库，其余一律拒绝。</div></div>
+  </div>
+  <p class='line-item'>约束模型的确定性脊柱：<b>编排器</b>（每阶段一遍）、<b>预算</b>（token / 费用 / 时间硬上限——系统级运行的所有并发子构建共享同一份预算）、<b>账本</b>（只追加的 JSONL 审计流）、以及<b>闸门</b>。</p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>10 / 11</span></div>
+</div></section>
+
+<!-- 11 · 产出 -->
+<section class='slide' data-lang='zh'><div class='deck'>
+  <div class='bar'><span class='logo'><b>◢</b> dev-agent</span><span class='sp'></span><span class='tag'>产出</span></div>
+  <p class='eyebrow'>一次全绿运行留给你什么</p>
+  <h2>一个真实运行的应用——外加全部凭据。</h2>
+  <div class='cards'>
+    <div class='tile'><div class='k'>构建好的应用</div><div class='t'>runs/&lt;id&gt;/out/</div><div class='d'>完整源码加上锁定版本、重新构建过的产物——不是草稿，是能从零编译的应用。</div></div>
+    <div class='tile'><div class='k'>在线预览</div><div class='t'>http://127.0.0.1:&lt;port&gt;</div><div class='d'>预览容器在宿主机上提供服务，以真实的 HTTP 200 为闸门。可公开分享的托管是后续的可插拔适配器。</div></div>
+    <div class='tile'><div class='k'>运行报告</div><div class='t'>report.html</div><div class='d'>一个自包含页面：每个阶段、闸门结果、token 与费用合计、验收检查、预览 URL。系统级运行另有 <span class="kbd">system-report.json</span>——每服务判定 + 集成证据。</div></div>
+    <div class='tile'><div class='k'>审计轨迹</div><div class='t'>ledger.jsonl</div><div class='d'>只追加的事件流——每个阶段、每道闸门、最终状态。发生了什么、为什么，完整可溯。</div></div>
+  </div>
+  <p class='oneline'>一份 PRD 进去。一个构建、验证、部署完毕的应用——或一整套系统——出来，<b>全程无人值守。</b></p>
+  <div class='foot'><span>dev-agent · 工作原理</span><span>11 / 11</span></div>
+</div></section>
+
+<div class='langsw'>
+  <button data-l='en'>EN</button>
+  <button data-l='zh'>中文</button>
+</div>
+<div class='nav'></div>
+<div class='hint'>← → · space · click</div>
+<script>
+(function(){
+  var all=[].slice.call(document.querySelectorAll('.slide'));
+  var nav=document.querySelector('.nav');
+  var swBtns=[].slice.call(document.querySelectorAll('.langsw button'));
+  var slides=[], dots=[], i=0;
+  var lang=new URLSearchParams(location.search).get('lang')
+        || localStorage.getItem('devagent-deck-lang') || 'en';
+  if(lang!=='zh') lang='en';
+
+  function show(n){ n=Math.max(0,Math.min(slides.length-1,n));
+    slides[i]&&slides[i].classList.remove('active'); dots[i]&&dots[i].classList.remove('on');
+    i=n; slides[i].classList.add('active'); dots[i]&&dots[i].classList.add('on'); }
+
+  function setLang(l){
+    lang=l; localStorage.setItem('devagent-deck-lang', l);
+    document.documentElement.lang = (l==='zh'?'zh-CN':'en');
+    swBtns.forEach(function(b){ b.classList.toggle('on', b.dataset.l===l); });
+    all.forEach(function(s){ s.classList.remove('active'); });
+    var keep=Math.min(i, 10);
+    slides=all.filter(function(s){ return s.dataset.lang===l; });
+    nav.innerHTML='';
+    dots=slides.map(function(_,k){
+      var d=document.createElement('button'); d.className='dot';
+      d.setAttribute('aria-label','slide '+(k+1));
+      d.addEventListener('click',function(ev){ ev.stopPropagation(); show(k); });
+      nav.appendChild(d); return d; });
+    i=keep; slides[i].classList.add('active'); dots[i].classList.add('on');
+  }
+
+  addEventListener('keydown',function(e){
+    if(['ArrowRight','ArrowDown',' ','PageDown'].indexOf(e.key)>-1){ e.preventDefault(); show(i+1); }
+    if(['ArrowLeft','ArrowUp','PageUp'].indexOf(e.key)>-1){ e.preventDefault(); show(i-1); } });
+  addEventListener('click',function(e){ if(e.target.closest('a,.dot,.langsw')) return; show(i+1); });
+  swBtns.forEach(function(b){ b.addEventListener('click',function(){ setLang(b.dataset.l); }); });
+  setLang(lang);
+})();
+</script></body></html>

@@ -1,50 +1,50 @@
 # dev-agent
 
-A headless, autonomous **web-app builder**: give it a PRD (or, later, a reference URL),
-and it produces a built, deployed web app — unattended. A deterministic Python harness
-drives bounded Claude calls (**LLM brain, deterministic hands**), with a deterministic
-gate between every phase.
+A headless, autonomous **web-app builder**: drop a requirement — a PRD file on the CLI, or a
+plain message in a Feishu chat — and it designs, builds, verifies, security-probes, repairs,
+and deploys a working multi-service web app, unattended. A deterministic Python harness drives
+bounded Claude calls (**LLM brain, deterministic hands**), with a deterministic gate between
+every phase.
 
-**Status: M6 complete — live-verified end-to-end.** `devagent run --build <prd>` runs
-`PRD → scope → plan → multi-target build → per-target rebuild-from-source verify → acceptance
-→ repair → deploy` in one command, gated at every phase. The pipeline is now **scope-first and
-flexible**: any request is classified into a confirmed `ProjectScope` (frontend, backend, fullstack,
-or any registered recipe) before building. Both A/B arms (`SdkExecutor` + `ManagedExecutor`)
-inherit the new flexible pipeline. **Live-verified (2026-06-25):** the fullstack tasks example
-(today's `examples/tasks.md`) built a
-real **Express API + Vite/React frontend** monorepo — scope classified `api`+`web`, the SDK arm
-built both (1 repair), the shared verify rebuilt each from source, **booted the backend** and passed
-all 6 per-target acceptance checks (`api_json /health` + `/api/tasks` serving real JSON, frontend
-`route_status`/`selector_present`), then deployed to a preview URL — **$0.13, ~4 min**. Previous
-M2/M3/M4 frontend-only loop also remains live-verified.
+**Status:** chat-driven system builds are live end-to-end. One Feishu message runs
+`architect → per-service builds → integration → security verify → repair → live preview`,
+publishes the code to its own GitLab repo (M7), and follow-up messages in the same chat update
+the running app in place (M25). Full history: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-## Two layers — don't conflate them
+## Quickstart
 
-There are two completely separate "which Claude tech" questions here:
+**Prerequisites**
 
-### 1. What we use to *develop* dev-agent → **Claude Code Agent Teams**
-The repo's code is built and reviewed by spawning **managed teammates** (the experimental
-Agent Teams feature) — parallel Claude Code sessions that review, fix, research, and
-build on disjoint files. This is our **dev-time tool**. It is interactive-only and is
-**not part of the product**.
+- Python 3.11+ and Docker (the sandbox, verify, and preview containers)
+- An Anthropic **API key** — billing is pay-per-token (~$0.15–0.50 per single build on Haiku,
+  more for multi-service systems). Pro/Max subscription auth is **not permitted** for
+  programmatic/headless use.
 
-### 2. What dev-agent *runs on* at runtime → depends on the phase
-| Phase | Runtime tech | Status |
-|---|---|---|
-| **Brain** — intake / spec / plan (emit validated artifacts, no code execution) | **Anthropic Messages API** (`anthropic` pkg, forced tool-use → pydantic) | ✅ built |
-| **Build Executor** — writes files, runs the build, iterates (the A/B seam) | arm A: **Claude Agent SDK** · arm B: **Claude Managed Agents** | ✅ A built+live · ◐ B built + live-verified (`DEVAGENT_EXECUTOR`) |
+**Install**
 
-The brain always uses **only the Messages API**. The **Agent SDK** and **Managed Agents**
-appear only behind the swappable `Executor` seam at the build step — that's where the A/B
-test lives. **Both arms are now wired and live-verified** (pick one with `DEVAGENT_EXECUTOR=
-sdk|managed`); the comparison itself (**M5**) is what remains.
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # add [feishu] for the chat bot
+sandbox/build.sh                       # build the devagent-sandbox:m2 image (once; needs Docker)
+mkdir -p ~/.config/local-agent-team
+cp .env.example ~/.config/local-agent-team/dev-agent.env     # fill in; chmod 600
+set -a; source ~/.config/local-agent-team/dev-agent.env; set +a
+```
 
-> Why the brain uses neither: intake/spec/plan are **shared** across both A/B arms and
-> only emit artifacts — the Messages API is the simplest correct tool. The
-> Agent-SDK-vs-Managed-Agents choice only matters where code is actually executed: the
-> build Executor.
+**First runs**
+
+```bash
+.venv/bin/python -m devagent.cli run examples/hello.md           # brain only: scope -> plan (cents)
+.venv/bin/python -m devagent.cli run --build examples/hello.md   # + contained build -> verify -> preview URL
+```
+
+`--build` is opt-in because it requires Docker and spends build tokens; without it a run stops
+after `plan`. Artifacts land in `runs/<id>/` — `scope.json`, `plan.json`, the append-only
+`ledger.jsonl`, a self-contained `report.html`, and the built app under `out/`.
+
+`examples/` are **BRD-level** requirement docs (see `examples/README.md`) — what the app must
+do, never endpoints/stacks/env vars; designing those is the agent's job.
 
 ---
 
@@ -61,42 +61,29 @@ PRD/URL ─▶ scope ─▶ plan ─▶ [ Executor ] ─▶ verify ─▶ deploy
    scope → any recipe type (frontend, backend, fullstack, CLI, MCP, ...)
 ```
 
-- **Deterministic harness** (`orchestrator.py`) owns sequencing, gates, budgets, and
-  stop conditions — control flow is code, never the model.
-- **Executor seam** (`executor.py`) is the one swappable component; everything else is
-  shared, which is what makes the A/B fair. `BuildResult.success` is the executor's
-  claim and is **not trusted** — gates re-check the produced repo.
-- **Hardened sandbox** (`sandbox.py`) — disposable `docker run --rm`, network-closed by
-  default, all caps dropped, read-only rootfs, non-root, `out/` the only writable mount.
-  Brain phases use a `NullSandbox` (host-side, no container).
+- **Deterministic harness** (`orchestrator.py`) owns sequencing, gates, budgets, and stop
+  conditions — control flow is code, never the model.
+- **Executor seam** (`executor.py`) is the one swappable component; everything else is shared.
+  `BuildResult.success` is the executor's claim and is **not trusted** — gates re-check the
+  produced repo on disk.
+- **Contained builds** — disposable `docker run --rm` containers, egress restricted to
+  api.anthropic.com + npm behind an allowlist proxy (`egress.py`), non-root, `out/` the only
+  writable mount.
 
-Design + research: `../docs/planning/dev-agent/specs/2026-06-22-dev-agent-research-synthesis.md`.
+### Two layers — don't conflate them
 
-> **One-page overview:** [`../docs/how-dev-agent-works.html`](../docs/how-dev-agent-works.html)
-> — a self-contained slide deck explaining **what dev-agent is and how to use it**: the pipeline,
-> the two ways in (CLI / Feishu), where each part runs (local Docker vs the Anthropic API),
-> verify-from-source, persistence, and containment. It explains the **overall process**, not a
-> single run. (Each build separately writes its own Anthropic-styled `runs/<id>/report.html` with
-> *that run's* phases / gates / cost / acceptance — generated by `report.py`.)
+1. **Runtime brain** — scope / plan / architect phases call the **Anthropic Messages API**
+   (forced tool-use → validated pydantic). No code execution.
+2. **Build executor** — the A/B seam where code actually gets written and compiled: arm A
+   `SdkExecutor` (**Claude Agent SDK** in our Docker sandbox, the default) vs arm B
+   `ManagedExecutor` (**Claude Managed Agents**, Anthropic-hosted sandbox). Pick with
+   `DEVAGENT_EXECUTOR=sdk|managed`. The A/B comparison itself (M5) has a built harness
+   (`devagent eval`) but the live baseline run is still pending.
 
-### How a request flows end-to-end
+(The repo is *developed with* Claude Code agent teams, but that's a dev-time tool — not part
+of the product.)
 
-A build can be triggered three ways. The CLI single run is the primitive; the **system lane**
-(`build-system`) wraps it once per service and adds the architect, cross-service integration, the
-security verify phase and the system repair loop. **Feishu — the chat interface — routes to the
-system lane**, so every chat requirement gets the full pipeline (a one-service requirement just
-yields a one-node design):
-
-- **CLI, single run:** `devagent run --build <prd.md>` (the primitive everything else wraps).
-- **CLI, system run:** `devagent build-system <prd.md>` (M20/M21) — an Architect designs a
-  multi-service system, each service gets the single-run pipeline as a sub-build, then bring-up,
-  cross-service integration, the security verify phase (M24) and the system repair loop (M23).
-- **Feishu:** drop a requirement into a Feishu chat → a bot spawns `build-system` and **streams
-  live progress back into the chat** (architect → per-service builds → repair/security → preview);
-  a follow-up message in that same chat updates the built app in place instead of starting fresh
-  (M25). See "Feishu channel" below.
-
-The single-run chain (the CLI primitive the system lane wraps once per service):
+### The single-run chain (the CLI primitive)
 
 ```
 CLI  ──  devagent run --build <prd>  ──▶  orchestrator.py     (host; LLM-brain, deterministic hands)
@@ -111,623 +98,272 @@ CLI  ──  devagent run --build <prd>  ──▶  orchestrator.py     (host; L
         │           + acceptance (boots the app,    (agent's    on 127.0.0.1:<port>
         │            persistence_survives_restart)   choice)         │
         └──────────────────────── ledger.jsonl (append-only event stream) ──────────────┘
-                                       │  the run's ledger + runs/<id>/report.html
-                                       ▼
-                              📋 scope ✓ · 🗂 plan ✓ · 🔨 build ✓ · 🚀 preview URL
 ```
 
-The system lane (`devagent build-system <prd.md>`) wraps that same pipeline per service.
-**One-flow rule (2026-07-03): the design is decided ONCE.** The architect's SystemDesign is
-the only scope authority — each sub-build gets a mechanically derived frozen scope (no second
-scope LLM call), and both the per-service acceptance checks AND the cross-service integration
-checks are derived from the frozen contracts (`contract_utils.derive_checks`), so one route
-can never be graded against two contradictory shapes (the Team Polls live-run failure class):
+Verify is the trusted re-check: it rebuilds the executor's output **from source** in a clean
+container (`--frozen-lockfile`), boots it, and runs the scope's acceptance checks
+(HTTP `route_status`, Playwright `selector_present`, auth-aware multi-actor flows, and
+`persistence_survives_restart`). Failures feed a bounded repair loop (cap 2).
+
+### The system lane (what Feishu uses)
+
+`devagent build-system <prd.md>` wraps the single-run pipeline once per service. **The design
+is decided ONCE**: the Architect's `SystemDesign` (service DAG + frozen contracts) is the only
+scope authority — each sub-build gets a mechanically derived frozen scope, and both per-service
+acceptance checks AND cross-service integration checks derive from the frozen contracts, so one
+route can never be graded against two contradictory shapes.
 
 ```
 PRD ─▶ architect ─▶ SystemDesign (service DAG + contracts) ─▶ [architect gate]
  ├─ per service, in dependency order (independent siblings concurrent · ONE shared budget):
- │      frozen scope ─▶ plan ─▶ build ─▶ verify  the same gated pipeline as above, as a sub-run
- │      (scope derived from the design via       · consumed + provided contracts in the prompt
- │       scope_for_node — checks derived from    · acceptance checks = derive_checks(contract)
- │       the node's provided contracts;          · each sub-run persists out/.devagent/scope.json
- │       datastore nodes skip the LLM build entirely — recipe image at bring-up)
- ├─ bring-up of the ACTUAL built targets (read from each sub-run's scope.json):
- │      per-run docker network devagent-sys-<run_id> · design datastore nodes named per-run
- │      (devagent-sys-<run_id>-<node> — runs and previews never rm -f each other)
+ │      frozen scope ─▶ plan ─▶ build ─▶ verify      (the gated pipeline above, as a sub-run;
+ │      datastore nodes skip the LLM build entirely — recipe image at bring-up)
+ ├─ bring-up of the ACTUAL built targets on a per-run docker network
  │      · DATABASE_URL injected from design-level datastore deps · frontend config.json → live api
- ├─ cross-service E2E over real HTTP — the SAME derived checks against the live system
- │      ─▶ [integration gate]
- └─ runs/<id>/system-report.json (+ preview urls) · on SUCCESS the system STAYS UP as the
-    preview (like a single-run deploy); teardown only on failure · the ledger's final
-    system_build_end carries the true post-integration status
+ ├─ cross-service E2E over real HTTP — the SAME derived checks ─▶ [integration gate]
+ ├─ security verify (M24) — deterministic probes (mass-assignment, missing-authz, IDOR, ...)
+ │      gate the run; LLM triage is advisory-only
+ ├─ system repair loop (M23) — failing steps attributed to services, targeted re-invoke,
+ │      fresh bring-up, full re-verify (bounded by DEVAGENT_MAX_SYSTEM_REPAIRS)
+ └─ on SUCCESS the system STAYS UP as the preview · runs/<id>/system-report.json
+    · git publishing (M7): each green service committed to the app's GitLab repo
 ```
 
-Feishu routes every chat requirement to **`build-system`** (the chat is the product interface, so
-it gets the full pipeline — the M23 repair loop and M24 security phase live only in the system
-lane). `feishu_bot.py` spawns `devagent build-system`, tails the run's ledger, and streams the
-system-level arc back to the chat — architect → per-service builds → `system_repair_start/end`
-(M23) → `security_not_run` advisories (M24) → `system_deploy` preview URL(s) → final status —
-suppressing the concurrent per-service sub-run noise. A one-service requirement yields a one-node
-design, so simple asks still work; the architect designs an underspecified request rather than
-stalling to ask. A follow-up message sent to a chat that already has a built app routes to
-`update-system` in place of a fresh `build-system` run (the bot persists `chat_id → run_dir` in
-`runs/chat-apps.json`, serialized per chat): data is preserved unless the change touches the data
-model, and explicit escapes ("new app", "start over", "from scratch", or their Chinese
-equivalents) force a fresh build (M25). A help/greeting message ("help", "what can you do?",
-"怎么用") gets a usage card back instead of being treated as a requirement.
+**Persistence is the agent's decision** — the scope phase picks none / in-process SQLite / a
+managed Postgres or Mongo datastore target per PRD. Verify holds every choice to the same bar:
+`persistence_survives_restart` (write → restart the app while the datastore stays up → read
+back). Deploy uses named volumes so preview data survives container restarts.
 
-- **Where it runs — you host the agent, Anthropic hosts the brain.** The split:
-  - **Local (Docker on your machine):** the **Claude Agent SDK runtime itself**, all file
-    writes, the `pnpm`/`tsc` builds, verify (rebuild-from-source + booting the app), and the
-    deploy preview container(s) — all in disposable `devagent-sandbox:m2` containers,
-    egress-contained behind an allowlist proxy (`egress.py`). The scope/plan **brain** runs on
-    the host too. The Feishu bot and the pipeline are local processes.
-  - **Remote (the Anthropic API):** only the **Claude model / inference**. Whenever the SDK (or
-    a brain phase) needs the model to *think or write code*, it calls `api.anthropic.com` with
-    your `ANTHROPIC_API_KEY`. That network round-trip is the **only** thing that leaves the box
-    (alongside npm), and it's the per-build cost (~$0.50). **The model weights never run locally.**
-  - In one line: **the agent and the build run on your hardware; the thinking happens on
-    Anthropic's servers.** Default arm is **SDK** (local Docker); `DEVAGENT_EXECUTOR=managed`
-    flips the agent itself to Anthropic's hosted sandbox instead.
-- **Agent-decided persistence:** if the PRD needs durable state, the **Scope LLM picks the
-  store** — none, in-process **SQLite** (`detail.persist_path`), or a managed **Postgres/Mongo**
-  datastore target (`detail.datastore` + `detail.conn_env`). Verify holds every choice to the
-  same bar: rebuild from source → boot → `persistence_survives_restart` (write a record, restart
-  the **app** while the datastore stays up, read it back). See "Persistence seam" below.
-- **Live preview is local:** deploy starts preview container(s) on `http://127.0.0.1:<port>` —
-  reachable **only on this host**. The Feishu chat gets all the progress + the URL, but the URL
-  opens on the machine running the bot. Public, shareable deploys are **M7/M8**.
-- **The run report** (`report.html`) is a self-contained styled page rendered from the ledger:
-  pipeline table, token/cost totals, acceptance checks, preview URL (`report.py`).
+**Where it runs:** the agent, builds, verify, and previews are all local (your Docker); only
+model inference goes to `api.anthropic.com`. The model weights never run locally.
+`DEVAGENT_EXECUTOR=managed` flips the build itself to Anthropic's hosted sandbox — useful for
+CI/shared runners with no docker-in-docker; pricier (session-hour charge on top of tokens).
 
-### Feishu channel (single app bot)
+**One-page visual overview:** [`docs/how-dev-agent-works.html`](docs/how-dev-agent-works.html).
+Full design docs: [`docs/specs/`](docs/specs/).
 
-`channels/feishu_bot.py` + `channels/feishu_app.py` — a **Feishu custom app** (one bot) that
-does **both** directions: it **receives** PRDs (event subscription over a WebSocket
-long-connection — no public URL) and **sends** progress/results back into the same chat via the
-app message API. Setup: a custom app with Bot enabled, scopes `im:message` + `im:message:send_as_bot`,
-event `im.message.receive_v1` (long-connection mode), published, and added to a DM or group
-(in a group it acts on **@mentions**; in a DM, on any message). Credentials live in
-`~/.config/local-agent-team/dev-agent.env` (`FEISHU_APP_ID` / `FEISHU_APP_SECRET`; template
-in `.env.example`), never committed — source it before starting the bot.
-
-> The older `channels/feishu.py` is a one-way **group-webhook** bot used only for best-effort
-> outbound notifications (e.g. scope-clarification questions on the CLI single-run path). It is
-> **not required** — the single app bot above covers the full Feishu UX. (The app bot drives
-> `build-system`, whose architect designs an underspecified request rather than asking, so there
-> is no clarification round-trip to relay.) Run the bot with `python -m devagent.channels.feishu_bot`.
-> Design: [`../docs/planning/dev-agent/specs/2026-06-23-dev-agent-feishu-channel-design.md`](../docs/planning/dev-agent/specs/2026-06-23-dev-agent-feishu-channel-design.md).
-
----
-
-## What's built (by module)
+### Modules
 
 | Module | Job | Uses Claude? |
 |---|---|---|
-| `orchestrator.py` `budget.py` `ledger.py` `gates.py` | harness: phase loop, hard ceilings, audit ledger, deterministic gates | no |
-| `sandbox.py` | `NullSandbox` for host-only brain phases (build/verify self-contain their own Docker; the M1 `Sandbox` class was retired) | no |
-| `schema.py` | pydantic `ProjectScope`/`ArtifactSpec`/`Plan` (scope is flexible + recipe-gated; Plan ownership is disjoint) | no |
-| `executor.py` | the `Executor` Protocol + frozen `BuildRequest`/`BuildResult` seam | no |
+| `orchestrator.py` `tree.py` `budget.py` `ledger.py` `gates.py` `config.py` | harness: phase loop + recursive service tree, hard ceilings, audit ledger, deterministic gates, env-driven config | no |
+| `schema.py` | pydantic `ProjectScope`/`Plan`/`SystemDesign` + contracts | no |
 | `llm.py` | `generate_structured()` — Messages API forced tool-use → validated pydantic | **Messages API** |
-| `phases/scope|plan.py` | the brain pipeline (scope classifies + clarifies; plan tasks the scope) | **Messages API** |
-| `phases/build.py` | `BuildPhase` — adapts an `Executor` into the pipeline; folds build tokens into the shared Budget; owns the **repair loop** (build → verify → repair, cap 2) | via Executor |
-| `executor_sdk.py` | `SdkExecutor` — arm A: contained Agent-SDK build (own disposable container); a repair pass is fed the prior verify diagnostics | **Agent SDK** |
-| `managed_executor.py` | `ManagedExecutor` — arm B: builds on **Claude Managed Agents** (hosted cloud sandbox), tars the result to `/mnt/session/outputs/`, pulls it back via the Files API | **Managed Agents** |
-| `verifier.py` | `BuildVerifier` — rebuild from source (`--frozen-lockfile`) **+ acceptance checks**; the trusted re-check (no API key) | no |
-| `acceptance_runner.py` | runs in-container: boots a static server on `dist/`, runs the spec's checks **kind-dispatched** (`route_status`=HTTP, `selector_present`=Playwright, lazy). **Auth-aware:** if a target declares an `auth` flow (login route + creds + token path), it logs in once and sends the token on every check marked `auth: true` (so auth-gated routes can be checked) | no |
-| `egress.py` `egress_proxy.py` | egress allowlist: an `--internal` network + a tiny CONNECT proxy (in the M2 image, no extra dependency) so build/verify reach only api.anthropic.com + npm | no |
-| `deploy.py` `phases/deploy.py` `preview_server.py` | M3 deploy: a detached container serves `dist/` (SPA fallback) on a host port → preview URL; `DeployGate` proves it answers 200 | no |
-| `report.py` | M3 run report: a self-contained `report.html` (phases, gates, tokens, cost, acceptance, preview URL) from the ledger | no |
-| `phase_gates.py` | `ScopeGate`/`PlanGate`/`BuildGate`/`VerifyGate` (scope gate checks recipe registry; build gates re-check the produced repo; they ignore the executor's `success` claim) | no |
-| `phases/noop.py` | M1 containment probe | no |
+| `phases/scope.py` `phases/plan.py` `phases/architect.py` | the brain: classify + clarify scope, task the plan, design the service DAG | **Messages API** |
+| `executor.py` `phases/build.py` | the `Executor` Protocol seam; `BuildPhase` owns the build → verify → repair loop (cap 2) | via Executor |
+| `executor_sdk.py` `sdk_runner.py` | arm A: contained Agent-SDK build; parallel per-target sessions (M12) | **Agent SDK** |
+| `managed_executor.py` | arm B: builds on Claude Managed Agents, pulls the tarball back | **Managed Agents** |
+| `verifier.py` `acceptance_runner.py` | rebuild-from-source + acceptance: HTTP/Playwright/auth-aware checks, restart-survival | no |
+| `system_build.py` `contract_utils.py` `integration.py` | system lane: architect → sub-builds → bring-up → cross-service E2E; checks derived from frozen contracts; M23 repair loop | no |
+| `security/` | M24 red-team: deterministic probes (gate) + LLM triage (advisory) | triage only |
+| `design_diff.py` | M25 updates: mechanical prior-vs-new design diff → rebuild set + data fate | no |
+| `gitops.py` | M7 publishing: lazy repo creation, per-green-service commits, finalize snapshot | no |
+| `egress.py` `egress_proxy.py` | egress allowlist: internal network + CONNECT proxy (api.anthropic.com + npm only) | no |
+| `deploy.py` `phases/deploy.py` `preview_server.py` | previews: datastore → backend → frontend bring-up, conn-URL injection, named volumes | no |
+| `report.py` | self-contained `report.html` per run (phases, gates, cost, acceptance, preview URL) | no |
+| `eval/` | M5 A/B harness: frozen fixtures, deterministic + blinded-judge + cost scoring | judge only |
+| `recipes/` | open recipe registry; external JSON manifests + declarative toolchain images (M11) | no |
+| `channels/` | Feishu app bot (inbound long-connection + outbound replies) | no |
 
 ---
 
-## Run
+## Usage
+
+### CLI
 
 ```bash
-python -m devagent.cli run examples/hello.md            # brain only: scope -> plan
-# -> "run-<id> succeeded  -> N tasks; artifacts in runs/<id>"
-# writes runs/<id>/{scope,plan}.json + an append-only ledger.jsonl
+python -m devagent.cli run <prd.md>                # brain only: scope -> plan
+python -m devagent.cli run --build <prd.md>        # + build -> verify -> repair -> preview URL
+python -m devagent.cli run --answers answers.md <prd.md>   # re-run with clarification answers
 
-python -m devagent.cli run --build examples/hello.md     # + contained build (needs Docker)
-# -> SdkExecutor builds -> rebuild-from-source verify + acceptance -> repair (cap 2)
-# -> deploy to a local preview URL -> writes runs/<id>/report.html
-# -> built app in runs/<id>/out/
+python -m devagent.cli build-system <prd.md>       # multi-service system from one PRD
+python -m devagent.cli build-system --repo <url> <prd.md>  # publish into an existing repo
+python -m devagent.cli update-system <run_dir> <change.md> # apply a change to a prior system, in place
 
-python -m devagent.cli run --build examples/tasks.md      # fullstack: backend + frontend + store
-# -> scope classifies into targets (node-express API + node-vite-react web + a datastore
-#    if the agent picks one) -> per-target build -> per-target verify -> deploy
-# examples/ are BRD-level requirement docs (see examples/README.md) — what the app must
-# do, never endpoints/stacks/env vars; designing those is the agent's job.
+python -m devagent.cli eval examples/corpus.json   # M5 A/B eval harness (real builds, real tokens)
 
-python -m devagent.cli run --answers answers.md examples/hello.md
-# -> re-run after providing answers to clarification questions
-
-DEVAGENT_EXECUTOR=managed python -m devagent.cli run --build examples/hello.md
-# -> the A/B arm B: builds on Claude Managed Agents (hosted cloud sandbox), pulls the
-#    result back, then the SAME shared verify/acceptance/deploy/report runs locally.
-
-DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001 python -m devagent.cli run --build examples/hello.md
-# -> second A/B axis (model quality/cost): pins the SDK build executor's model. Unset =
-#    the Agent SDK default. The brain (scope/plan) model is separate: DEVAGENT_LLM_MODEL
-#    (default claude-sonnet-4-6). Use a cheap model (Haiku) for test builds, a stronger one
-#    for prod/quality. Cost is also hard-capped per run by DEVAGENT_MAX_COST_USD (default $10).
-
-python -m devagent.cli build-system <prd.md>              # M20: multi-service system from one PRD
-# -> designs a multi-service system from a PRD (Architect -> SystemDesign), builds each
-#    service through the full scope->plan->build->verify pipeline (deploy-less: no preview
-#    containers in sub-runs) under one shared budget, with each service's consumed contracts
-#    injected into its build prompt (M16). Datastore nodes skip the LLM build and start from
-#    their recipe image. Bring-up reads each sub-run's out/.devagent/scope.json, starts the
-#    ACTUAL built targets per node (namespaced devagent-preview-<node>-<target>) on a per-run
-#    network, injects DATABASE_URL from design-level datastore deps, points frontend
-#    config.json at the live api, runs cross-service E2E, writes runs/<id>/system-report.json,
-#    and tears everything down (containers, volumes, network).
-
-python -m devagent.cli update-system <run_dir> <change.md>  # M25: apply a change to a prior
-#    system run, in place. Loads run_dir/design.json, re-runs the Architect in update mode
-#    (prior design + change → new SystemDesign, gated), mechanically diffs prior vs new to pick
-#    the rebuild set (changed services + their consumers, topo-ordered) and whether datastore
-#    volumes survive, rebuilds only those services in place under an UPDATE_PREFIX context, then
-#    reuses the same bring-up + integration + security reverify + M23 repair loop.
+DEVAGENT_EXECUTOR=managed  python -m devagent.cli run --build <prd.md>   # hosted build arm
+DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001 python -m devagent.cli run --build <prd.md>
+#   cheap model for test builds; brain model is separate (DEVAGENT_LLM_MODEL)
 ```
 
-`--build` is opt-in because it requires Docker (the M2 sandbox image) and spends build
-tokens. Without it, the default run stops after `plan` (still spends brain tokens).
+### Feishu bot (the chat interface)
 
-Brain phases spend tokens (Messages API). The key is read from `ANTHROPIC_API_KEY` — put
-it in `~/.config/local-agent-team/dev-agent.env` (template in `.env.example`) and `source`
-it, or export it. Billing is **pay-per-token** — the Agent SDK / Managed Agents both require
-an API key (Pro/Max subscription auth is not permitted for programmatic/headless use).
+Drop a requirement into a Feishu DM (or @mention the bot in a group) → the bot spawns
+`build-system` and streams live progress back into the chat (architect → per-service builds →
+repair/security → preview URL + repo link). A follow-up message in the same chat **updates the
+built app in place** (data preserved unless the change touches the data model); "new app" /
+"start over" / "from scratch" (or their Chinese equivalents) force a fresh build. Help/greeting
+messages get a usage card, not a build.
 
-## Configuration
+Setup: a Feishu **custom app** with Bot enabled, scopes `im:message` + `im:message:send_as_bot`,
+event `im.message.receive_v1` in **long-connection mode** (no public URL needed), published and
+added to a DM or group. Credentials go in `~/.config/local-agent-team/dev-agent.env`
+(`FEISHU_APP_ID`/`FEISHU_APP_SECRET`; template in `.env.example`). Run it:
+
+```bash
+python -m devagent.channels.feishu_bot        # foreground, from the source checkout
+bin/deploy-bot.sh                             # production: deploy-by-copy + restart
+```
+
+`bin/deploy-bot.sh` deploys the bot as a long-running service: it archives `master` into
+`~/.local/share/local-agent-team/bot/src` (the bot never runs from the dev checkout), installs
+into a persistent venv there, and restarts the process. `runs/` in the deploy dir persists
+across deploys — **live previews bind-mount run dirs, so never delete it while apps are up**.
+Note: the script currently archives the *monorepo* it lives in (`../..`) and installs
+`src/dev-agent` — if you run from a standalone clone of this repo, adjust those two paths.
+
+Design: [`docs/specs/2026-06-23-dev-agent-feishu-channel-design.md`](docs/specs/2026-06-23-dev-agent-feishu-channel-design.md).
+(The legacy `channels/feishu.py` group-webhook is outbound-only and optional.)
 
 ### Git publishing (M7)
 
-Set all three and every system build publishes to its own private GitLab project
-(created lazily on the first green service; updates keep committing to the same repo):
+Set all three and every system build publishes to its own private GitLab project (created
+lazily on the first green service; updates keep committing to the same repo):
 
-    DEVAGENT_GITLAB_URL=https://gitlab.example.com
-    DEVAGENT_GITLAB_TOKEN=<group access token, `api` scope, Maintainer>
-    DEVAGENT_GITLAB_GROUP=<group id or full path>
+```
+DEVAGENT_GITLAB_URL=https://gitlab.example.com
+DEVAGENT_GITLAB_TOKEN=<group access token, api scope, Maintainer>
+DEVAGENT_GITLAB_GROUP=<group id or full path>
+```
 
-To publish into an existing repo instead, include its URL (same GitLab host) in the
-build message — dev-agent branches off `develop` (or the default branch) as
-`devagent/<app>-<id>` and never touches your branches. CLI: `build-system --repo <url>`.
+To publish into an **existing** repo instead, include its URL (same GitLab host) in the build
+message — dev-agent branches off `develop` (or the default branch) as `devagent/<app>-<id>` and
+never touches your branches. CLI: `build-system --repo <url>`.
 
-Unset ⇒ publishing is off and the pipeline behaves exactly as before. Layout:
-`services/<name>/` per service, `README.md`, `.devagent/` (prd, design + contracts,
-change history). Per-green-service commits during builds/repairs; a finalize commit on
-success. Publish failures never fail a build — the chat gets one ⚠️ line; the done
-message carries `📦 Code: <repo url>`. The token is injected per push from the
-environment and never written to disk. The repo is a one-way projection: dev-agent
-writes it, never reads it — direct pushes to `services/` are replaced by the next
-chat-driven update (request changes via chat instead).
+Unset ⇒ publishing is off and the pipeline behaves exactly as before. Repo layout:
+`services/<name>/` per service, `README.md`, `.devagent/` (prd, design + contracts, change
+history). Publish failures never fail a build — the chat gets one ⚠️ line; the done message
+carries `📦 Code: <repo url>`. The token is injected per push from the environment and never
+written to disk. **The repo is a one-way projection**: dev-agent writes it, never reads it —
+direct pushes to `services/` are replaced by the next chat-driven update (request changes via
+chat instead).
 
-## Test
+---
+
+## Configuration
+
+All knobs are environment variables (see `config.py`; template in `.env.example`).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — (required) | pay-per-token key for all model calls |
+| `DEVAGENT_EXECUTOR` | `sdk` | build arm: `sdk` (local Docker) or `managed` (hosted) |
+| `DEVAGENT_LLM_MODEL` | `claude-sonnet-4-6` | brain model (scope / plan / architect) |
+| `DEVAGENT_BUILD_MODEL` | Agent SDK default | SDK build executor model (e.g. Haiku for test builds) |
+| `DEVAGENT_MANAGED_MODEL` | `claude-opus-4-8` | managed-arm model |
+| `DEVAGENT_MAX_COST_USD` | `10` | hard $ ceiling per run; `0`/empty disables |
+| `DEVAGENT_MAX_TOKENS` | `1000000` | runaway token ceiling per run |
+| `DEVAGENT_MAX_SECONDS` | `1800` | wall-clock ceiling per run |
+| `DEVAGENT_MAX_RETRIES` | `3` | shared retry budget across phases |
+| `DEVAGENT_MAX_SYSTEM_REPAIRS` | `1` | system-lane repair-loop passes (own counter) |
+| `DEVAGENT_BUILD_CONCURRENCY` | `3` | parallel per-target build cap: `min(targets, N)` |
+| `DEVAGENT_EGRESS` | `1` | egress allowlist on build/verify containers (`0` disables) |
+| `DEVAGENT_EGRESS_ALLOW` | api.anthropic.com + npm | comma-separated allowlist **override** for the proxy |
+| `DEVAGENT_M2_IMAGE` | `devagent-sandbox:m2` | sandbox/runtime image name |
+| `DEVAGENT_RECIPES_DIR` | unset | directory of external recipe manifests (M11) |
+| `DEVAGENT_RUNS_DIR` | `runs` | where run artifacts land |
+| `DEVAGENT_PREVIEW_PORT` | free port | fix the preview port instead of picking one |
+| `DEVAGENT_MANAGED_SESSION_HR_USD` | `0.08` | managed-arm session-hour rate folded into cost |
+| `DEVAGENT_SESSION_HR_USD` | `2.0` | eval only: machine-hour rate for all-in cost normalization |
+| `DEVAGENT_GITLAB_URL` / `_TOKEN` / `_GROUP` | unset | M7 publishing (all three required; unset = off) |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | unset | Feishu app bot credentials |
+| `FEISHU_WEBHOOK_URL` / `FEISHU_SECRET` | unset | legacy outbound group webhook (optional) |
+| `DEVAGENT_FEISHU_RUNS_DIR` | `runs` | bot: base dir for per-chat runs |
+| `SSL_CERT_FILE` | unset | combined CA bundle — a bare private CA breaks Feishu TLS (see Gotchas) |
+
+## Testing
 
 ```bash
 .venv/bin/python -m pytest -q                       # unit suite (no Docker, no tokens)
 .venv/bin/python -m pytest -q -m docker             # containment + sandbox (needs Docker)
 DEVAGENT_RUN_LIVE=1 .venv/bin/python -m pytest -q -m live   # live pipeline (spends tokens)
 ```
-`DEVAGENT_REQUIRE_DOCKER=1` makes the containment suite **fail** rather than silently
-skip when no Docker daemon is present (for CI).
+
+`DEVAGENT_REQUIRE_DOCKER=1` makes the containment suite **fail** rather than silently skip
+when no Docker daemon is present (for CI).
+
+## Sandbox image
+
+The product runtime is the `devagent-sandbox:m2` image (node + Agent SDK + pnpm + Playwright);
+the harness is just Python + a Docker daemon + an API key, so the loop runs anywhere Docker does.
+
+```bash
+sandbox/build.sh            # local: native-arch image into this machine's docker
+REGISTRY=ghcr.io/<you>/devagent-sandbox sandbox/build.sh multiarch   # amd64+arm64, pushes
+sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECIPES_DIR manifests
+```
 
 ---
 
-## Deploy
+## Limitations
 
-The product runtime is the `devagent-sandbox:m2` image; the harness is just Python + a
-Docker daemon + `ANTHROPIC_API_KEY`, so the whole loop runs anywhere Docker does. Containers
-are disposable (`docker run --rm`) — nothing persists between runs except the built app under
-`runs/<id>/out/`.
+- **Previews are local-only.** Deployed apps listen on `http://127.0.0.1:<port>` of the machine
+  running the pipeline — the Feishu chat gets the URL, but it only opens on that host. Public
+  deploys / CI-CD are the open M8 milestone.
+- **API key required.** All model calls are pay-per-token; Pro/Max subscription auth is not
+  permitted for headless use. Typical single builds run $0.15–0.50 (Haiku) — multi-service
+  systems more; the `DEVAGENT_MAX_COST_USD` cap (default $10) is the backstop.
+- **Greenfield only (for now).** Every build scaffolds a fresh app from a recipe; operating
+  inside an existing repo / detecting its stack (Java/Maven etc.) is the open M9 milestone.
+- **No URL intake.** "Clone this reference site" is designed-for but not built (reference-URL
+  fixtures were deferred with M5's live run).
+- **The A/B baseline hasn't been run.** Both executor arms are live-verified individually, but
+  the M5 corpus eval that would pick a winner on data is a pending manual kickoff. The managed
+  arm's Postgres/Mongo verify path is also not yet live-proven (SQLite is).
+- **Schema-changing updates reset app data.** M25 updates preserve the datastore only when the
+  `db_schema` contract is unchanged; migrations are a later milestone (the chat warns first).
+- **Interactive OAuth/SAML consent can't be deterministically verified** — federated auth is
+  verified against a mock IdP service; real-provider consent flows are flagged "not verified",
+  never faked.
 
-- **Build locally (this machine):** `sandbox/build.sh` → a native-arch image in your docker.
-- **Build for deploy:** `REGISTRY=ghcr.io/<you>/devagent-sandbox sandbox/build.sh multiarch`
-  → a `linux/amd64 + linux/arm64` image pushed to the registry. This Mac is **arm64**; most
-  servers are **amd64**, so an arm64-only image silently won't run there — multi-arch is
-  required (and, per a Docker limitation, can only output to a registry, so this mode pushes).
+## Gotchas — read before operating
 
-## Milestones
+- **Never delete `runs/` (or the bot deploy's `runs/`) while previews are up** — live preview
+  containers bind-mount `runs/<id>/out`; cleaning the directory breaks running apps.
+- **On success, a system build STAYS UP as the preview** — containers, volumes, and a per-run
+  docker network remain. That's the product (the chat's preview URL), but it accumulates:
+  stopped/replaced runs are torn down, successful ones are not.
+- **arm64 vs amd64:** a locally-built sandbox image on Apple Silicon is arm64-only and will
+  silently fail to run on amd64 servers — use `sandbox/build.sh multiarch` (pushes to a
+  registry; Docker limitation) when deploying elsewhere.
+- **Private-CA forges and Feishu in one process:** setting `SSL_CERT_FILE` to just your forge's
+  private CA breaks Feishu's TLS — use a **combined** bundle (public CAs + private CA), as noted
+  in `.env.example`.
+- **Managed-arm costs compound on repairs:** each repair pass re-runs a full hosted session
+  (tokens + session-hours). The SDK arm is the sane default on a Docker-capable host.
+- **`DEVAGENT_EGRESS_ALLOW` replaces the allowlist** (it doesn't extend it) — include
+  api.anthropic.com and the npm registry if you override.
+- **The token ceiling counts are calibrated** — cache-read tokens are cheap and excluded from
+  budget counting (`BuildResult.budget_tokens`); if you lower `DEVAGENT_MAX_TOKENS` below ~1M,
+  multi-target builds will falsely abort.
+- **GitLab tokens:** the M7 publisher needs a group access token with `api` scope and Maintainer
+  role; the token is env-injected per push and never written to disk.
 
-- **M1** ✅ — skeleton + hardened disposable sandbox (proves containment, no tokens)
-- **M2** ✅ — shared pipeline + `SdkExecutor` + verify/acceptance/repair + egress
-  - ✅ brain phases (intake → spec → plan), gated, live-verified
-  - ✅ M2 image (node + `claude` CLI + Agent SDK + pnpm); `SdkExecutor` **live-verified** —
-    contained Agent SDK built + `pnpm build`-compiled a Vite+React+Tailwind app from a
-    Spec+Plan in ~28s / ~$0.21
-  - ✅ wired `SdkExecutor` as a gated `BuildPhase` into the CLI (`run --build`): full
-    `PRD → spec → plan → contained build` in one command; `BuildPhase` folds build tokens
-    into the shared Budget; `BuildGate` re-checks the produced repo on disk (`dist/index.html`)
-    and **does not trust** `BuildResult.success`. Unit-verified with a fake executor (no
-    Docker/tokens); one gated live `--build` run still pending operator go.
-  - ✅ **deterministic build re-verification** + **repair loop** (`BuildVerifier` + `VerifyGate`,
-    loop in `BuildPhase`): rebuilds the executor's output FROM SOURCE in a clean container
-    (`rm -rf dist && pnpm install --frozen-lockfile && pnpm build`) — `--frozen-lockfile` is
-    the pinned-deps check; `rm -rf dist` ensures a real build produced the bundle. On failure
-    the executor is re-invoked with the verify diagnostics (`VerifyReport.log_tail` → the
-    runner's prompt), cap 2, each spending a shared-Budget retry. Needs no API key (runs no
-    model). Unit-verified with fakes (mocked subprocess); live container run pending operator go.
-  - ✅ **acceptance checks** (`acceptance_runner.py`, **kind-dispatched**): after a green
-    rebuild, boots a static server on `dist/` and runs the spec's `acceptance_checks` —
-    `route_status` over plain HTTP (no browser; this is also the seam a backend API would
-    reuse), `selector_present` via Playwright/chromium (imported lazily, only when a selector
-    check exists). Failures fold into `VerifyReport.log_tail` so the repair loop can fix them;
-    `VerifyGate` now requires build-green **and** all checks pass. M2 image gains Playwright.
-    HTTP path unit-tested against a real local server; the Playwright path is docker/live-gated.
-  - ✅ **token accounting fixed** + **full loop live-verified**: `sdk_runner` now reads the
-    terminal `ResultMessage`'s CUMULATIVE `usage` (input + cache-create + cache-read; the old
-    code dropped cache tokens — ~7× under-count) and persists the raw breakdown. Probed the
-    real SDK usage shape live; pure helper unit-tested against it. M2 image rebuilt with
-    Playwright; a live `--build` run went green end-to-end.
-  - ✅ **egress allowlist** (`egress.py` + `egress_proxy.py`): build/verify containers run on
-    an `--internal` Docker network (no direct route out) behind a tiny CONNECT proxy that runs
-    in the M2 image (python3 only — no extra image to pull) and permits only api.anthropic.com
-    + the npm registry. On by default (`DEVAGENT_EGRESS=0` to disable). Live-verified: a real
-    `--build` ran end-to-end through the proxy; allow/deny/no-direct-egress codified as a
-    docker-marked regression test.
-- **M2 done.** Full loop live-verified end-to-end (build + rebuild-from-source + acceptance
-  incl. Playwright + repair + egress + correct token accounting). Image: `sandbox/build.sh`.
-- **M3** ✅ — deploy → preview URL (local SPA preview container) + HTML run report. Verified
-  end-to-end (served a real build, gate got 200, report generated). Cloud static-host deploy
-  is a later pluggable adapter.
-- **M4** ✅ — `ManagedExecutor` (Managed Agents, arm B) behind the same Executor seam.
-  - ✅ **built + unit-verified** (`managed_executor.py`): builds the app on **Claude Managed
-    Agents** (a hosted cloud sandbox via `beta.{agents,environments,sessions,files}`, beta
-    `managed-agents-2026-04-01`, billed token rates + $0.08/session-hr) instead of our Docker.
-    Flow: create agent (`agent_toolset_20260401`) → cloud env → session → stream the Spec+Plan
-    to `session.status_idle` → the agent **tars the project to `/mnt/session/outputs/app.tar.gz`**
-    → pull it via `files.list(scope_id=session)` + `files.download` → extract to `workdir/out`
-    → delete session. The **shared** verify/acceptance/repair then re-checks the pulled output in
-    our egress-contained Docker — so the A/B stays fair. Select the arm with `DEVAGENT_EXECUTOR=
-    managed` (default `sdk`).
-  - **De-risk resolved (2026-06-24, 6 live probes):** outputs MUST go under `/mnt/session/outputs/`
-    (elsewhere is ephemeral) AND via **bash** (the model's `write` tool didn't reliably target it).
-    A diagnostic where the agent `ls`-verified proved the round-trip: file landed, `files.list`
-    surfaced it immediately, download matched. Hence the tarball-via-bash design.
-  - ✅ **live-verified (2026-06-24):** a real `DEVAGENT_EXECUTOR=managed --build` built a
-    Vite+React+Tailwind app on Managed Agents, tarred it, we pulled + extracted it, the shared
-    rebuild-from-source passed, and acceptance passed (`route_status /` 200 + `selector_present h1`).
-    First run surfaced one bug — the arm must write `out/.devagent/spec.json` for the shared
-    acceptance runner (SdkExecutor did; this didn't) — fixed + regression-tested. Note: the repair
-    loop re-ran the managed build twice on that (spurious) failure, so a managed run is pricier
-    than the sdk arm — capping/skipping repairs for the managed arm is worth considering.
-  - ✅ **managed token/cost captured** (2026-06-30): `_drain` accumulates the events' `usage` +
-    any reported `cost_usd` (defensive on the not-yet-frozen event schema), and `_cost_fields` adds
-    the wall-clock **session-hour charge** (`wall/3600 * SESSION_HR_USD`, default $0.08,
-    `DEVAGENT_MANAGED_SESSION_HR_USD`) — the cost component the SDK arm lacks. Both success and
-    no-tarball `BuildResult`s now carry `tokens_in/out` + `cost_usd`, so the A/B cost comparison
-    (M5) has honest managed numbers. **M4 done** (still bears the earlier-noted managed-repair cost
-    caveat; capping managed repairs is an M5-time tuning call).
-  - **When the managed arm actually matters (the case for keeping it).** On the current setup — a
-    local Docker-capable host, one operator, cost-sensitive — the **sdk arm is the right default**
-    and managed's session-hr premium isn't worth it. Managed earns its place precisely when the
-    pipeline stops running on a machine you control with Docker:
-    - **CI / the ops platform (M7–M8).** Builds triggered inside GitLab CI or on the Rancher/k8s
-      ops platform need **docker-in-docker / privileged containers** for the sdk arm — often
-      disallowed or a security no-go on shared runners. The managed arm builds in Anthropic's cloud;
-      the CI job just orchestrates and pulls the tarball. This is where M8 (CI/CD + deploy) is headed.
-    - **Concurrency beyond the host.** The sdk parallel build (M12) is capped at
-      `min(targets, 3)` because each target is a container + chromium on *our* box; a busy Feishu bot
-      (many PRDs / many targets) makes the host the bottleneck. Managed offloads concurrency to the
-      cloud.
-    - **A shared service, not a laptop.** As a team service, managed keeps it near-stateless — no
-      per-host Docker/capacity provisioning, no sandbox image shipped to every host.
-    - **Toolchains not baked into our image.** An exotic runtime means building a new
-      `devagent-sandbox` image (M11 toolchain images); managed's `agent_toolset` + unrestricted-net
-      cloud env may already cover it — less image maintenance.
-    - **Untrusted build steps off our infra.** The build runs generated code + `pnpm install` from
-      the net; on a production host, running that in Anthropic's sandbox instead of ours can be
-      preferable.
+## Roadmap
 
-    **Plan:** keep the managed arm in the seam (already built, zero ongoing cost), run the M5 A/B
-    **once** for a baseline quality/cost data point, then default routine runs to **sdk-only**
-    (`"arms": ["sdk"]` in the corpus). Revisit when M8 puts builds in CI / the ops platform.
-- **Execution order: M6 → M5 → M7 → M8 → M9.** (M5 reorder decided 2026-06-24; the old monolithic
-  M7 was split into M7/M8/M9 along the bind → CI → deploy seam on 2026-06-25.) M5's A/B was reordered to run *after*
-  M6 so the eval measures the **real full-stack workload** (frontend + backend + CLI), not a
-  toy frontend-only corpus — its whole job is to pick the executor arm, and that choice is only
-  as good as the workload it's measured on. The executor seam makes M6 mostly shared across both
-  arms, so "build on both then decide" costs little, and it avoids paying twice for the test.
-- **M6** ✅ *(complete — live-verified 2026-06-25)* —
-  **Flexible scope-first builder.** Inverted the pipeline: a new **Scope phase** turns *any*
-  request into a confirmed, flexible `ProjectScope` — deliverable type(s), stack, and repo-or-not
-  are **request-driven** (backend-only, MCP, frontend-only, fullstack, any language). Ambiguity
-  triggers a clarification loop (Feishu out / `--answers` in). Everything downstream dispatches
-  on the scope via an open **recipe registry**; toolchain is provisioned per project. Ships two
-  recipes: `node-vite-react` (frontend) + `node-express` (backend). CLI rewired:
-  `scope → plan [→ build → verify → deploy]`; `intake`/`spec` phases and `Brief`/`Spec`/`BriefGate`/
-  `SpecGate` retired. Both A/B arms inherit the new pipeline. **Live-verified:** a real Express
-  API + Vite/React frontend monorepo built, both targets rebuilt-from-source, backend booted +
-  all 6 per-target acceptance checks green, deployed (`DEVAGENT_RUN_LIVE=1`, ~$0.13/~4 min). The
-  first run surfaced a real calibration fix — the default `max_tokens` ceiling was raised
-  200k→1M (it counts cache-read tokens, and a 2-target build is ~320k+). Design:
-  [`../docs/planning/dev-agent/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md`](../docs/planning/dev-agent/specs/2026-06-24-dev-agent-m6-flexible-scope-builder-design.md).
-#### Persistence seam (agent-decided storage)
+| Milestone | What | Status |
+|---|---|---|
+| M5 | live A/B corpus run (sdk vs managed baseline numbers) | harness ✅ · live run pending |
+| M8 | ops: CI/CD + deploy per project (internal-ops-cli / generated `.gitlab-ci.yml` + k8s) | open |
+| M9 | brownfield: operate inside existing repos, detect stack (Java/Maven), fit existing CI | open |
+| M13 | team rollout (~10 users): concurrency, per-user isolation, shared service | open |
+| M18/M19 | checkpoint/resume for days-long runs; mutable contracts / renegotiation | open |
+| M22 | eval as change-gate: ledger telemetry + corpus replay before prompt/model changes | open |
+| M26 | production-bug capture → GitLab issues → confirm-first fix | design ✅ ([spec](docs/specs/2026-07-16-dev-agent-m26-prod-bug-capture-design.md)) |
 
-Storage is **the agent's per-PRD decision** — the Scope phase chooses one of three options:
-**none**, **SQLite** (in-process; declared via `detail.persist_path`), or a **managed datastore
-target** (`postgres` or `mongo`, declared via `detail.datastore` + `detail.conn_env`, default conn
-env `DATABASE_URL`). No operator input required.
+## Continuing development
 
-Managed datastores are declared as **service recipes** (`kind="service"`, carrying a `ServiceSpec`:
-image, port, env, volume_path, ready_cmd, conn_url_template). `postgres` (postgres:16-alpine) and
-`mongo` (mongo:7) are registered. Service recipes carry no source and no acceptance checks of their
-own.
-
-**Verify** — when the scope includes a datastore target — brings up a real sibling datastore
-container on a per-run Docker bridge network (alias = target name), readiness-polls it, injects the
-resolved connection URL into the rebuilt-from-source backend boot, runs acceptance checks including
-`persistence_survives_restart` (writes a record, **restarts the app process** while the datastore
-stays up, then reads it back — proving state lives in storage, not memory), and tears the container
-and its named volume down when done. Egress allowlist is preserved on the common path.
-
-**Deploy** orders datastores → backends → frontends, creates a shared network when datastores are
-present, injects each backend's connection URL, and uses a **named volume** so preview data survives
-`docker restart` of the app container.
-
-Live fixture: the durability tasks example (today's `examples/tasks.md`; `DEVAGENT_RUN_LIVE=1`
-required). **Live-verified
-(2026-06-25):** given the durability PRD, the agent autonomously chose **SQLite** (`persist_path:
-data/tasks.db`, no datastore target); the build rebuilt from source, booted the API, and all 8
-acceptance checks went green — including `persistence_survives_restart` (POST a task → kill &
-relaunch the API process → GET still returns it: *"id 2 present after restart"*) — then deployed a
-live preview. ~$0.53, ~10 min. The first attempt surfaced a real calibration fix: the runaway token
-ceiling was double-counting cache-read tokens (~0.1× cost), so a legitimate cache-heavy build (1.42M
-token_in, 1.33M cache-read) falsely aborted at 1M; the budget now counts expensive tokens only
-(`BuildResult.budget_tokens`). Unit suite: 173 passed, 3 skipped (the 3 skips are operator-gated live).
-
-Design: [`../docs/planning/dev-agent/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md`](../docs/planning/dev-agent/specs/2026-06-25-dev-agent-persistence-datastore-seam-design.md).
-Remaining follow-ups (non-blocking, tracked):
-  - ⬜ **live-validate the managed-datastore path** — run `examples/tasks.md`
-    (`DEVAGENT_RUN_LIVE=1`); its shared-data requirement nudges the agent to pick Postgres/Mongo, so
-    the sibling-container verify + deploy path gets live coverage (only SQLite is live-proven so far).
-  - ✅ **`max_cost_usd` ceiling** — a per-run dollar guard (uses the SDK's exact `cost_usd`) as the
-    project-agnostic runaway bound, complementing the now-cache-read-excluded token ceiling. `Budget`
-    grows a `max_cost_usd`; `BuildPhase._build` calls `budget.add_cost(result.cost_usd)` so a doomed
-    repair loop aborts via `BudgetExceeded` on real spend. Default **$10** (`DEVAGENT_MAX_COST_USD`;
-    raise for prod, `0` disables).
-  - ✅ **auth-aware acceptance** *(live-verified 2026-06-30)* — `AcceptanceCheck.auth` (bool) + an
-    optional `ArtifactSpec.auth` `AuthFlow` (login route/creds + `token_json_path`, optional register).
-    The runner logs in once and sends `Authorization: Bearer <token>` on `auth: true` checks; unauth
-    checks (e.g. 401-without-token) stay `auth: false`. Three seams kept consistent so the *model*
-    declares the contract and deterministic code executes it: (1) the **scope prompt** declares the flow
-    + marks protected checks; (2) `enrich_scope` carries the flow into the in-container scope the runner
-    reads; (3) the **build prompt** surfaces the exact register/login bodies + token path as a hard
-    contract so the built app implements matching auth (no invented `email` field). **Live-proven:** the
-    full todo+login+logout PRD built, logged in, and passed `/auth/me` + auth-gated
-    `persistence_survives_restart`, then deployed — **$0.15 on Haiku**.
-  - ✅ **configurable build model** (`DEVAGENT_BUILD_MODEL`) — the SDK build executor's model is now a
-    per-run knob (unset = SDK default), the second A/B axis (model quality/cost) orthogonal to the
-    executor arm. Cheap model (Haiku) for test builds, stronger for prod. Brain model stays separate
-    (`DEVAGENT_LLM_MODEL`).
-  - ✅ **hardened `preview_server.py`** — was a single-threaded `TCPServer` that died on a hung/dropped
-    client (container stayed `Up`, port unresponsive); now `ThreadingHTTPServer` + per-request error
-    swallow + a supervisor loop that rebinds on any crash, and deploy runs preview/datastore containers
-    with `--restart unless-stopped`.
-
-- **Feishu channel** ✅ *(shipped + live-verified 2026-06-30; design [2026-06-23](../docs/planning/dev-agent/specs/2026-06-23-dev-agent-feishu-channel-design.md))* —
-  a **single Feishu app bot** (`channels/feishu_bot.py` + `feishu_app.py`) where a member drops a PRD
-  into a DM (or @mentions the bot in a group) → autonomous build → **preview URL + report posted
-  back in-thread**, with **live phase-by-phase progress** streamed from the ledger as the run executes.
-  Inbound is an `im.message.receive_v1` event subscription over a WebSocket long-connection (no public
-  URL); outbound replies via the app message API. **Live-proven:** a chat message drove a full
-  scope→plan→build→deploy run with progress streamed back. (The older `channels/feishu.py` group-webhook
-  is outbound-only and now superseded.)
-
-- **M5** ◐ *(harness built + unit-verified 2026-07-01 — design [2026-07-01](../docs/planning/dev-agent/specs/2026-07-01-dev-agent-m5-eval-ab-test-design.md))* —
-  **eval corpus + the A/B test** (the two empirical unknowns: quality, cost). `devagent eval
-  <corpus>` freezes scope+plan ONCE per fixture (both arms build byte-identical bytes — the
-  fairness rule), builds each arm **N=2×**, and scores each run on three axes: **deterministic
-  acceptance** (from `VerifyReport` — authoritative), a **blinded per-criterion LLM judge**
-  (spec-completeness / code-quality / craft, arm label stripped), and **dual-normalized cost**
-  (model-token vs all-in incl. session-hr). Resumable under `runs/eval/<id>/`; the managed arm
-  degrades gracefully when its API is unreachable. Corpus is a JSON manifest (`examples/corpus.json`:
-  3 fixtures easy→hard incl. an auth/roles one). ✅ **harness + judge + report unit-verified**
-  (fakes, no Docker/tokens); ⬜ **the live corpus run** (real builds, real tokens — the actual A/B
-  numbers) is a manual kickoff. Reference-URL clones + SSIM deferred (no URL intake yet).
-- **M7** ⬜ — **Git destination binding (where output lands).** Every run **binds to a target git
-  repo *before* execution**, confirmed with the operator **per trigger** (comms over **Feishu**):
-  - **Where code lives:** dev-agent *itself* lives in the operator's **GitHub** (this repo). The
-    **output** destination *depends* — **default Acme GitLab** — and is confirmed per trigger.
-  - **The per-trigger question (always asked):** commit the built output to a **separate repo**,
-    **no commit needed**, or **somewhere specific** (ask where).
-  - **Repo resolution:** does the target repo **already exist**? if **not, create it** (ask where).
-    **New project → monorepo**; **existing project → multi-repo allowed**.
-  - Ships a `GitLabDeployer` (GitLab API / `glab` + git push, optional MR) behind the deploy seam.
-  - **Self-contained** — makes generated apps actually *land* somewhere (today they're throwaway
-    under `runs/`). **No CI/deploy yet — that's M8.**
-- **M8** ⬜ *(after M7)* — **Ops: CI/CD + deploy, per project.** With the repo bound (M7), set up
-  the pipeline and ship it. Two paths; **prefer the ops platform for Acme**:
-  - **Preferred — `internal-ops-cli`:** register the app from its GitLab URL on the ops platform (portal
-    `192.0.2.5`); the platform provisions CI/CD; trigger builds; deploy to **test/uat/prod**.
-    Far less to maintain than hand-rolled YAML, and it *is* Acme's platform.
-  - **Alternative — generate CI:** a **path-scoped `.gitlab-ci.yml` generator** (per-target
-    templates keyed off M6's recipes; reuses the per-dir `changes:`-gated monorepo-CI pattern) +
-    **k8s deploy** (`kubectl set image`, scoped `gitlab-deployer` ServiceAccount) — matching the
-    real `acme-app` pipeline (`test → push image → deploy` to the `acme-app` namespace on Rancher).
-- **M9** ⬜ — **Brownfield (existing repos / Java).** Operate *inside* an existing repo instead of
-  scaffolding greenfield: git-clone the bound repo, **detect** its stack (e.g. Java/Spring Boot/
-  Maven) rather than pick one, build/verify with its existing toolchain + tests (the compile-only
-  gate pattern), and fit its existing CI. Adds a JDK+Maven toolchain image and a brownfield
-  detection path to the recipe registry. The realistic Acme backend case (new projects stay
-  greenfield-modern; older projects are Java).
-- **M10** ✅ *(built + unit-verified 2026-06-30)* — **Auth & access depth (model-declared, not
-  hardcoded).** Widened the auth *vocabulary* (never per-app code) so the scope model declares
-  richer auth and the runner executes whatever it declared:
-  - ✅ **Sessions / cookie auth** — `AuthFlow.mode = bearer|cookie`; the runner captures `Set-Cookie`
-    at login and replays `Cookie` on later checks (`acceptance_runner._cred_cookie`). Cookie mode
-    needs no `token_json_path`.
-  - ✅ **Roles / permissions (authz)** — the single flow generalizes to named **actors**
-    (`ArtifactSpec.actors`, each an `AuthFlow` with a unique `name` + `role`); checks carry
-    `as: <actor>` + `expected_status`, so the model declares a real permission matrix
-    (`as: admin → /admin → 200`; `as: member → /admin → 403`). The runner logs in as each actor
-    once and asserts the status per actor; the build prompt gets the actor contracts as the matrix.
-  - ✅ **Federated / third-party (LDAP, OIDC, SAML)** — verify runs sealed, so a real provider is
-    unreachable **by design**. Handled via the **service-recipe seam**: the backend declares
-    `detail.idp` (a seeded mock-IdP **service** target) + `detail.idp_env`; verify stands it up on
-    the per-run network and injects `<idp_env>=<issuer-url>` so the app authenticates against *that*
-    (mirrors the datastore injection). Real interactive OAuth/SAML consent is **not** deterministically
-    verifiable — the scope prompt flags "not verified", never fakes a pass. *(Live bring-up of a
-    specific mock-IdP image is the natural next step; the seam + injection are unit-verified.)*
-- **M11** ✅ *(complete 2026-06-30)* — **Declarative extensibility — add languages/recipes without
-  editing dev-agent.**
-  - ✅ **declarative recipe loading**: `recipe_from_dict` + `load_external_recipes` parse `*.json`
-    recipe manifests from `DEVAGENT_RECIPES_DIR` (each a recipe dict or a list: `toolchain.image`,
-    `build_cmd`, `artifact_glob`, `boot`, `supported_checks`, optional `service` spec) and merge them
-    into `REGISTRY` at import — a manifest with a built-in's name overrides it; a malformed manifest
-    fails loudly (naming the file). Because the scope catalog iterates the registry, a dropped manifest
-    is **immediately offered to the model** and the whole pipeline dispatches on it with **no code
-    change**. Proven: a `python-flask.json` registered and appeared in the scope catalog.
-  - ✅ **toolchain images**: a manifest can now ship a NEW toolchain as data — `toolchain.dockerfile`
-    names a Dockerfile (relative to the recipes dir) that builds `toolchain.image`. `devagent.recipes.
-    toolchains.toolchain_build_specs` maps manifests → docker-build specs (deduped by image) and
-    `build_all` runs them; `sandbox/build.sh recipes` is the operator entrypoint. Prebuilt toolchains
-    (the bundled `devagent-sandbox:m2`, node + python3) declare no `dockerfile` and need no build.
-  - ✅ **declarative auth styles**: closed by M10 — the runner dispatches on `AuthFlow.mode` via the
-    `_CRED_BUILDERS` table against the open `KNOWN_AUTH_MODES` vocabulary, so an auth style is a
-    dispatch-table entry (data-not-code), exactly like a stack is a recipe.
-- **M12** ✅ *(built + unit-verified 2026-06-30 — design [2026-06-30](../docs/planning/dev-agent/specs/2026-06-30-dev-agent-m12-parallel-team-build-design.md))* —
-  **Parallel / team build.** `PlanGate` already enforces **pairwise-disjoint file ownership**
-  *precisely so parallel build agents never collide*. M12 uses the seam: a **fresh** build whose
-  plan **cleanly partitions** across its `kind=="build"` targets (every target owns ≥1 task, every
-  task in exactly one target) runs **one contained SDK session per target concurrently** (web ∥ api,
-  each its own container/`node_modules`/build, all mounting the shared `/out` — writes disjoint by
-  target dir). `SdkExecutor.build()` writes a per-target scope + plan slice, runs them on a worker
-  pool capped at `min(targets, DEVAGENT_BUILD_CONCURRENCY|3)`, and aggregates into one `BuildResult`
-  (tokens/cost **summed**, `wall_clock_s` = **max**, failures surfaced in target order). Any plan
-  that doesn't cleanly partition (a shared/root task, a cross-target task, a target with no tasks),
-  a **repair pass**, and single-target scopes all take the original **sequential** single session —
-  so the disjoint-`/out` invariant is *guaranteed*, never assumed. The full enriched scope is still
-  written to `.devagent/scope.json`, so **verify/acceptance/deploy and the repair loop are untouched**
-  — parallelism is internal to the Executor seam. *(Follow-up: a large, coupled single target fanning
-  out to a lead agent + subagents on its disjoint files — the intra-target agent-team pattern — needs
-  the in-container SDK's Task tool and a live run to verify; the concurrent-target capability is the
-  headline deliverable and is shipped.)*
-- **M13** ⬜ — **Team rollout (multi-user service, ~10 users).** Foreseen: dev-agent stops being
-  "the thing on one operator's Mac" and is given to a team of ~10. That crosses the threshold where
-  the managed arm actually matters (see M4's "When the managed arm actually matters" note) — several people dropping PRDs at once makes a single host
-  the bottleneck (the sdk parallel build is capped at `min(targets, 3)` because each target is a
-  container + chromium on *our* box), and running it as a shared service means no machine to babysit.
-  Concretely, this milestone is about:
-  - **Concurrency & capacity** — many simultaneous builds without a single host melting: either
-    offload to the **managed arm** (cloud build, no local Docker pressure), a build queue/worker pool,
-    or per-user resource caps. Decide from the M5 A/B numbers + observed load.
-  - **Per-user isolation** — runs, previews, and (M7) repo bindings scoped per user; the Feishu bot
-    already keys on `chat_id`, so identity is there — extend it to per-user runs dirs, quotas, and
-    cost ceilings (`DEVAGENT_MAX_COST_USD` per user, not global).
-  - **Shared deployment** — dev-agent runs as a service (likely in CI / the ops platform, i.e. after
-    M8), not a laptop process — which is itself the strongest case for the managed arm (no
-    docker-in-docker on shared runners).
-  - **Not needed until the team actually gets it** — captured now so the managed arm, per-user
-    scoping, and the M5 baseline are lined up before rollout, not scrambled for after.
-- **M14–M19** ⬜ — **Long-horizon multi-service builder** (design
-  [2026-07-02](../docs/planning/dev-agent/specs/2026-07-02-dev-agent-long-horizon-builder-design.md)).
-  One PRD → dev-agent **designs the services itself** and builds a whole system over a
-  long-horizon (hours→days) autonomous run — **N bounded sub-builds under a durable
-  architecture**, not one flat mega-build (budget was never the blocker; flat plans lose
-  coherence long before tokens run out). Recursive-pipeline spine (**A**) shaped so mutable
-  contracts (**C**) is additive; autonomous with hard self-verification gates now →
-  fully-autonomous report-at-end as the north star. Depends on **M7** (durable repo
-  accretion); composes with **M9** (brownfield reuses M19's contract renegotiation).
-  - **M14** — **Architect phase.** PRD → `SystemDesign` (service DAG + **frozen** contracts +
-    data model + auth model), gated (`ArchitectGate`: schema-valid, acyclic, contracts resolve).
-  - **M15** — **Recursive orchestrator.** Flat `list[Phase]` → **tree**; each service node runs
-    the existing `scope→plan→build→verify` pipeline as an isolated sub-run (per-node budget,
-    dependency ordering, sibling concurrency — M12's parallelism lifted to service granularity).
-  - **M16** — **Contract injection + conformance.** Freeze OpenAPI/DB-schema/auth-token, inject
-    read-only into each sub-build; `ContractConformanceGate` (the frozen→mutable seam:
-    fail-stop in A, `ContractChangeRequest` in M19/C).
-  - **M17** — **Integration verification** *(the litmus)*. Generated `docker-compose.yml`; bring
-    the 3–5 services up together; cross-service E2E gate (frontend → real API → real DB → auth).
-  - **M18** — **Checkpoint/resume + cost governance.** Durable tree state (reuse the M5 eval
-    resume pattern); resume a days-long run after crash; global run envelope.
-  - **M19** — **Mutable contracts (→ C).** Versioned `SystemDesign`; a sub-build renegotiates,
-    the orchestrator re-plans affected nodes. Unlocks robust brownfield (M9).
-
-- **M20** ✅ — **system-build wiring.** `devagent build-system <prd.md>` runs end-to-end:
-  Architect → per-service sub-builds (M15 tree, one shared Budget) → docker bring-up on a
-  per-run `devagent-sys-<run_id>` network → cross-service E2E (M17) →
-  `runs/<id>/system-report.json`, with teardown on every path (including exceptions). Design:
-  [2026-07-02](../docs/planning/dev-agent/specs/2026-07-02-dev-agent-system-build-wiring-design.md).
-
-- **M21** ✅ — system-build live path: datastore nodes from recipe images (no LLM build),
-  deploy-less sub-runs (no preview collisions), consumed-contract injection into sub-builds,
-  bring-up wired from each sub-run's scope.json via the extracted `deploy.wire_targets`
-  (conn env + frontend apiBase + per-node namespacing). Design:
-  [2026-07-02](../docs/planning/dev-agent/specs/2026-07-02-dev-agent-m21-system-live-path-design.md).
-
-- **One-flow** ✅ (2026-07-03) — **the design is decided once; checks derive from contracts.**
-  Live Team Polls runs failed 4/4 because THREE independent LLM calls specced the same route
-  (architect integration checks, each sub-run's re-scope, the contract) and contradicted each
-  other — no build could satisfy all. Fixes: sub-builds get a FROZEN mechanical scope
-  (`system_build.scope_for_node` + `FrozenScopePhase`, per-service ScopePhase deleted from the
-  lane); acceptance AND integration checks are derived from the frozen contracts
-  (`contract_utils.derive_checks` / `derive_integration_checks`, architect prose checks used
-  only as fallback); success keeps the brought-up system as the preview (urls in report +
-  ledger `system_deploy`); design datastore nodes get per-run container names; the ledger's
-  final `system_build_end` is post-integration truth (tree verdict renamed `tree_build_end`).
-  Review: [2026-07-03](../docs/planning/dev-agent/specs/2026-07-03-dev-agent-single-flow-review.md).
-
-- **M22** ⬜ — **Eval as change-gate (extends M5 — no scheduled burn).** Two halves: (a) **free
-  telemetry** — aggregate pass-rate / retries / cost-per-phase from real run ledgers
-  (`ledger.jsonl` already records it; zero new tokens); (b) **change-triggered corpus replay** —
-  before merging prompt/pipeline/model changes, replay the M5 corpus (or a subset) and diff
-  deterministic acceptance + cost against a stored baseline. Policy: an eval run must answer a
-  live decision (SDK-vs-managed backend, model-tier per phase, prompt regression) — never runs
-  on a schedule. First action is the pending **M5 live corpus run** to establish the baseline.
-
-- **M23** ✅ — **system-level repair loop.** On cross-service verification failure, `build_system`
-  deterministically attributes failing steps to their build-kind nodes (`implicated_nodes`) and
-  re-invokes the executor on each node's existing `out/` with the full report as `repair_context`
-  (via `run_node`'s seam; frozen scope + persisted plan reloaded through `FrozenPlanPhase`, no
-  re-plan), then tears down, brings the system up fresh, and re-verifies the full suite
-  (integration + security once M24 lands). Bounded by its own counter, `max_system_repairs`
-  (default 1) — not the shared retry budget. `SystemReport.repairs` records every pass; ledger
-  events `system_repair_start`/`system_repair_end` trace it.
-  Design: [2026-07-06](../docs/planning/dev-agent/specs/2026-07-06-dev-agent-system-repair-loop-design.md).
-
-- **M24** ✅ — **security verify phase (red-team).** Functional checks verify the contract was
-  *met*, never that it's *safe* — a live run shipped `POST /auth/register` accepting `role=admin`
-  (privilege escalation) with every check green. `SecurityVerifyPhase` probes the brought-up
-  preview (`base_urls` + the synthesized `AuthFlow`, plus a second registered principal for
-  IDOR/authz) with a deterministic probe library keyed off the frozen contract — mass-assignment,
-  missing-authz, cross-user IDOR, weak-registration, verb-tampering — then a fail-safe LLM triage
-  pass expands/classifies (it never gates on its own; the deterministic findings still gate when
-  the triage API is down). Provenance is enforced, not assumed: every `Finding` carries a
-  `source` (`probe` | `triage`), `triage()` stamps its own emissions `triage`, and only `probe`
-  findings can gate — so triage's spec-reading speculation surfaces as advisory but never fails a
-  build (a live run failed a *flawless* app to `integration_failed` when triage findings gated;
-  because that speculation is a function of the frozen contract, it re-fired every re-verify and
-  made the M23 repair loop unwinnable). A gating ruleset partitions the findings: `GATING_KINDS`
-  (mass_assignment, missing_authz, idor) fail the run, with a `(route, probe-class)` escape hatch
-  for a design-declared intentionally-open pair — `mass_assignment` is never escape-hatchable, so
-  the July-3 bug can't be waived away. Gating findings render as M23 failing steps and feed its
-  repair loop through `build_system`'s `security_verify` seam (`reverify` runs the combined
-  integration+security suite on the initial pass and every post-repair pass); the single-run path
-  (`devagent run --build`) has no repair loop, so it reports the gate and fails rather than
-  auto-repairing. `SystemReport.findings` carries the run's full findings list (gating and
-  advisory) regardless of outcome. Regression-guarded: `test_security_probes.py` fixtures pin the
-  July-3 vulnerable app (reflected `role=admin` → exactly one `mass_assignment` gating finding)
-  and a safe app (no reflection, protected routes 401 → zero gating findings). Depends on M23.
-  Design: [2026-07-06](../docs/planning/dev-agent/specs/2026-07-06-dev-agent-m24-security-verify-phase-design.md).
-
-- **M25** ✅ *(built + unit-verified 2026-07-14)* — **iterative updates (chat-stateful
-  refinement).** A follow-up chat message modifies the app already built in that chat instead of
-  building a fresh one. The bot maps `chat_id → prior run dir`; the architect gets an update mode
-  (prior `SystemDesign` + change → new design); a mechanical design diff selects only the changed
-  services, which rebuild in place (re-plan + build in the existing `out/`, the M23 repair engine
-  driven by a change request instead of a test failure); then the existing bring-up + reverify
-  loop redeploys. Data continuity is gated on a `db_schema` contract diff: **code-only updates
-  preserve the datastore; schema-changing updates reset it with an explicit chat warning** —
-  data-preserving schema migration (a generated-app migration runner + gate) is deliberately a
-  later milestone. Depends on M23.
-  Design: [2026-07-13](../docs/planning/dev-agent/specs/2026-07-13-dev-agent-m25-iterative-updates-design.md).
-  Shipped: `runs/chat-apps.json` chat→run binding with escape-word detection (English + Chinese)
-  and per-chat serialization; `design_diff.py`'s mechanical prior-vs-new diff picking the rebuild
-  set (changed services + their consumers, topo-ordered) and data fate; in-place selective rebuild
-  via the `UPDATE_PREFIX` build context, sharing the extracted `_verify_repair_deploy` loop with
-  `build_system`; volume preservation keyed off the `db_schema` contract; and the standalone
-  `devagent.cli update-system` entrypoint.
+- **Read the design docs first** — every milestone has a spec in [`docs/specs/`](docs/specs/)
+  (authored in the monorepo's `docs/planning/dev-agent/specs/`; `bin/sync-docs.sh` refreshes
+  the copies). The [CHANGELOG](CHANGELOG.md) records what each live run proved and which
+  calibration fixes it forced — read it before re-tuning budgets, gates, or prompts.
+- **The invariants to preserve:** control flow is code, never the model; every phase is followed
+  by a deterministic gate; executor claims are re-verified from source; the system design is
+  decided once and checks derive from its frozen contracts; only deterministic probe findings
+  gate (LLM triage is advisory).
+- **Extending:** new stacks/languages are recipe manifests (`DEVAGENT_RECIPES_DIR`, M11 — no
+  code changes); new auth styles are dispatch-table entries; a new build backend is one
+  `Executor` implementation behind the seam.
+- **Tests mirror the cost model:** unit (free) → `-m docker` (local containers) → `-m live`
+  (real tokens, opt-in via `DEVAGENT_RUN_LIVE=1`). CI should set `DEVAGENT_REQUIRE_DOCKER=1`.
