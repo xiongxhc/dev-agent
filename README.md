@@ -206,12 +206,10 @@ python -m devagent.channels.feishu_bot        # foreground, from the source chec
 bin/deploy-bot.sh                             # production: deploy-by-copy + restart
 ```
 
-`bin/deploy-bot.sh` deploys the bot as a long-running service: it archives `master` into
+`bin/deploy-bot.sh` deploys the bot as a long-running service: it archives `HEAD` into
 `~/.local/share/local-agent-team/bot/src` (the bot never runs from the dev checkout), installs
 into a persistent venv there, and restarts the process. `runs/` in the deploy dir persists
 across deploys — **live previews bind-mount run dirs, so never delete it while apps are up**.
-Note: the script currently archives the *monorepo* it lives in (`../..`) and installs
-`src/dev-agent` — if you run from a standalone clone of this repo, adjust those two paths.
 
 Design: [`docs/specs/2026-06-23-dev-agent-feishu-channel-design.md`](docs/specs/2026-06-23-dev-agent-feishu-channel-design.md).
 (The legacy `channels/feishu.py` group-webhook is outbound-only and optional.)
@@ -354,9 +352,8 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
 
 ## Continuing development
 
-- **Read the design docs first** — every milestone has a spec in [`docs/specs/`](docs/specs/)
-  (authored in the monorepo's `docs/planning/dev-agent/specs/`; `bin/sync-docs.sh` refreshes
-  the copies). The [CHANGELOG](CHANGELOG.md) records what each live run proved and which
+- **Read the design docs first** — every milestone has a spec in [`docs/specs/`](docs/specs/),
+  authored here. The [CHANGELOG](CHANGELOG.md) records what each live run proved and which
   calibration fixes it forced — read it before re-tuning budgets, gates, or prompts.
 - **The invariants to preserve:** control flow is code, never the model; every phase is followed
   by a deterministic gate; executor claims are re-verified from source; the system design is
