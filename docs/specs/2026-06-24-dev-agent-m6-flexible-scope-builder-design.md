@@ -52,7 +52,7 @@ Express) — and proven by **one live fullstack build**.
 **Out (deferred):**
 - MCP / CLI / skill recipes, Python / Java backends → later recipes.
 - Brownfield (existing-repo) builds, **git destination binding**, GitLab CI / k8s deploy,
-  the `internal-ops-cli` ops platform (portal `192.0.2.5`) → **M7**.
+  the internal ops platform → **M7**.
 - Reference-clone *recipe* ("copy Airbnb" as a buildable target) → later. The Scope phase
   may still *classify* such a request now; only the clone recipe is deferred.
 - The SDK-vs-Managed A/B run → **M5**.

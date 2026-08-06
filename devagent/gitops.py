@@ -34,8 +34,8 @@ def slugify(title: str) -> str:
 
 def rebase_url(url: str, base: str | None) -> str:
     """GitLab reports web/repo URLs at its configured external_url, which may not resolve
-    from this host (live finding 2026-07-16: instance reached by IP reported
-    gitlab.internal.example — git push died on DNS). Re-anchor scheme+host onto the
+    from this host (live finding 2026-07-16: instance reached by IP reported an
+    internal-only hostname — git push died on DNS). Re-anchor scheme+host onto the
     operator's DEVAGENT_GITLAB_URL, which is reachable by definition. http(s) only —
     file:// remotes (tests) pass through untouched."""
     if not base:

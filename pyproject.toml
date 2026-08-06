@@ -1,7 +1,8 @@
 [project]
 name = "devagent"
 version = "0.1.0"
-description = "Headless autonomous web-app builder (M1: skeleton + sandbox)"
+description = "Headless autonomous web-app builder: PRD or chat message in, verified deployed multi-service app out"
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2.6", "anthropic>=0.69"]
 
