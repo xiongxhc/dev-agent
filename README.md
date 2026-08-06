@@ -345,7 +345,7 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
 | Milestone | What | Status |
 |---|---|---|
 | M5 | live A/B corpus run (sdk vs managed baseline numbers) | harness ✅ · live run pending |
-| M8 | ops: CI/CD + deploy per project (internal-ops-cli / generated `.gitlab-ci.yml` + k8s) | open |
+| M8 | ops: CI/CD + deploy per project (generated `.gitlab-ci.yml` + k8s) | open |
 | M9 | brownfield: operate inside existing repos, detect stack (Java/Maven), fit existing CI | open |
 | M13 | team rollout (~10 users): concurrency, per-user isolation, shared service | open |
 | M18/M19 | checkpoint/resume for days-long runs; mutable contracts / renegotiation | open |
