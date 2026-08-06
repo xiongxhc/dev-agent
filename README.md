@@ -1,5 +1,8 @@
 # dev-agent
 
+> This repository is the source of truth; operators deploy by pinning a
+> reviewed revision.
+
 A headless, autonomous **web-app builder**: drop a requirement — a PRD file on the CLI, or a
 plain message in a Feishu chat — and it designs, builds, verifies, security-probes, repairs,
 and deploys a working multi-service web app, unattended. A deterministic Python harness drives
