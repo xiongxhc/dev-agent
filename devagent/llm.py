@@ -22,7 +22,7 @@ from pydantic import BaseModel, ValidationError
 T = TypeVar("T", bound=BaseModel)
 
 # Sonnet by default: capable enough for spec/plan, far cheaper than Opus for a daemon.
-DEFAULT_MODEL = os.getenv("DEVAGENT_LLM_MODEL", "claude-sonnet-4-6")
+DEFAULT_MODEL = os.getenv("DEVAGENT_LLM_MODEL", "claude-sonnet-5")
 
 _MAX_VALIDATION_RETRIES = 2
 

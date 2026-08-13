@@ -22,7 +22,7 @@ from .executor import BuildRequest, BuildResult, broadcast_consumed, enrich_scop
 from .sdk_runner import build_prompt, input_output_tokens
 
 BETA = "managed-agents-2026-04-01"
-DEFAULT_MODEL = os.getenv("DEVAGENT_MANAGED_MODEL", "claude-opus-4-8")
+DEFAULT_MODEL = os.getenv("DEVAGENT_MANAGED_MODEL", "claude-opus-5")
 OUTPUTS = "/mnt/session/outputs"
 TARBALL = "app.tar.gz"
 # Managed Agents bills token rates PLUS a sandbox session-hour charge — the cost the SDK arm

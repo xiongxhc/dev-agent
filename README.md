@@ -250,9 +250,9 @@ All knobs are environment variables (see `config.py`; template in `.env.example`
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — (required) | pay-per-token key for all model calls |
 | `DEVAGENT_EXECUTOR` | `sdk` | build arm: `sdk` (local Docker) or `managed` (hosted) |
-| `DEVAGENT_LLM_MODEL` | `claude-sonnet-4-6` | brain model (scope / plan / architect) |
+| `DEVAGENT_LLM_MODEL` | `claude-sonnet-5` | brain model (scope / plan / architect) |
 | `DEVAGENT_BUILD_MODEL` | Agent SDK default | SDK build executor model (e.g. Haiku for test builds) |
-| `DEVAGENT_MANAGED_MODEL` | `claude-opus-4-8` | managed-arm model |
+| `DEVAGENT_MANAGED_MODEL` | `claude-opus-5` | managed-arm model |
 | `DEVAGENT_MAX_COST_USD` | `10` | hard $ ceiling per run; `0`/empty disables |
 | `DEVAGENT_MAX_TOKENS` | `1000000` | runaway token ceiling per run |
 | `DEVAGENT_MAX_SECONDS` | `1800` | wall-clock ceiling per run |
