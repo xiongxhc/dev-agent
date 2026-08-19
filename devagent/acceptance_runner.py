@@ -50,9 +50,21 @@ def check_route_status(base_url: str, route: str, expected_status: int, headers=
             "detail": f"status {code} (want {expected_status})"}
 
 
+def normalize_selector(selector: str) -> str:
+    """Rewrite jQuery-style `:contains('text')` to Playwright's `:has-text("text")`. The scope
+    model emits the jQuery form despite it not being valid CSS — querySelectorAll throws a
+    SyntaxError, so the check errors before evaluating and is unsatisfiable by ANY build (the
+    repair loop then burns its repairs on it; deepseek live run, 2026-08-15). Normalizing at
+    the evaluation chokepoint also heals frozen scopes from past runs. Valid CSS is untouched."""
+    def repl(m):
+        return ':has-text("' + m.group(2).replace('"', '\\"') + '")'
+    return re.sub(r""":contains\(\s*(['"]?)(.*?)\1\s*\)""", repl, selector)
+
+
 def check_selector_present(base_url: str, route: str, selector: str) -> dict:
     from playwright.sync_api import sync_playwright  # lazy: only when a selector check exists
 
+    selector = normalize_selector(selector)
     url = base_url.rstrip("/") + route
     with sync_playwright() as p:
         browser = p.chromium.launch()

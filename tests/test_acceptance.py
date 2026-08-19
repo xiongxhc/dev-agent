@@ -224,3 +224,15 @@ def test_run_checks_dispatches_by_kind_and_flags_unknown(served):
     results = ar.run_checks(checks, served)
     assert results[0]["ok"] is True
     assert results[1]["ok"] is False and "unsupported" in results[1]["detail"]
+
+
+def test_normalize_selector_rewrites_jquery_contains():
+    """The scope model emits jQuery-style :contains(), which querySelectorAll rejects with a
+    SyntaxError — making the check unsatisfiable by ANY build (deepseek live run, 2026-08-15).
+    Normalize to Playwright's :has-text() so the check tests what the scope meant."""
+    from devagent.acceptance_runner import normalize_selector
+    assert normalize_selector("body:contains('Hello, DevAgent')") == 'body:has-text("Hello, DevAgent")'
+    assert normalize_selector('h1:contains("Welcome")') == 'h1:has-text("Welcome")'
+    assert normalize_selector("div:contains(plain)") == 'div:has-text("plain")'
+    assert normalize_selector("#app .title") == "#app .title"          # valid CSS untouched
+    assert normalize_selector('p:contains(\'say "hi"\')') == 'p:has-text("say \\"hi\\"")'
