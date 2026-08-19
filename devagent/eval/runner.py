@@ -128,9 +128,8 @@ def build_default_build_fn(config):
 
         from .. import egress
         from ..budget import Budget
-        from ..executor_sdk import SdkExecutor
+        from ..executor import make_executor
         from ..ledger import Ledger
-        from ..managed_executor import ManagedExecutor
         from ..phases.base import PhaseContext
         from ..phases.build import BuildPhase
         from ..sandbox import NullSandbox
@@ -138,8 +137,8 @@ def build_default_build_fn(config):
         network = proxy = None
         if config.egress:
             network, proxy = egress.ensure()
-        executor = (ManagedExecutor() if arm == "managed"
-                    else SdkExecutor(network=network, proxy_url=proxy, model=config.build_model))
+        executor = make_executor(arm, network=network, proxy_url=proxy,
+                                 model=config.build_model)
         out = run_dir / "out"
         budget = Budget(config.max_tokens, config.max_seconds, config.max_retries,
                         max_cost_usd=config.max_cost_usd)
@@ -171,7 +170,11 @@ def build_default_judge_fn():
 
 
 def default_arm_available(arm: str) -> bool:
-    """The managed arm needs the beta sessions API reachable; probe cheaply, degrade gracefully."""
+    """The managed arm needs the beta sessions API reachable, the deepseek arm its API key;
+    probe cheaply, degrade gracefully (skip the arm, don't fail the corpus)."""
+    if arm == "deepseek":
+        import os
+        return bool(os.getenv("DEEPSEEK_API_KEY"))
     if arm != "managed":
         return True
     try:

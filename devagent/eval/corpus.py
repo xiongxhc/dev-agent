@@ -7,7 +7,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-KNOWN_ARMS = ("sdk", "managed")
+KNOWN_ARMS = ("sdk", "managed", "deepseek")
+DEFAULT_ARMS = ("sdk", "managed")   # the third arm is opt-in — a manifest must name it
 
 
 @dataclass(frozen=True)
@@ -19,7 +20,7 @@ class Fixture:
 @dataclass
 class Corpus:
     fixtures: list[Fixture]
-    arms: list[str] = field(default_factory=lambda: list(KNOWN_ARMS))
+    arms: list[str] = field(default_factory=lambda: list(DEFAULT_ARMS))
     n: int = 2         # build runs per arm per fixture
 
 
@@ -36,7 +37,7 @@ def load_corpus(path) -> Corpus:
         raise ValueError(f"corpus manifest {p}: invalid JSON: {e}") from e
     base = p.parent
 
-    arms = data.get("arms", list(KNOWN_ARMS))
+    arms = data.get("arms", list(DEFAULT_ARMS))
     bad = [a for a in arms if a not in KNOWN_ARMS]
     if bad:
         raise ValueError(f"corpus manifest {p}: unknown arm(s) {bad} (known: {list(KNOWN_ARMS)})")

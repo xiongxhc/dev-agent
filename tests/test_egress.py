@@ -38,3 +38,9 @@ def test_no_substring_bypass():
 def test_leading_dot_does_not_match_bare_suffix_typo():
     assert host_allowed("a.b.anthropic.com", [".anthropic.com"])
     assert not host_allowed("fakeanthropic.com", [".anthropic.com"])
+
+
+def test_deepseek_api_allowed_for_the_deepseek_arm():
+    assert host_allowed("api.deepseek.com", DEFAULT_ALLOW)
+    assert not host_allowed("deepseek.com", DEFAULT_ALLOW)       # only the API host
+    assert not host_allowed("api.deepseek.com.evil.com", DEFAULT_ALLOW)

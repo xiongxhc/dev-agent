@@ -15,7 +15,11 @@ import socket
 import sys
 import threading
 
-DEFAULT_ALLOW = ["api.anthropic.com", ".anthropic.com", "registry.npmjs.org", ".npmjs.org"]
+# api.deepseek.com serves the deepseek build arm. The proxy is shared across arms, so this
+# widens every contained build's egress by one API host — the deny-by-default posture holds.
+# The proxy container is long-lived: a list change needs egress.teardown() to take effect.
+DEFAULT_ALLOW = ["api.anthropic.com", ".anthropic.com", "registry.npmjs.org", ".npmjs.org",
+                 "api.deepseek.com"]
 PORT = 3128
 
 

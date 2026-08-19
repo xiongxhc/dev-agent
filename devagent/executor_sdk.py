@@ -129,6 +129,7 @@ class SdkExecutor:
             "docker", "run", "--rm",
             *egress.docker_flags(self.network, self.proxy_url),  # [] when egress disabled
             "-e", self.api_key_env,        # value via env, NOT argv (no secret in argv)
+            *self._extra_docker_env(),
             "-e", "HOME=/home/node",
             # build model (not a secret): inline so the run is reproducible from the ledger argv.
             *(["-e", f"DEVAGENT_BUILD_MODEL={self.model}"] if self.model else []),
@@ -142,6 +143,14 @@ class SdkExecutor:
             argv += ["--target", target]
         return argv
 
+    def _extra_docker_env(self) -> list[str]:
+        """Extra `-e` flags for the build container (subclass seam; secrets by NAME only)."""
+        return []
+
+    def _subprocess_env(self) -> dict:
+        """Env for the `docker run` subprocess — where by-name `-e` flags pick values from."""
+        return {**os.environ}
+
     def _run_one(self, out: Path, target: str | None) -> dict:
         """Run one build container (whole scope if target is None, else just that target).
         Returns the raw result dict augmented with _wall (this session's wall-clock) and
@@ -150,7 +159,7 @@ class SdkExecutor:
         t0 = time.monotonic()
         try:
             subprocess.run(argv, capture_output=True, text=True,
-                           timeout=self.timeout, env={**os.environ})
+                           timeout=self.timeout, env=self._subprocess_env())
         except subprocess.TimeoutExpired:
             return {"_timeout": True, "_wall": time.monotonic() - t0}
         wall = time.monotonic() - t0

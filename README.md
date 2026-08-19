@@ -249,10 +249,12 @@ All knobs are environment variables (see `config.py`; template in `.env.example`
 | Variable | Default | Meaning |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — (required) | pay-per-token key for all model calls |
-| `DEVAGENT_EXECUTOR` | `sdk` | build arm: `sdk` (local Docker) or `managed` (hosted) |
+| `DEVAGENT_EXECUTOR` | `sdk` | build arm: `sdk` (local Docker), `managed` (hosted), or `deepseek` (sdk arm via DeepSeek's Anthropic-compatible API) |
 | `DEVAGENT_LLM_MODEL` | `claude-sonnet-5` | brain model (scope / plan / architect) |
 | `DEVAGENT_BUILD_MODEL` | Agent SDK default | SDK build executor model (e.g. Haiku for test builds) |
 | `DEVAGENT_MANAGED_MODEL` | `claude-opus-5` | managed-arm model |
+| `DEEPSEEK_API_KEY` | — (deepseek arm only) | key for the deepseek build arm; brain phases still use `ANTHROPIC_API_KEY` |
+| `DEVAGENT_DEEPSEEK_MODEL` | `deepseek-v4-pro` | deepseek-arm model (`deepseek-v4-pro` or `deepseek-v4-flash`) |
 | `DEVAGENT_MAX_COST_USD` | `10` | hard $ ceiling per run; `0`/empty disables |
 | `DEVAGENT_MAX_TOKENS` | `1000000` | runaway token ceiling per run |
 | `DEVAGENT_MAX_SECONDS` | `1800` | wall-clock ceiling per run |
@@ -260,7 +262,7 @@ All knobs are environment variables (see `config.py`; template in `.env.example`
 | `DEVAGENT_MAX_SYSTEM_REPAIRS` | `1` | system-lane repair-loop passes (own counter) |
 | `DEVAGENT_BUILD_CONCURRENCY` | `3` | parallel per-target build cap: `min(targets, N)` |
 | `DEVAGENT_EGRESS` | `1` | egress allowlist on build/verify containers (`0` disables) |
-| `DEVAGENT_EGRESS_ALLOW` | api.anthropic.com + npm | comma-separated allowlist **override** for the proxy |
+| `DEVAGENT_EGRESS_ALLOW` | api.anthropic.com + api.deepseek.com + npm | comma-separated allowlist **override** for the proxy |
 | `DEVAGENT_M2_IMAGE` | `devagent-sandbox:m2` | sandbox/runtime image name |
 | `DEVAGENT_RECIPES_DIR` | unset | directory of external recipe manifests (M11) |
 | `DEVAGENT_RUNS_DIR` | `runs` | where run artifacts land |

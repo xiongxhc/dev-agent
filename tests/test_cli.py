@@ -168,7 +168,7 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
         def check(self, result):
             return GateResult(True)
 
-    monkeypatch.setattr("devagent.cli.SdkExecutor", FakeSdk)
+    monkeypatch.setattr("devagent.cli.make_executor", lambda name, **kw: FakeSdk(**kw))
     monkeypatch.setattr("devagent.cli.BuildVerifier", FakeVerifier)
     monkeypatch.setattr("devagent.cli.DeployPhase", FakeDeployPhase)
     monkeypatch.setattr("devagent.cli.DeployGate", FakeDeployGate)

@@ -16,10 +16,9 @@ from . import egress
 from .budget import Budget
 from .config import Config
 from .deploy import DeployGate
-from .executor_sdk import SdkExecutor
+from .executor import make_executor
 from .gitops import GitPublisher
 from .ledger import Ledger
-from .managed_executor import ManagedExecutor
 from .orchestrator import SUCCEEDED, Orchestrator
 from .phase_gates import PlanGate, ScopeGate, VerifyGate
 from .phases.build import BuildPhase
@@ -286,10 +285,8 @@ def main(argv: list[str] | None = None) -> int:
     executor = None
     if args.build:
         ledger.append({"event": "executor", "kind": cfg.executor})
-        if cfg.executor == "managed":
-            executor = ManagedExecutor()
-        else:
-            executor = SdkExecutor(network=network, proxy_url=proxy, model=cfg.build_model)
+        executor = make_executor(cfg.executor, network=network, proxy_url=proxy,
+                                 model=cfg.build_model)
     verifier = BuildVerifier(network=network, proxy_url=proxy) if args.build else None
     phases, gates = build_pipeline_phases(
         args.input, build=args.build, out_dir=out_dir, run_id=run_id,

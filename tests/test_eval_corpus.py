@@ -49,3 +49,11 @@ def test_empty_corpus_rejected(tmp_path):
 def test_n_below_one_rejected(tmp_path):
     with pytest.raises(ValueError, match="n must be"):
         load_corpus(_write(tmp_path, {"n": 0, "fixtures": ["a.md"]}))
+
+
+def test_deepseek_arm_accepted_but_not_default(tmp_path):
+    (tmp_path / "a.md").write_text("x")
+    c = load_corpus(_write(tmp_path, {"arms": ["sdk", "deepseek"], "fixtures": ["a.md"]}))
+    assert c.arms == ["sdk", "deepseek"]
+    # the third arm is opt-in: a manifest without "arms" stays the two-armed A/B
+    assert load_corpus(_write(tmp_path, {"fixtures": ["a.md"]})).arms == ["sdk", "managed"]

@@ -152,8 +152,7 @@ def _service_pipeline(node, design, svc_dir, *, plan, repair_context, context_ki
     from .contract_utils import contracts_for_node
     from .verifier import BuildVerifier
     from . import egress
-    from .executor_sdk import SdkExecutor
-    from .managed_executor import ManagedExecutor
+    from .executor import make_executor
 
     cfg = Config.load()
     out_dir = Path(svc_dir) / "out"
@@ -161,8 +160,8 @@ def _service_pipeline(node, design, svc_dir, *, plan, repair_context, context_ki
     if cfg.egress:
         with _egress_lock:
             network, proxy = egress.ensure()
-    executor = (ManagedExecutor() if cfg.executor == "managed"
-                else SdkExecutor(network=network, proxy_url=proxy, model=cfg.build_model))
+    executor = make_executor(cfg.executor, network=network, proxy_url=proxy,
+                             model=cfg.build_model)
     verifier = BuildVerifier(network=network, proxy_url=proxy)
     consumed = tuple(c.spec for c in contracts_for_node(node, design))
     provided = tuple(c.spec for c in design.contracts if c.id in node.provides)

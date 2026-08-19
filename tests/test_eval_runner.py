@@ -120,3 +120,11 @@ def test_build_exception_becomes_a_failed_run_not_a_corpus_abort(tmp_path):
     run = res.fixtures[0].runs[0]
     assert run.acceptance_pass is False and "docker died" in run.error
     assert res.fixtures[0].arms[0].acceptance_pass_rate == 0.0
+
+
+def test_deepseek_arm_available_iff_key_set(monkeypatch):
+    from devagent.eval.runner import default_arm_available
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    assert default_arm_available("deepseek") is False
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
+    assert default_arm_available("deepseek") is True

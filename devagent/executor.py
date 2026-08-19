@@ -59,6 +59,25 @@ class Executor(Protocol):
     def build(self, req: BuildRequest) -> BuildResult: ...
 
 
+def make_executor(name: str, *, network: str | None = None, proxy_url: str | None = None,
+                  model: str | None = None) -> "Executor":
+    """Resolve a build arm by its DEVAGENT_EXECUTOR name. Raises on an unknown name — a
+    typo must fail loudly, never silently run the sdk arm. `model` is the sdk arm's build
+    model (DEVAGENT_BUILD_MODEL, a Claude name); the deepseek arm takes its model from
+    DEVAGENT_DEEPSEEK_MODEL instead, and the managed arm from DEVAGENT_MANAGED_MODEL.
+    Arm imports are lazy so the Protocol module stays dependency-free."""
+    if name == "sdk":
+        from .executor_sdk import SdkExecutor
+        return SdkExecutor(network=network, proxy_url=proxy_url, model=model)
+    if name == "managed":
+        from .managed_executor import ManagedExecutor
+        return ManagedExecutor()
+    if name == "deepseek":
+        from .executor_deepseek import DeepSeekExecutor
+        return DeepSeekExecutor(network=network, proxy_url=proxy_url)
+    raise ValueError(f"unknown executor {name!r} (known: sdk, managed, deepseek)")
+
+
 def enrich_scope(scope, consumed_by_target: dict | None = None,
                  provided_by_target: dict | None = None) -> dict:
     """Bake recipe-derived fields into a JSON-serializable scope dict that the in-container
