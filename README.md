@@ -349,7 +349,7 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
 |---|---|---|
 | M5 | live A/B corpus run (sdk vs managed baseline numbers) | harness ✅ · live run pending |
 | M8 | ops: CI/CD + deploy per project (generated `.gitlab-ci.yml` + k8s) | open |
-| M9 | brownfield: operate inside existing repos, detect stack (Java/Maven), fit existing CI | open |
+| M9 | brownfield: operate inside existing repos, detect stack (Java/Maven), fit existing CI | adopt slice design ✅ ([spec](docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md)) |
 | M13 | team rollout (~10 users): concurrency, per-user isolation, shared service | open |
 | M18/M19 | checkpoint/resume for days-long runs; mutable contracts / renegotiation | open |
 | M22 | eval as change-gate: ledger telemetry + corpus replay before prompt/model changes | open |

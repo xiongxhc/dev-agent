@@ -1,6 +1,8 @@
-# Brownfield Adopt — point dev-agent at a repo it didn't build
+# M9 Brownfield Adopt — point dev-agent at a repo it didn't build
 
-**Status:** design approved in session, 2026-08-19. Milestone 1 of the brownfield lane.
+**Status:** design approved in session, 2026-08-19. First slice of the roadmap's open M9
+("brownfield: operate inside existing repos, detect stack"); the M9 tail — fitting existing
+CI, editing adopted code — builds on this slice's artifacts.
 **Decision trail:** target = internal Estidama estate → job = understand + design first
 (change execution is milestone 2) → proof level = static analysis **plus a machine-checked
 rebuild** of every mappable service (no live boot/contract probing in M1).
