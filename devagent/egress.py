@@ -14,6 +14,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from .egress_proxy import DEFAULT_ALLOW
+
 PROXY_SCRIPT = Path(__file__).parent / "egress_proxy.py"
 NETWORK = "devagent-egress"
 PROXY = "devagent-proxy"
@@ -25,17 +27,71 @@ def _run(args):
     return subprocess.run(args, capture_output=True, text=True)
 
 
-def ensure(image: str = DEFAULT_IMAGE) -> tuple[str, str]:
+def hosts_for_stacks(stacks) -> list[str]:
+    """Egress hosts the named recipes declare they need. A recipe's toolchain knows which
+    package registries its build contacts; nothing else does. Names that are empty or not a
+    registered recipe contribute nothing."""
+    from . import recipes as _recipes
+    hosts = []
+    for stack in stacks:
+        if not stack or not _recipes.is_registered(stack):
+            continue
+        for host in _recipes.get(stack).toolchain.egress_hosts or ():
+            if host and host not in hosts:
+                hosts.append(host)
+    return hosts
+
+
+def allowlist(extra_hosts=()) -> str:
+    """The allowlist the proxy should enforce, as the comma string it parses.
+
+    DEVAGENT_EGRESS_ALLOW replaces the defaults (that is its documented meaning); `extra_hosts`
+    are ADDED either way, since a registry the build needs that the proxy blocks is a silent,
+    confusing build failure."""
+    override = os.getenv("DEVAGENT_EGRESS_ALLOW")
+    base = [h.strip() for h in override.split(",") if h.strip()] if override \
+        else list(DEFAULT_ALLOW)
+    for h in extra_hosts:
+        if h and h not in base:
+            base.append(h)
+    return ",".join(base)
+
+
+def ensure(image: str = DEFAULT_IMAGE, extra_hosts=()) -> tuple[str, str]:
     """Make sure the internal network + proxy exist and are running. Returns
-    (network_name, proxy_url) for callers to attach build/verify containers to."""
+    (network_name, proxy_url) for callers to attach build/verify containers to.
+
+    The proxy is long-lived and reused across runs, so the allowlist it was started with is
+    recorded as a label and compared here: a run that needs a different allowlist replaces the
+    proxy instead of silently inheriting the old one's rules, unless another container is
+    attached to it, in which case the call refuses rather than break that build."""
+    allow = allowlist(extra_hosts)
     if _run(["docker", "network", "inspect", NETWORK]).returncode != 0:
         _run(["docker", "network", "create", "--internal", NETWORK])
     running = _run(["docker", "inspect", "-f", "{{.State.Running}}", PROXY]).stdout.strip()
-    if running != "true":
-        _run(["docker", "rm", "-f", PROXY])  # clear any dead/stale container
+    current = _run(["docker", "inspect", "-f",
+                    "{{index .Config.Labels \"devagent.allow\"}}", PROXY]).stdout.strip()
+    if running == "true" and current != allow and _allow_covers(current, allow):
+        # A running proxy whose allowlist is a SUPERSET of what this run needs is adopted rather
+        # than replaced: the hosts this run wants are already permitted, and another run may be
+        # depending on the container.
+        return NETWORK, f"http://{PROXY}:{PORT}"
+    if running == "true" and current != allow and _network_busy():
+        # A genuinely different allowlist AND someone else is attached. Refusing beats stealing:
+        # the alternative is silently killing another run's build.
+        raise RuntimeError(
+            "the shared egress proxy is running with a different allowlist and other containers are "
+            "attached to its network, so replacing it would break another run mid-build. Wait for "
+            "that run, or give both runs the same egress allowlist.")
+    if running != "true" or current != allow:
+        _run(["docker", "rm", "-f", PROXY])  # dead, stale, or configured for a different allowlist
         up = _run([
             "docker", "run", "-d", "--name", PROXY, "--network", NETWORK,
             "--user", "1000:1000",
+            # The proxy reads its allowlist from its OWN env, so it is passed in here. It is not
+            # a secret, and inlining makes the proxy's rules visible in `docker ps`.
+            "-e", f"DEVAGENT_EGRESS_ALLOW={allow}",
+            "--label", f"devagent.allow={allow}",
             "-v", f"{PROXY_SCRIPT}:/proxy.py:ro",
             image, "python3", "/proxy.py",
         ])
@@ -44,6 +100,20 @@ def ensure(image: str = DEFAULT_IMAGE) -> tuple[str, str]:
         # Give the proxy (and ONLY the proxy) upstream internet via the default bridge.
         _run(["docker", "network", "connect", "bridge", PROXY])
     return NETWORK, f"http://{PROXY}:{PORT}"
+
+
+def _allow_covers(current: str, needed: str) -> bool:
+    """Does the running proxy already permit everything this run needs?"""
+    have = {h.strip().lower() for h in (current or "").split(",") if h.strip()}
+    want = {h.strip().lower() for h in (needed or "").split(",") if h.strip()}
+    return bool(have) and want.issubset(have)
+
+
+def _network_busy() -> bool:
+    """Is anything other than the proxy attached to the egress network right now?"""
+    out = _run(["docker", "network", "inspect", "-f",
+                "{{range .Containers}}{{.Name}} {{end}}", NETWORK]).stdout
+    return any(n != PROXY for n in out.split())
 
 
 def docker_flags(network: str | None, proxy_url: str | None) -> list[str]:
