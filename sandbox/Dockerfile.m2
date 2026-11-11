@@ -8,8 +8,10 @@
 # Build (SdkExecutor) + verify (BuildVerifier rebuild + acceptance_runner) both run here.
 FROM node:20-slim
 
+# libatomic1: the node binary Playwright's Python package bundles links against it, and the
+# base image does not ship it; without it `playwright install` cannot start.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-venv git ca-certificates \
+        python3 python3-pip python3-venv git ca-certificates libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # The Claude Code CLI (claude-agent-sdk subprocesses it) + pnpm for app builds.
