@@ -15,6 +15,7 @@ No boot, no datastores, no acceptance probes. This is a compile check.
 """
 
 import posixpath
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -55,12 +56,18 @@ def _mount_visible(image: str, source: Path, runner=subprocess.run) -> str | Non
     in the VM and mounts that. The build then runs against nothing, and what the operator reads
     is a plausible-looking source failure — `yarn install` reporting "No lockfile found" for a
     repo that has one, or Maven unable to create /out/.m2 as uid 1000 in a root-owned empty
-    mount. One cheap probe turns that into an instruction."""
-    marker = next((p.name for p in sorted(source.iterdir())), None)
-    if marker is None:
+    mount. One cheap probe turns that into an instruction.
+
+    The marker is an entry that is not a link, because `test -e` follows a link and a copied
+    link can dangle or lead out of the mount. When every entry is a link, the probe tests for
+    the link itself."""
+    entries = sorted(source.iterdir())
+    if not entries:
         return None                      # nothing to see — the caller reports the empty source
+    plain = next((p for p in entries if not p.is_symlink()), None)
+    flag, marker = ("-e", plain.name) if plain is not None else ("-L", entries[0].name)
     probe = runner(["docker", "run", "--rm", "-v", f"{source}:/probe:ro", image,
-                    "test", "-e", f"/probe/{marker}"], capture_output=True, text=True)
+                    "test", flag, f"/probe/{marker}"], capture_output=True, text=True)
     if getattr(probe, "returncode", 1) == 0:
         return None
     return (f"{source} is not shared with the Docker daemon, so the build container sees an "
@@ -82,7 +89,7 @@ def prove_service(node, source: Path, *, module: str = ".", registry=None, netwo
     Docker; the default runs the real container.
 
     `module` is the service's path inside the copied source: `.` when the copy IS the service,
-    the module's path when the copy is a Maven reactor.
+    the module's path when the copy is a Maven reactor. An empty path is `.`.
 
     The mount probe runs on the real Docker path only. An injected `runner` is not Docker, so
     probing there would test nothing and cost a container per service — pass `mount_check`
@@ -99,6 +106,8 @@ def prove_service(node, source: Path, *, module: str = ".", registry=None, netwo
                        f"recipe {node.stack!r} declares no build_cmd (datastore-shaped)")
     if not source.is_dir():
         return Verdict(node.name, UNPROVEN, f"no source at {source}")
+    if not module.strip():
+        module = "."
     if _outside(module):
         return Verdict(node.name, UNPROVEN,
                        f"module {module!r} lies outside the copied source, so there is nothing "
@@ -114,8 +123,9 @@ def prove_service(node, source: Path, *, module: str = ".", registry=None, netwo
     # `{module}` lets a recipe express a build that is per-module but must run from the reactor
     # root — `mvn -pl <module> -am package`. A module of a multi-module Maven build inherits from
     # the parent POM and depends on sibling modules, so building inside its directory alone
-    # fails on principle, not on configuration.
-    build_cmd = recipe.build_cmd.replace("{module}", module)
+    # fails on principle, not on configuration. The path is repo text inside a `sh -c` command,
+    # so it is quoted.
+    build_cmd = recipe.build_cmd.replace("{module}", shlex.quote(module))
     artifact = posixpath.normpath(recipe.artifact_glob.replace("{module}", module))
     run = runner or _run_build
     try:

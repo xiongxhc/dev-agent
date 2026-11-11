@@ -155,6 +155,42 @@ def test_an_unshared_run_dir_is_reported_as_such_and_no_build_runs(tmp_path):
     assert built == [], "a build into an empty mount proves nothing and must not run"
 
 
+def _probe_argv(source):
+    from types import SimpleNamespace
+
+    from devagent.adopt.prove import _mount_visible
+
+    calls = []
+
+    def runner(argv, **kw):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0)
+
+    assert _mount_visible("img", source, runner=runner) is None
+    assert len(calls) == 1
+    return calls[0]
+
+
+def test_the_mount_probe_looks_for_an_entry_that_is_not_a_link(tmp_path):
+    """Copies keep links, and a link can dangle or lead out of the mount. `test -e` follows a
+    link, so probing one would report a visible mount as unshared."""
+    src = tmp_path / "out"
+    src.mkdir()
+    (src / ".eslintrc.js").symlink_to("../.eslintrc.js")      # sorts first, dangles in /probe
+    (src / "package.json").write_text("{}")
+    argv = _probe_argv(src)
+    assert argv[-3:] == ["test", "-e", "/probe/package.json"]
+
+
+def test_the_mount_probe_tests_the_link_itself_when_every_entry_is_a_link(tmp_path):
+    src = tmp_path / "out"
+    src.mkdir()
+    (src / "a").symlink_to("does-not-exist")
+    (src / "b").symlink_to("/nowhere")
+    argv = _probe_argv(src)
+    assert argv[-3:] == ["test", "-L", "/probe/a"]
+
+
 def test_a_shared_run_dir_builds_normally(tmp_path):
     from types import SimpleNamespace
 

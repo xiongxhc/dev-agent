@@ -19,6 +19,7 @@ A failed stage degrades honestly — a service becomes unproven or unmappable an
 so. Only an unreadable repo aborts the run.
 """
 
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,14 +88,33 @@ def _copy_source(service, dest: Path) -> None:
             shutil.copy2(item, target, follow_symlinks=False)
 
 
-def _refuse_run_dir_inside(out: Path, repos) -> None:
-    """Adopt describes a repo; it never writes into one. A run dir under the source would also
-    put the copy inside the tree being copied."""
-    resolved = out.resolve()
+def _within(path: Path, root: Path) -> bool:
+    """True when `path` is `root` or lies under it. Directories are compared on disk, not as
+    strings: on a case-insensitive filesystem two spellings name one directory, and `resolve()`
+    does not normalise case."""
+    if not root.exists():
+        return False
+    resolved = path.resolve()
+    return any(p.exists() and os.path.samefile(p, root) for p in (resolved, *resolved.parents))
+
+
+def _refuse_unsafe_run_dir(out: Path, repos) -> None:
+    """Adopt describes a repo; it never writes into one. A run dir under a source repo would
+    write into it, and so would a source repo under the run dir, where the copies go.
+
+    A run dir that already holds files is refused too: copying over a previous run's tree would
+    write through the links it copied, or fail on them. Nothing is deleted to make room."""
     for repo in repos:
-        if resolved == repo or repo in resolved.parents:
+        if _within(out, repo):
             raise ValueError(f"the run dir {out} is inside the source repo {repo} — adopt never "
                              f"writes into the repo it describes; pass --out somewhere else")
+        if _within(repo, out):
+            raise ValueError(f"the source repo {repo} is inside the run dir {out} — adopt "
+                             f"writes its copies under the run dir and would write into the "
+                             f"repo it describes; pass --out somewhere outside the repo")
+    if out.is_dir() and any(out.iterdir()):
+        raise ValueError(f"the run dir {out} already holds a run — adopt never reuses or cleans "
+                         f"one; pass a new --out")
 
 
 def adopt(repo_path, out_dir, *, map_fn=None, prover=prove, title=None,
@@ -111,7 +131,7 @@ def adopt(repo_path, out_dir, *, map_fn=None, prover=prove, title=None,
     paths = [repo_path] if isinstance(repo_path, (str, Path)) else list(repo_path)
     repos = [Path(p).resolve() for p in paths]
     out = Path(out_dir)
-    _refuse_run_dir_inside(out, repos)
+    _refuse_unsafe_run_dir(out, repos)
     out.mkdir(parents=True, exist_ok=True)
     ledger = ledger if ledger is not None else Ledger(out)
     ledger.append({"event": "adopt_start", "repos": [str(r) for r in repos]})
@@ -171,9 +191,8 @@ def adopt(repo_path, out_dir, *, map_fn=None, prover=prove, title=None,
     result.verdicts = prover(design, out, modules=modules, registry=registry, network=network,
                              proxy_url=proxy_url)
     for v in result.verdicts:
-        # The build log is the only thing that makes an `unproven` verdict actionable, and it was
-        # captured and then dropped: the report shows a truncated `detail` ("build exited 1") and
-        # the operator has nowhere to look. Keep it beside the source it came from.
+        # The build log is what makes an `unproven` verdict actionable; keep it beside the source
+        # it came from.
         log_path = None
         if getattr(v, "log_tail", ""):
             log_path = out / "services" / v.service / "build.log"

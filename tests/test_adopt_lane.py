@@ -77,6 +77,64 @@ def test_a_run_dir_inside_the_source_repo_is_refused_before_anything_is_written(
     assert not (repo / "runs").exists()
 
 
+def _case_insensitive(tmp_path) -> bool:
+    probe = tmp_path / "case-probe"
+    probe.mkdir()
+    return (tmp_path / "CASE-PROBE").exists()
+
+
+def test_a_run_dir_inside_the_source_repo_is_refused_whatever_its_case(tmp_path):
+    """On a case-insensitive filesystem two spellings name one directory, so the guard compares
+    directories on disk, not path strings."""
+    if not _case_insensitive(tmp_path):
+        pytest.skip("the temp filesystem is case-sensitive")
+    repo = _repo(tmp_path)
+    with pytest.raises(ValueError, match="inside the source repo"):
+        adopt(repo, tmp_path / "SRC-REPO" / "runs", prover=_unmappable)
+    assert not (repo / "runs").exists()
+
+
+def test_a_source_repo_inside_the_run_dir_is_refused_before_anything_is_written(tmp_path):
+    """The copies go under the run dir, so a repo below it would be written into."""
+    run = tmp_path / "run"
+    repo = _repo(run)
+    before = sorted(p.relative_to(run) for p in run.rglob("*"))
+    with pytest.raises(ValueError, match="is inside the run dir"):
+        adopt(repo, run, prover=_unmappable)
+    assert sorted(p.relative_to(run) for p in run.rglob("*")) == before
+
+
+def _snapshot(root):
+    return {p.relative_to(root): (p.is_symlink(), p.read_bytes() if p.is_file() else None,
+                                  p.lstat().st_mtime_ns)
+            for p in root.rglob("*")}
+
+
+def test_a_run_dir_that_already_holds_a_run_is_refused_and_left_alone(tmp_path):
+    """Copying into a previous run's tree would write through the links it copied, or fail on
+    them, so a used run dir is never reused and never cleaned."""
+    repo = _repo(tmp_path)
+    (repo / "outside-link").symlink_to(tmp_path / "victim")
+    (tmp_path / "victim").write_text("untouched")
+    out = tmp_path / "out"
+    adopt(repo, out, prover=_unmappable)
+    before = _snapshot(out)
+    (repo / "outside-link").unlink()
+    (repo / "outside-link").write_text("repo content")
+    with pytest.raises(ValueError, match="already holds a run"):
+        adopt(repo, out, prover=_unmappable)
+    assert _snapshot(out) == before
+    assert (tmp_path / "victim").read_text() == "untouched"
+
+
+def test_an_existing_empty_run_dir_is_accepted(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    result = adopt(_repo(tmp_path), out, prover=_unmappable)
+    assert result.status == "adopted"
+    assert (out / "design.json").is_file()
+
+
 def test_service_source_is_copied_without_build_output(tmp_path):
     out = tmp_path / "adopt-3"
     adopt(_repo(tmp_path), out, prover=_unmappable)
@@ -301,6 +359,32 @@ def test_a_module_outside_the_copied_source_is_unproven_and_nothing_runs(tmp_pat
                       runner=_recording(commands))
     assert v.status == UNPROVEN and "outside" in v.detail
     assert commands == [], "a build against a path outside the copy must not run"
+
+
+def test_a_module_path_reaches_the_shell_as_one_quoted_word(tmp_path):
+    """The module path is repo text inside a `sh -c` command; quoting keeps it one argument and
+    stops the shell expanding it."""
+    module = "my mod/$(echo x)"
+    src = tmp_path / "out"
+    (src / module / "target").mkdir(parents=True)
+    (src / module / "target/app.jar").write_text("x")
+    commands = []
+    v = prove_service(_node(), src, module=module, registry={"r": _MODULE_RECIPE},
+                      runner=_recording(commands))
+    assert commands == ["mvn -pl 'my mod/$(echo x)' -am package"]
+    assert v.status == PROVEN, v.detail
+
+
+@pytest.mark.parametrize("module", ["", "   "])
+def test_an_empty_module_path_is_the_copied_source_root(tmp_path, module):
+    src = tmp_path / "out"
+    (src / "target").mkdir(parents=True)
+    (src / "target/app.jar").write_text("x")
+    commands = []
+    v = prove_service(_node(), src, module=module, registry={"r": _MODULE_RECIPE},
+                      runner=_recording(commands))
+    assert commands and "-pl . -am" in commands[0]
+    assert v.status == PROVEN, v.detail
 
 
 def test_prove_passes_each_service_its_module(tmp_path):
