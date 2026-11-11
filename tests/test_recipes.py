@@ -230,26 +230,31 @@ def test_one_dockerfile_backing_many_recipes_builds_once(tmp_path):
 
 
 def test_adopt_recipes_are_registered():
-    for v in (8, 11, 17, 21):
+    for v in (8, 11, 17, 21, 25):
         mvn = recipes.get(f"maven-spring-boot-jdk{v}")
         assert mvn.type == "backend"
         assert mvn.toolchain.image == f"maven:3.9-eclipse-temurin-{v}"
-        assert "-pl {name} -am package" in mvn.build_cmd
-        assert mvn.artifact_glob == "{name}/target/*.jar"
+        assert "-pl {module} -am package" in mvn.build_cmd
+        assert mvn.artifact_glob == "{module}/target/*.jar"
+        assert mvn.supported_checks == ("route_status", "api_json")
         assert mvn.toolchain.egress_hosts == ("repo.maven.apache.org", "repo1.maven.org")
     assert not recipes.is_registered("maven-spring-boot")
     npm = recipes.get("node-vite-npm")
     assert npm.type == "frontend"
     assert npm.build_cmd == "npm ci && npm run build"
+    assert npm.toolchain.image == recipes.get("node-vite-react").toolchain.image
+    assert npm.supported_checks == ("route_status", "selector_present", "mobile_fit")
+    assert npm.artifact_glob == "dist/index.html"
     yarn = recipes.get("node-vite-yarn")
     assert yarn.type == "frontend"
+    assert yarn.artifact_glob == "dist/index.html"
     assert yarn.build_cmd == "yarn install --frozen-lockfile && yarn build"
     assert yarn.toolchain.egress_hosts == ("registry.yarnpkg.com", ".yarnpkg.com")
     assert recipes.get("static-web").type == "frontend"
     assert recipes.get("static-web").artifact_glob == "dist/index.html"
     assert recipes.ADOPT_ONLY == {
         "maven-spring-boot-jdk8", "maven-spring-boot-jdk11", "maven-spring-boot-jdk17",
-        "maven-spring-boot-jdk21", "node-vite-yarn", "node-vite-npm", "static-web"}
+        "maven-spring-boot-jdk21", "maven-spring-boot-jdk25", "node-vite-yarn", "node-vite-npm", "static-web"}
 
 
 def test_adopt_recipe_hints_name_no_single_project_convention():

@@ -78,16 +78,16 @@ _STATIC_HINT = (
 NODE_YARN = Toolchain(image=NODE.image,
                       egress_hosts=("registry.yarnpkg.com", ".yarnpkg.com"))
 
-# One Maven recipe per Java LTS: the build JDK must match the Java level the project declares,
-# or it compiles against the wrong language level and library APIs. The adopt survey reads the
+# One Maven recipe per supported Java LTS (MAVEN_JDKS): the build JDK must match the Java
+# level the project declares, or it compiles against the wrong language level and library APIs. The adopt survey reads the
 # declared level and picks the matching recipe.
-MAVEN_JDKS = (8, 11, 17, 21)
+MAVEN_JDKS = (8, 11, 17, 21, 25)
 _MAVEN_HOSTS = ("repo.maven.apache.org", "repo1.maven.org")
 
 _MAVEN_HINT = (
-    "This target is a Maven module in a multi-module Spring Boot project. It inherits from the "
-    "parent POM and may depend on sibling modules, so it is built from the REACTOR ROOT with "
-    "`-pl <module> -am`, never from inside the module directory.\n"
+    "This target is a Maven module of a Spring Boot project (a single module, or one of several). "
+    "It may inherit from a parent POM and depend on sibling modules, so it is built from the "
+    "REACTOR ROOT with `-pl <module> -am`, never from inside the module directory.\n"
     "Keep the project's declared Java level (source/target/release in the POM) — do not raise "
     "it and do not use language features above it.\n"
     "If the repo carries a settings.xml, the build must use it (`-s settings.xml`): it usually "
@@ -95,6 +95,7 @@ _MAVEN_HINT = (
     "Maven Central and fails in a restricted network."
 )
 
+# `{module}` is the module's path inside the build root (`.` for a single-module repo).
 # Built from the reactor root so the parent POM and sibling modules resolve; `-am` builds the
 # sibling modules the target needs. The local repo goes inside the writable mount because the
 # container runs as uid 1000 with no writable HOME. The JVM ignores HTTP_PROXY/HTTPS_PROXY (it
@@ -109,14 +110,14 @@ _MAVEN_BUILD = (
     '-Dhttp.nonProxyHosts=localhost|127.0.0.1"; fi; '
     'mvn -B -q -DskipTests -Dmaven.repo.local=/out/.m2 $PX '
     '$([ -f settings.xml ] && echo -s settings.xml) '
-    '-pl {name} -am package')
+    '-pl {module} -am package')
 
 _VITE_HINT = (
     "This target is a Vite app that already has a lockfile. Install with the package manager "
     "that lockfile belongs to (yarn.lock -> yarn, package-lock.json -> npm); another manager "
     "cannot reproduce the locked install.\n"
-    "Keep the existing env files and `--mode` build scripts and do not introduce a new build "
-    "pipeline: one repo can define several builds through its modes.\n"
+    "If the repo has env files or `--mode` build scripts, keep them and do not introduce a new "
+    "build pipeline: one repo can define several builds through its modes.\n"
     "If a .npmrc names a registry, it is there for a reason (a restricted network); leave it in "
     "place."
 )
@@ -126,9 +127,9 @@ REGISTRY: dict[str, Recipe] = {
         name="node-vite-yarn", type="frontend", toolchain=NODE_YARN,
         scaffold_hint=_VITE_HINT,
         # yarn 1.x ships in the image already; `corepack enable` fails as uid 1000 (EACCES
-        # unlinking /usr/local/bin/pnpm) and, chained with &&, took the whole build down.
+        # unlinking /usr/local/bin/pnpm) and, chained with &&, would fail the whole build.
         build_cmd="yarn install --frozen-lockfile && yarn build",
-        artifact_glob="dist/**/index.html",
+        artifact_glob="dist/index.html",
         boot=None,
         supported_checks=("route_status", "selector_present", "mobile_fit"),
     ),
@@ -136,7 +137,7 @@ REGISTRY: dict[str, Recipe] = {
         name="node-vite-npm", type="frontend", toolchain=NODE,
         scaffold_hint=_VITE_HINT,
         build_cmd="npm ci && npm run build",
-        artifact_glob="dist/**/index.html",
+        artifact_glob="dist/index.html",
         boot=None,
         supported_checks=("route_status", "selector_present", "mobile_fit"),
     ),
@@ -199,7 +200,7 @@ REGISTRY.update({
         name=f"maven-spring-boot-jdk{v}", type="backend",
         toolchain=Toolchain(image=f"maven:3.9-eclipse-temurin-{v}", egress_hosts=_MAVEN_HOSTS),
         scaffold_hint=_MAVEN_HINT, build_cmd=_MAVEN_BUILD,
-        artifact_glob="{name}/target/*.jar", boot=None,
+        artifact_glob="{module}/target/*.jar", boot=None,
         supported_checks=("route_status", "api_json"),
     ) for v in MAVEN_JDKS})
 
