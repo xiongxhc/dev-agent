@@ -227,3 +227,19 @@ def test_one_dockerfile_backing_many_recipes_builds_once(tmp_path):
     ]))
     specs = toolchains.toolchain_build_specs(tmp_path)
     assert [s["image"] for s in specs] == ["devagent-jvm:m1"]   # deduped by image
+
+
+def test_adopt_recipes_are_registered():
+    for name, typ in (("maven-spring-boot", "backend"), ("node-vite-yarn", "frontend"),
+                      ("static-web", "frontend")):
+        assert recipes.get(name).type == typ
+    mvn = recipes.get("maven-spring-boot")
+    assert "-pl {name} -am package" in mvn.build_cmd
+    assert mvn.artifact_glob == "{name}/target/*.jar"
+    assert mvn.toolchain.image == "maven:3.9-eclipse-temurin-8"
+    assert mvn.toolchain.egress_hosts == ("repo.maven.apache.org", "repo1.maven.org")
+    yarn = recipes.get("node-vite-yarn")
+    assert yarn.build_cmd == "yarn install --frozen-lockfile && yarn build"
+    assert yarn.toolchain.egress_hosts == ("registry.yarnpkg.com", ".yarnpkg.com")
+    assert recipes.get("static-web").artifact_glob == "dist/index.html"
+    assert recipes.ADOPT_ONLY == {"maven-spring-boot", "node-vite-yarn", "static-web"}

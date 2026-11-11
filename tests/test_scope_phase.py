@@ -88,3 +88,12 @@ def test_catalog_lists_service_recipes():
     from devagent.phases.scope import _recipe_catalog
     cat, _ = _recipe_catalog()
     assert "postgres" in cat and "mongo" in cat
+
+
+def test_greenfield_scope_does_not_offer_adopt_only_recipes():
+    from devagent import recipes
+    from devagent.phases.scope import _recipe_catalog
+    catalog, _checks = _recipe_catalog()
+    for name in recipes.ADOPT_ONLY:
+        assert name not in catalog
+    assert "node-vite-react" in catalog and "node-express" in catalog

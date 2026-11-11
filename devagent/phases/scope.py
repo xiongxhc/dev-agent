@@ -87,6 +87,8 @@ REQUEST:
 def _recipe_catalog() -> tuple[str, str]:
     lines, checks = [], set()
     for r in recipes.REGISTRY.values():
+        if r.name in recipes.ADOPT_ONLY:
+            continue
         lines.append(f"  - {r.name} (type={r.type}, checks={list(r.supported_checks)})")
         checks.update(r.supported_checks)
     return "\n".join(lines), "  " + ", ".join(sorted(checks))
