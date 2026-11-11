@@ -56,32 +56,36 @@ SYSTEM = ("You are a senior engineer reading an unfamiliar service to describe i
           "You never guess: if the code does not show something, you omit it.")
 
 PROMPT = """\
-Read the service at /src/{service} (mounted read-only) and describe it.
+Read the service named "{name}" at /src/{service} (mounted read-only) and describe it.
 
 Return ONE JSON object, nothing else, with these fields:
   summary     A precise description of what this service does, in 3-6 sentences: its
               responsibility, the surfaces it exposes, and the datastores or services it talks
               to. Describe only what the code shows.
   kind        "backend", "frontend" or "datastore".
-  provides    The HTTP API it implements, as [{{"id": "<service>-api", "kind": "openapi",
-              "spec": {{...minimal OpenAPI: paths and methods you can see...}}}}]. Omit or use
-              [] if it exposes no HTTP surface.
-  consumes    Contract ids it calls, as strings, if any are evident.
-  depends_on  Names of sibling services it depends on, if any are evident.
+  provides    The HTTP API it implements, as [{{"id": "{name}-api", "kind": "openapi",
+              "spec": {{...minimal OpenAPI: paths and methods you can see...}}}}]. Use exactly
+              "{name}-api" as the id. Omit or use [] if it exposes no HTTP surface.
+  consumes    Contract ids it calls, as strings, if any are evident. A sibling service's HTTP
+              API has the id "<sibling>-api".
+  depends_on  Names of sibling services it depends on, if any are evident. The sibling
+              services in this system are: {siblings}. Name only these.
 
 Read the entry points, controllers/routes and configuration first. Do not speculate about
 behaviour you cannot see in the code.{retry}
 """
 
 
-def build_prompt(service: str, retry_context: str | None) -> str:
-    """The session's prompt. `service` comes from repo files and the retry context from a
-    validator's message, so both are substituted as values: braces in them stay literal text."""
+def build_prompt(service: str, retry_context: str | None, *, name: str, siblings=()) -> str:
+    """The session's prompt. `service`, `name` and `siblings` come from repo files and the retry
+    context from a validator's message, so all are substituted as values: braces in them stay
+    literal text."""
     retry = ""
     if retry_context:
         retry = ("\n\nYour previous answer failed validation:\n" + retry_context
                  + "\nReturn a corrected JSON object that satisfies every constraint.")
-    return PROMPT.format(service=service, retry=retry)
+    return PROMPT.format(service=service, name=name, siblings=", ".join(siblings) or "none",
+                         retry=retry)
 
 
 def session_options(root: str = ROOT) -> dict:
@@ -209,7 +213,7 @@ def _require_sdk() -> None:
                            f"tool call when the guard hook fails; {floor} or later is required")
 
 
-async def run(service: str, retry_context: str | None) -> int:
+async def run(service: str, name: str, siblings: list, retry_context: str | None) -> int:
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
     opts = ClaudeAgentOptions(
@@ -218,7 +222,7 @@ async def run(service: str, retry_context: str | None) -> int:
     )
     text = []
     async with ClaudeSDKClient(options=opts) as client:
-        await client.query(build_prompt(service, retry_context))
+        await client.query(build_prompt(service, retry_context, name=name, siblings=siblings))
         async for msg in client.receive_response():
             for block in getattr(msg, "content", None) or []:
                 chunk = getattr(block, "text", None)
@@ -236,11 +240,14 @@ async def run(service: str, retry_context: str | None) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--service", required=True)
+    ap.add_argument("--name", required=True)
+    ap.add_argument("--siblings", default="")
     ap.add_argument("--retry-context", default=None)
     args = ap.parse_args()
+    siblings = [s for s in args.siblings.split(",") if s]
     try:
         _require_sdk()
-        return asyncio.run(run(args.service, args.retry_context))
+        return asyncio.run(run(args.service, args.name, siblings, args.retry_context))
     except Exception as e:  # noqa: BLE001 — a failed session is a verdict, not a crash
         print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
         return 1

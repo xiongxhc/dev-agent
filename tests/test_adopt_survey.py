@@ -20,8 +20,12 @@ def _write(root, rel, body=""):
     return p
 
 
-def _pom(artifact, *, modules=(), packaging=None, boot_plugin=False, java=None, parent=False):
+def _pom(artifact, *, modules=(), packaging=None, boot_plugin=False, java=None, parent=False,
+         profiles=None):
     mods = "".join(f"<module>{m}</module>" for m in modules)
+    profs = "".join(f"<profile><id>{pid}</id><modules>"
+                    + "".join(f"<module>{m}</module>" for m in pmods) + "</modules></profile>"
+                    for pid, pmods in (profiles or {}).items())
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0">
   <artifactId>{artifact}</artifactId>
@@ -29,6 +33,7 @@ def _pom(artifact, *, modules=(), packaging=None, boot_plugin=False, java=None, 
   {f'<parent><artifactId>spring-boot-starter-parent</artifactId></parent>' if parent else ''}
   {f'<properties><java.version>{java}</java.version></properties>' if java else ''}
   {f'<modules>{mods}</modules>' if modules else ''}
+  {f'<profiles>{profs}</profiles>' if profs else ''}
   <build><plugins>
     {'<plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin>' if boot_plugin else ''}
   </plugins></build>
@@ -100,13 +105,13 @@ def test_a_maven_mirror_is_reported_because_the_build_depends_on_it(tmp_path):
     _write(tmp_path, "settings.xml", """<?xml version="1.0"?>
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
   <mirrors><mirror>
-    <id>nexus</id><url>http://192.0.2.31:8081/repository/maven-public/</url>
+    <id>nexus</id><url>https://192.0.2.31:8081/repository/maven-public/</url>
     <mirrorOf>*</mirrorOf>
   </mirror></mirrors>
 </settings>""")
     s = survey_repo(tmp_path)
     assert any("192.0.2.31:8081" in n for n in s.notes)
-    assert s.mirror_hosts == ["192.0.2.31"], "an IP must not add a domain suffix"
+    assert s.mirror_hosts == ["192.0.2.31"], "no port, and an IP adds no domain suffix"
 
 
 def test_a_hostname_mirror_also_records_its_registrable_domain(tmp_path):
@@ -197,6 +202,8 @@ def test_vendored_dependencies_are_never_walked(tmp_path):
     _write(tmp_path, "node_modules/dep/package.json", json.dumps({"name": "dep"}))
     s = survey_repo(tmp_path)
     assert [x.name for x in s.services] == ["web"]
+    assert s.services[0].stack is None, "no framework and no lockfile matches no recipe"
+    assert s.gaps == ["web: needs node unknown + no lockfile — no registered recipe"]
 
 
 # ---------------------------------------------------------------- gaps and evidence
@@ -209,7 +216,6 @@ def test_a_root_with_no_matching_recipe_becomes_an_explicit_gap(tmp_path):
     s = survey_repo(tmp_path)
     assert s.gaps and "no registered recipe" in s.gaps[0]
     assert s.services[0].stack is None
-    assert s.mappable == []
 
 
 def test_a_recipe_matches_only_when_the_package_manager_matches_too(tmp_path):
@@ -520,3 +526,155 @@ def test_index_html_beside_a_package_json_is_not_a_second_service(tmp_path):
 def test_a_directory_with_no_index_html_has_no_services(tmp_path):
     (tmp_path / "README.md").write_text("x")
     assert survey_repo(tmp_path).services == []
+
+
+# ---------------------------------------------------------------- maven reactor shapes
+
+def _boot_module(root, rel, artifact):
+    _write(root, f"{rel}/pom.xml", _pom(artifact, boot_plugin=True))
+    _write(root, f"{rel}/src/main/java/App.java", "@SpringBootApplication class App {}")
+
+
+def test_a_module_listed_in_two_profiles_is_a_note_not_a_service(tmp_path):
+    """Profile modules are not in the default build. Counting them as modules made one listed
+    twice a duplicate service, which refused the whole repo."""
+    _write(tmp_path, "pom.xml", _pom("app", modules=["api"], packaging="pom", java="17",
+                                     profiles={"dev": ["worker"], "all": ["api", "worker"]}))
+    _boot_module(tmp_path, "api", "api")
+    _boot_module(tmp_path, "worker", "worker")
+    s = survey_repo(tmp_path)
+    assert [x.name for x in s.services] == ["api"]
+    profile_notes = [n for n in s.notes if "profile" in n]
+    assert len(profile_notes) == 2, profile_notes
+    assert all("worker" in n and "not in the default build" in n for n in profile_notes)
+    assert not any("'api'" in n for n in profile_notes), "a default module is not profile-only"
+
+
+def test_a_profile_only_module_is_not_surveyed(tmp_path):
+    _write(tmp_path, "pom.xml", _pom("app", modules=["api"], packaging="pom", java="17",
+                                     profiles={"extra": ["worker"]}))
+    _boot_module(tmp_path, "api", "api")
+    _boot_module(tmp_path, "worker", "worker")
+    s = survey_repo(tmp_path)
+    assert [x.name for x in s.services] == ["api"]
+    assert "worker" not in [x.name for x in s.libraries]
+    assert any("'extra'" in n and "worker" in n and "not in the default build" in n
+               for n in s.notes)
+
+
+def _two_level_reactor(root):
+    """The top reactor declares `services`, which is itself an aggregator of api and worker."""
+    _write(root, "pom.xml", _pom("app", modules=["services"], packaging="pom", java="17"))
+    _write(root, "services/pom.xml", _pom("services", modules=["api", "worker"],
+                                          packaging="pom"))
+    _boot_module(root, "services/api", "api")
+    _boot_module(root, "services/worker", "worker")
+
+
+def test_a_nested_aggregator_is_walked_into(tmp_path):
+    """A declared module whose own POM declares modules is an aggregator, not a library; the
+    services are below it and keep the top reactor as their build root."""
+    _two_level_reactor(tmp_path)
+    s = survey_repo(tmp_path)
+    assert [(x.name, x.path, x.repo) for x in s.services] == [
+        ("api", "services/api", str(tmp_path)), ("worker", "services/worker", str(tmp_path))]
+    assert s.libraries == []
+    assert [x.stack for x in s.services] == ["maven-spring-boot-jdk17"] * 2
+    assert s.gaps == []
+
+
+def test_a_nested_aggregators_profile_modules_are_a_note(tmp_path):
+    _two_level_reactor(tmp_path)
+    _write(tmp_path, "services/pom.xml", _pom("services", modules=["api", "worker"],
+                                              packaging="pom", profiles={"extra": ["batch"]}))
+    _boot_module(tmp_path, "services/batch", "batch")
+    s = survey_repo(tmp_path)
+    assert [x.name for x in s.services] == ["api", "worker"]
+    assert any(n.startswith("services: maven profile 'extra'") and "batch" in n
+               for n in s.notes)
+
+
+def test_a_blank_module_entry_is_ignored(tmp_path):
+    _write(tmp_path, "pom.xml", _pom("app", modules=["api", "  ", "api"], packaging="pom",
+                                     java="17"))
+    _boot_module(tmp_path, "api", "api")
+    s = survey_repo(tmp_path)
+    assert [(x.name, x.path) for x in s.services] == [("api", "api")]
+    assert s.libraries == []
+
+
+# ---------------------------------------------------------------- node packages
+
+def test_a_tooling_package_json_at_the_root_is_not_a_service(tmp_path):
+    """A root package.json holding only tooling scripts builds nothing. It must not become a
+    service, clash with a module of the same name, or hide the app below it."""
+    _write(tmp_path, "pom.xml", _pom("app", modules=["api"], packaging="pom", java="17"))
+    _boot_module(tmp_path, "api", "api")
+    _write(tmp_path, "package.json", json.dumps({
+        "name": "api", "scripts": {"lint": "eslint .", "prepare": "husky"},
+        "devDependencies": {"husky": "9"}}))
+    _write(tmp_path, "web/package.json", json.dumps({
+        "name": "web", "scripts": {"build": "vite build"}, "devDependencies": {"vite": "5"}}))
+    _write(tmp_path, "web/yarn.lock", "")
+    s = survey_repo(tmp_path)
+    assert sorted((x.name, x.path) for x in s.services) == [("api", "api"), ("web", "web")]
+    assert any("no build" in n and "'api'" in n for n in s.notes)
+
+
+def test_a_root_app_with_a_build_script_still_stops_the_child_walk(tmp_path):
+    _write(tmp_path, "package.json", json.dumps({"name": "web", "scripts": {"build": "x"}}))
+    _write(tmp_path, "tools/package.json", json.dumps({"name": "tools",
+                                                       "scripts": {"build": "x"}}))
+    assert [x.name for x in survey_repo(tmp_path).services] == ["web"]
+
+
+def test_a_workspaces_root_stops_the_child_walk(tmp_path):
+    _write(tmp_path, "package.json", json.dumps({"name": "mono", "workspaces": ["packages/*"]}))
+    _write(tmp_path, "web/package.json", json.dumps({"name": "web", "scripts": {"build": "x"}}))
+    s = survey_repo(tmp_path)
+    assert s.services == []
+    assert any("no build" in n for n in s.notes)
+
+
+# ---------------------------------------------------------------- mirror hosts
+
+def _settings(root, url):
+    _write(root, "pom.xml", _pom("app", boot_plugin=True, java="17"))
+    _write(root, "settings.xml", f"""<?xml version="1.0"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+  <mirrors><mirror><id>m</id><url>{url}</url><mirrorOf>*</mirrorOf></mirror></mirrors>
+</settings>""")
+
+
+def test_an_npmrc_mirror_with_a_port_is_recorded_without_it(tmp_path):
+    """The proxy compares the CONNECT host without its port, so `host:port` never matches."""
+    _write(tmp_path, "package.json", json.dumps({"name": "web", "scripts": {"build": "x"}}))
+    _write(tmp_path, ".npmrc", "registry=https://npm.example.com:4873/\n")
+    assert survey_repo(tmp_path).mirror_hosts == ["npm.example.com", ".example.com"]
+
+
+@pytest.mark.parametrize("url,hosts", [
+    ("https://192.0.2.31:8081/repo/", ["192.0.2.31"]),
+    ("https://[2001:db8::1]:8443/repo/", ["2001:db8::1"]),
+    ("https://registry.example.co.uk/repo/", ["registry.example.co.uk"]),
+    ("https://npm.example.com.au/", ["npm.example.com.au"]),
+    ("https://example.com/repo/", ["example.com"]),
+    ("https://a.registry.example.com/repo/", ["a.registry.example.com", ".registry.example.com"]),
+])
+def test_the_sibling_suffix_never_opens_a_public_suffix_or_an_ip_range(tmp_path, url, hosts):
+    _settings(tmp_path, url)
+    assert survey_repo(tmp_path).mirror_hosts == hosts
+
+
+@pytest.mark.parametrize("where", ["settings.xml", ".npmrc"])
+def test_a_plain_http_mirror_is_a_note_not_an_allowlisted_host(tmp_path, where):
+    """The egress proxy tunnels HTTPS only, so allowlisting an http mirror would tell the
+    operator the host is reachable when the build cannot reach it."""
+    if where == "settings.xml":
+        _settings(tmp_path, "http://repo.example.com/maven/")
+    else:
+        _write(tmp_path, "package.json", json.dumps({"name": "web", "scripts": {"build": "x"}}))
+        _write(tmp_path, ".npmrc", "registry=http://repo.example.com/npm/\n")
+    s = survey_repo(tmp_path)
+    assert s.mirror_hosts == []
+    assert any("repo.example.com" in n and "http" in n and "HTTPS only" in n for n in s.notes)

@@ -557,3 +557,209 @@ def test_check_run_dir_refuses_what_adopt_refuses(tmp_path):
         check_run_dir([repo], used)
     check_run_dir([repo], tmp_path / "fresh")
     assert not (tmp_path / "fresh").exists()
+
+
+# ---------------------------------------------------------------- reactor shapes reach prove
+
+def _boot(root, rel, artifact):
+    (root / rel / "src/main/java").mkdir(parents=True)
+    (root / rel / "pom.xml").write_text(_POM.format(a=artifact, body=_BOOT))
+    (root / rel / "src/main/java/App.java").write_text("@SpringBootApplication class App {}")
+
+
+def test_a_two_level_aggregator_hands_prove_paths_from_the_top_reactor(tmp_path):
+    repo = tmp_path / "reactor"
+    repo.mkdir()
+    (repo / "pom.xml").write_text(_POM.format(
+        a="root", body="<packaging>pom</packaging><properties><java.version>17</java.version>"
+                       "</properties><modules><module>services</module></modules>"))
+    (repo / "services").mkdir()
+    (repo / "services/pom.xml").write_text(_POM.format(
+        a="services", body="<packaging>pom</packaging>"
+                           "<modules><module>api</module><module>worker</module></modules>"))
+    _boot(repo, "services/api", "api")
+    _boot(repo, "services/worker", "worker")
+    seen = {}
+
+    def prover(design, run_dir, **kw):
+        seen.update(kw.get("modules") or {})
+        return []
+
+    result = adopt(repo, tmp_path / "out", prover=prover)
+    assert result.status == "adopted"
+    assert seen == {"api": "services/api", "worker": "services/worker"}
+    assert (tmp_path / "out/services/api/out/pom.xml").is_file(), "the top reactor is copied"
+
+
+# ---------------------------------------------------------------- nothing is proven unbuilt
+
+def _real_prove_that_must_not_build(design, run_dir, **kw):
+    from devagent.adopt.prove import prove
+
+    def no_build(*a, **k):
+        pytest.fail("a build was attempted for a service no recipe fits")
+    return prove(design, run_dir, runner=no_build, mount_check=lambda image, source: None, **kw)
+
+
+@pytest.mark.parametrize("package,stack", [
+    ({"name": "web", "scripts": {"build": "vite build"}, "devDependencies": {"vite": "5"}},
+     "node-vite-no-lockfile"),
+    ({"name": "tool", "scripts": {"build": "tsc"}}, "node-no-lockfile"),
+])
+def test_a_node_app_with_no_lockfile_is_unmappable_not_built(tmp_path, package, stack):
+    """The static-site recipe copies files into dist/, so running it on an unbuilt node app
+    would report `proven` for something nothing built."""
+    repo = tmp_path / "app"
+    repo.mkdir()
+    (repo / "package.json").write_text(json.dumps(package))
+    (repo / "index.html").write_text("<html>")
+    result = adopt(repo, tmp_path / "out", prover=_real_prove_that_must_not_build)
+    assert result.status == "adopted"
+    assert result.design.services[0].stack == stack
+    assert [v.status for v in result.verdicts] == [UNMAPPABLE]
+    name = package["name"]
+    assert result.survey.gaps == [f"{name}: needs node "
+                                  f"{'vite' if 'vite' in stack else 'unknown'} + no lockfile"
+                                  f" — no registered recipe"]
+
+
+# ---------------------------------------------------------------- mapping findings
+
+def _two_services(tmp_path):
+    repo = tmp_path / "pair"
+    repo.mkdir()
+    (repo / "pom.xml").write_text(_POM.format(
+        a="root", body="<packaging>pom</packaging><properties><java.version>17</java.version>"
+                       "</properties><modules><module>api</module><module>worker</module>"
+                       "</modules>"))
+    _boot(repo, "api", "api")
+    _boot(repo, "worker", "worker")
+    return repo
+
+
+def _frag(name, provides=(), consumes=(), depends_on=()):
+    return Fragment(service=name, prd_slice=f"The {name} service, read from its code." * 2,
+                    kind="backend",
+                    provides=tuple({"id": c, "kind": "openapi", "spec": {}} for c in provides),
+                    consumes=tuple(consumes), depends_on=tuple(depends_on))
+
+
+def test_two_services_claiming_one_contract_id_is_a_finding_not_a_failed_run(tmp_path):
+    out = tmp_path / "out"
+
+    def fake_map(repo, service):
+        return _frag(service.name, provides=["service-api"])
+
+    result = adopt(_two_services(tmp_path), out, map_fn=fake_map, prover=_unmappable)
+    assert result.status == "adopted", result.detail
+    assert [(c.id, c.producer) for c in result.design.contracts] == [("service-api", "api")]
+    worker = next(s for s in result.design.services if s.name == "worker")
+    assert worker.provides == []
+    assert {"contract": "service-api (also claimed by worker)", "consumed_by": []} \
+        in result.externals
+    assert "service-api (also claimed by worker)" in (out / "report.html").read_text()
+
+
+def test_two_services_that_depend_on_each_other_drop_the_edge_that_closes_the_cycle(tmp_path):
+    out = tmp_path / "out"
+
+    def fake_map(repo, service):
+        if service.name == "api":
+            return _frag("api", provides=["api-api"], consumes=["worker-api"])
+        return _frag("worker", provides=["worker-api"], consumes=["api-api"],
+                     depends_on=["api"])
+
+    result = adopt(_two_services(tmp_path), out, map_fn=fake_map, prover=_unmappable)
+    assert result.status == "adopted", result.detail
+    by = {s.name: s for s in result.design.services}
+    assert (by["api"].depends_on, by["api"].consumes) == (["worker"], ["worker-api"])
+    assert (by["worker"].depends_on, by["worker"].consumes) == ([], [])
+    finding = next(e for e in result.externals if "cycle" in e["contract"])
+    assert finding["consumed_by"] == ["worker"] and "api-api" in finding["contract"]
+    assert finding["contract"] in (out / "report.html").read_text()
+
+
+def test_a_map_fn_that_takes_siblings_is_told_the_other_services(tmp_path):
+    seen = {}
+
+    def fake_map(repo, service, siblings=()):
+        seen[service.name] = list(siblings)
+        return None
+
+    adopt(_two_services(tmp_path), tmp_path / "out", map_fn=fake_map, prover=_unmappable)
+    assert seen == {"api": ["worker"], "worker": ["api"]}
+
+
+def test_why_a_session_failed_reaches_the_ledger(tmp_path, monkeypatch):
+    from devagent.adopt import mapper
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-the-lane-0123456789")
+    monkeypatch.delenv("DEVAGENT_ADOPT_ARM", raising=False)
+
+    def map_fn(repo, service):
+        return mapper.map_service(repo, service, runner=lambda *a: json.dumps(
+            {"error": "RuntimeError: claude-agent-sdk 0.2.100 is too old"}))
+
+    out = tmp_path / "out"
+    adopt(_two_services(tmp_path), out, map_fn=map_fn, prover=_unmappable)
+    events = [json.loads(l) for l in (out / "ledger.jsonl").read_text().splitlines()]
+    failed = [e for e in events if e["event"] == "adopt_map_failed"]
+    assert [e["service"] for e in failed] == ["api", "worker"]
+    assert all("claude-agent-sdk 0.2.100 is too old" in e["detail"] for e in failed)
+
+
+# ---------------------------------------------------------------- what the copy keeps
+
+def test_the_copy_drops_build_output_only_where_a_build_put_it(tmp_path):
+    """Build output is named by its build file's neighbour; the same name elsewhere is
+    source, and `.mvn/` is build configuration Maven reads from the project root."""
+    repo = _repo(tmp_path)
+    keep = ["api/src/main/java/com/example/build/Tool.java",
+            "api/src/main/resources/static/dist/app.js",
+            ".mvn/maven.config", "web/src/out/page.ts"]
+    drop = ["api/target/api.jar", "target/root.txt", ".git/HEAD"]
+    for rel in keep + drop:
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("x")
+    (repo / "web/dist").mkdir()
+    (repo / "web/dist/index.html").write_text("<html>")
+    out = tmp_path / "out"
+    adopt(repo, out, prover=_unmappable)
+    api, web = out / "services/api/out", out / "services/web/out"
+    for rel in keep[:3]:
+        assert (api / rel).is_file(), rel
+    assert (web / "src/out/page.ts").is_file()
+    for rel in drop:
+        assert not (api / rel).exists(), rel
+    assert not (web / "dist").exists(), "dist beside a package.json is build output"
+
+
+# ---------------------------------------------------------------- the run dir
+
+def test_a_repo_inside_the_run_dir_is_told_to_use_an_out_that_does_not_contain_it(tmp_path):
+    run = tmp_path / "run"
+    repo = _repo(run)
+    with pytest.raises(ValueError, match="pass an --out that does not contain the repo"):
+        adopt(repo, run, prover=_unmappable)
+
+
+def test_an_out_that_is_a_file_is_refused(tmp_path):
+    from devagent.adopt.lane import check_run_dir
+
+    out = tmp_path / "out"
+    out.write_text("not a directory")
+    with pytest.raises(ValueError, match="not a directory"):
+        check_run_dir([_repo(tmp_path)], out)
+    assert out.read_text() == "not a directory"
+
+
+def test_a_module_path_starting_with_a_dash_is_not_read_as_an_option(tmp_path):
+    """`mvn -pl -api` reads `-api` as an exclusion; `./-api` names the module."""
+    src = tmp_path / "out"
+    (src / "-api/target").mkdir(parents=True)
+    (src / "-api/target/app.jar").write_text("x")
+    commands = []
+    v = prove_service(_node(), src, module="-api", registry={"r": _MODULE_RECIPE},
+                      runner=_recording(commands))
+    assert commands == ["mvn -pl ./-api -am package"]
+    assert v.status == PROVEN, v.detail

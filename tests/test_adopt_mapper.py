@@ -186,22 +186,22 @@ def test_the_sdk_floor_is_the_first_release_that_blocks_on_hook_failure(version,
 
 def test_an_sdk_too_old_for_the_locks_refuses_to_run(monkeypatch, capsys):
     monkeypatch.setattr(mapper_runner, "_installed_sdk_version", lambda: "0.2.100")
-    monkeypatch.setattr("sys.argv", ["mapper.py", "--service=api"])
+    monkeypatch.setattr("sys.argv", ["mapper.py", "--service=api", "--name=api"])
     assert mapper_runner.main() == 1
     assert "error" in json.loads(capsys.readouterr().out.strip().splitlines()[-1])
 
 
 def test_a_missing_sdk_refuses_to_run(monkeypatch, capsys):
     monkeypatch.setattr(mapper_runner, "_installed_sdk_version", lambda: None)
-    monkeypatch.setattr("sys.argv", ["mapper.py", "--service=api"])
+    monkeypatch.setattr("sys.argv", ["mapper.py", "--service=api", "--name=api"])
     assert mapper_runner.main() == 1
     assert "error" in json.loads(capsys.readouterr().out.strip().splitlines()[-1])
 
 
 def test_the_service_path_is_passed_as_one_option_value():
     argv = mapper._container_argv("img", Path("/repo"), "-api", None, None)
-    assert argv[-1] == "--service=-api"
-    assert argv[argv.index("img") + 1:] == ["python3", "/mapper.py", "--service=-api"]
+    assert argv[argv.index("img") + 1:] == ["python3", "/mapper.py", "--service=-api",
+                                            "--name=", "--siblings="]
 
 
 def test_no_credential_value_reaches_the_docker_argv(monkeypatch):
@@ -262,7 +262,7 @@ def test_an_invalid_fragment_is_re_asked_then_given_up_on(tmp_path):
     no longer what the model read."""
     calls = []
 
-    def bad(image, repo, path, network, proxy, timeout, prior):
+    def bad(image, repo, path, network, proxy, timeout, prior, *_):
         calls.append(prior)
         return '{"summary": "too short"}'          # fails min_length
 
@@ -274,7 +274,7 @@ def test_an_invalid_fragment_is_re_asked_then_given_up_on(tmp_path):
 def test_a_contract_kind_the_schema_refuses_is_re_asked_not_accepted(tmp_path):
     calls = []
 
-    def grpc(image, repo, path, network, proxy, timeout, prior):
+    def grpc(image, repo, path, network, proxy, timeout, prior, *_):
         calls.append(prior)
         return json.dumps({"summary": "A service that exposes a gRPC surface only.",
                            "provides": [{"id": "api", "kind": "grpc", "spec": {}}]})
@@ -286,7 +286,7 @@ def test_a_contract_kind_the_schema_refuses_is_re_asked_not_accepted(tmp_path):
 def test_a_valid_fragment_becomes_a_fragment(tmp_path):
     seen = []
 
-    def good(image, repo, path, network, proxy, timeout, prior):
+    def good(image, repo, path, network, proxy, timeout, prior, *_):
         seen.append(path)
         return json.dumps({
             "summary": "An HTTP API that stores orders and reads prices from a sibling service.",
@@ -318,22 +318,35 @@ def test_a_path_outside_the_repo_is_not_mapped_and_nothing_runs(tmp_path, path):
 def test_the_repo_root_is_a_mappable_path(tmp_path):
     seen = []
 
-    def empty(image, repo, path, network, proxy, timeout, prior):
+    def empty(image, repo, path, network, proxy, timeout, prior, *_):
         seen.append(path)
         return None
 
-    assert mapper.map_service(tmp_path, _svc("."), runner=empty) is None
+    with pytest.raises(RuntimeError, match="no answer"):
+        mapper.map_service(tmp_path, _svc("."), runner=empty)
     assert seen == ["."]
 
 
 def test_braces_in_a_service_path_do_not_change_the_prompt():
     odd = "we{b}/{retry}/{0}"
-    plain = mapper_runner.build_prompt("X", None)
-    assert mapper_runner.build_prompt(odd, None) == plain.replace("/src/X", f"/src/{odd}")
+    plain = mapper_runner.build_prompt("X", None, name="api")
+    assert mapper_runner.build_prompt(odd, None, name="api") == \
+        plain.replace("/src/X", f"/src/{odd}")
+
+
+def test_braces_in_a_name_or_a_sibling_stay_literal():
+    prompt = mapper_runner.build_prompt("api", None, name="{retry}", siblings=["{0}", "{name}"])
+    assert '"{retry}-api"' in prompt and "{0}, {name}" in prompt
+
+
+def test_the_prompt_names_the_service_its_contract_id_and_its_siblings():
+    prompt = mapper_runner.build_prompt(".", None, name="web", siblings=["api", "worker"])
+    assert "web" in prompt and '"web-api"' in prompt
+    assert "api, worker" in prompt and '"<sibling>-api"' in prompt
 
 
 def test_a_retry_carries_the_validation_error_into_the_prompt():
-    prompt = mapper_runner.build_prompt("api", "summary: too short {x}")
+    prompt = mapper_runner.build_prompt("api", "summary: too short {x}", name="api")
     assert "summary: too short {x}" in prompt
     assert "/src/api" in prompt
 
@@ -357,11 +370,13 @@ def test_an_answer_carrying_the_credential_is_not_mapped_and_not_re_asked(
     monkeypatch.setenv(var, _FAKE_KEY)
     calls = []
 
-    def leaky(image, repo, path, network, proxy, timeout, prior):
+    def leaky(image, repo, path, network, proxy, timeout, prior, *_):
         calls.append(prior)
         return _answer(summary=f"A service whose environment holds {_FAKE_KEY} for its calls.")
 
-    assert mapper.map_service(tmp_path, _svc(), runner=leaky) is None
+    with pytest.raises(RuntimeError, match="carried the credential") as e:
+        mapper.map_service(tmp_path, _svc(), runner=leaky)
+    assert _FAKE_KEY[:20] not in str(e.value)
     assert len(calls) == 1, "never fed back"
 
 
@@ -372,7 +387,8 @@ def test_a_valid_answer_carrying_the_credential_in_a_spec_is_not_mapped(tmp_path
         return _answer(provides=[{"id": "api-api", "kind": "openapi",
                                   "spec": {"x-token": _FAKE_KEY}}])
 
-    assert mapper.map_service(tmp_path, _svc(), runner=leaky) is None
+    with pytest.raises(RuntimeError, match="carried the credential"):
+        mapper.map_service(tmp_path, _svc(), runner=leaky)
 
 
 def test_an_escaped_credential_in_the_answer_is_still_recognised(tmp_path, monkeypatch):
@@ -381,7 +397,8 @@ def test_an_escaped_credential_in_the_answer_is_still_recognised(tmp_path, monke
     raw = _answer(summary="A service whose environment holds KEY for its outbound calls.")
     raw = raw.replace("KEY", escaped)
     assert _FAKE_KEY not in raw and json.loads(raw)["summary"].count(_FAKE_KEY) == 1
-    assert mapper.map_service(tmp_path, _svc(), runner=lambda *a: raw) is None
+    with pytest.raises(RuntimeError, match="carried the credential"):
+        mapper.map_service(tmp_path, _svc(), runner=lambda *a: raw)
 
 
 def _every_ten(key, sep):
@@ -396,7 +413,8 @@ def test_a_split_or_partial_credential_in_the_answer_is_recognised(tmp_path, mon
     monkeypatch.setenv("ANTHROPIC_API_KEY", _FAKE_KEY)
     raw = _answer(summary=f"A service whose environment holds {leak} for its outbound calls.")
     assert _FAKE_KEY not in raw
-    assert mapper.map_service(tmp_path, _svc(), runner=lambda *a: raw) is None
+    with pytest.raises(RuntimeError, match="carried the credential"):
+        mapper.map_service(tmp_path, _svc(), runner=lambda *a: raw)
 
 
 def test_an_answer_sharing_only_a_short_run_with_the_credential_is_kept(tmp_path, monkeypatch):
@@ -408,7 +426,8 @@ def test_an_answer_sharing_only_a_short_run_with_the_credential_is_kept(tmp_path
 def test_a_credential_shorter_than_the_run_is_checked_whole(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-short-key")
     leaked = _answer(summary="A service whose environment holds sk-short-key for its calls.")
-    assert mapper.map_service(tmp_path, _svc(), runner=lambda *a: leaked) is None
+    with pytest.raises(RuntimeError, match="carried the credential"):
+        mapper.map_service(tmp_path, _svc(), runner=lambda *a: leaked)
     partial = _answer(summary="A service whose environment holds sk-short for its calls.")
     assert mapper.map_service(tmp_path, _svc(), runner=lambda *a: partial) is not None
 
@@ -418,7 +437,7 @@ def test_the_retry_context_names_the_failure_without_echoing_the_answer(tmp_path
     calls = []
     long_value = "Q" * 30 + "middle-of-a-long-value" + "Z" * 30
 
-    def bad(image, repo, path, network, proxy, timeout, prior):
+    def bad(image, repo, path, network, proxy, timeout, prior, *_):
         calls.append(prior)
         return _answer(kind=long_value)
 
@@ -435,7 +454,7 @@ def test_a_retry_context_carrying_the_credential_is_not_sent(tmp_path, monkeypat
     monkeypatch.setattr(mapper, "_retry_context", lambda e: f"bad: {_FAKE_KEY}")
     calls = []
 
-    def bad(image, repo, path, network, proxy, timeout, prior):
+    def bad(image, repo, path, network, proxy, timeout, prior, *_):
         calls.append(prior)
         return '{"summary": "too short"}'
 
@@ -446,7 +465,7 @@ def test_a_retry_context_carrying_the_credential_is_not_sent(tmp_path, monkeypat
 def test_a_duplicate_provided_contract_is_re_asked(tmp_path):
     calls = []
 
-    def dup(image, repo, path, network, proxy, timeout, prior):
+    def dup(image, repo, path, network, proxy, timeout, prior, *_):
         calls.append(prior)
         return _answer(provides=[{"id": "api-api", "kind": "openapi", "spec": {}},
                                  {"id": "api-api", "kind": "openapi", "spec": {}}])
@@ -458,7 +477,7 @@ def test_a_duplicate_provided_contract_is_re_asked(tmp_path):
 def test_consuming_an_own_provided_contract_is_re_asked(tmp_path):
     calls = []
 
-    def loop(image, repo, path, network, proxy, timeout, prior):
+    def loop(image, repo, path, network, proxy, timeout, prior, *_):
         calls.append(prior)
         return _answer(consumes=["api-api"])
 
@@ -469,19 +488,31 @@ def test_consuming_an_own_provided_contract_is_re_asked(tmp_path):
 def test_a_failed_session_is_not_re_asked(tmp_path):
     calls = []
 
-    def failed(image, repo, path, network, proxy, timeout, prior):
+    def failed(image, repo, path, network, proxy, timeout, prior, *_):
         calls.append(prior)
         return json.dumps({"error": "CLIConnectionError: endpoint unreachable"})
 
-    assert mapper.map_service(tmp_path, _svc(), runner=failed) is None
+    with pytest.raises(RuntimeError, match="^CLIConnectionError: endpoint unreachable$"):
+        mapper.map_service(tmp_path, _svc(), runner=failed)
     assert calls == [None]
+
+
+def test_a_failed_session_whose_error_carries_the_credential_is_withheld(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", _FAKE_KEY)
+
+    def failed(*a):
+        return json.dumps({"error": f"AuthError: bad key {_FAKE_KEY[5:30]}"})
+
+    with pytest.raises(RuntimeError) as e:
+        mapper.map_service(tmp_path, _svc(), runner=failed)
+    assert _FAKE_KEY[5:25] not in str(e.value) and "withheld" in str(e.value)
 
 
 @pytest.mark.parametrize("kind", ["service", "Backend", "library"])
 def test_a_kind_outside_the_three_is_re_asked(tmp_path, kind):
     calls = []
 
-    def odd(image, repo, path, network, proxy, timeout, prior):
+    def odd(image, repo, path, network, proxy, timeout, prior, *_):
         calls.append(prior)
         return _answer(kind=kind)
 
@@ -497,7 +528,7 @@ def test_no_kind_is_accepted(tmp_path):
 def test_an_overlong_summary_is_re_asked(tmp_path):
     calls = []
 
-    def long(image, repo, path, network, proxy, timeout, prior):
+    def long(image, repo, path, network, proxy, timeout, prior, *_):
         calls.append(prior)
         return _answer(summary="A" * 4001)
 
@@ -534,3 +565,66 @@ def test_making_the_mapper_with_a_valid_setup_returns_a_map_function(monkeypatch
     monkeypatch.setenv("DEVAGENT_ADOPT_ARM", arm)
     monkeypatch.setenv(var, _FAKE_KEY)
     assert callable(mapper.make_mapper())
+
+
+# ---------------------------------------------------------------- the service's name and siblings
+
+def test_the_session_is_given_the_service_name_and_its_siblings(tmp_path):
+    seen = []
+
+    def good(image, repo, path, network, proxy, timeout, prior, name, siblings):
+        seen.append((path, name, list(siblings)))
+        return _answer()
+
+    svc = ServiceRoot(name="web", path=".", kind="node-app", deployable=True)
+    assert mapper.map_service(tmp_path, svc, siblings=["api", "worker"], runner=good)
+    assert seen == [(".", "web", ["api", "worker"])]
+
+
+def test_the_name_and_siblings_reach_the_argv_as_option_values():
+    argv = mapper._container_argv("img", Path("/repo"), ".", None, None, "web", ["api", "worker"])
+    assert argv[-3:] == ["--service=.", "--name=web", "--siblings=api,worker"]
+
+
+def test_an_unsafe_sibling_name_never_reaches_the_session(tmp_path):
+    seen = []
+
+    def good(image, repo, path, network, proxy, timeout, prior, name, siblings):
+        seen.append(list(siblings))
+        return _answer()
+
+    mapper.map_service(tmp_path, _svc(), siblings=["worker", "a,b", "-rf", "x y", "api"],
+                       runner=good)
+    assert seen == [["worker"]], "unsafe names and the service itself are dropped"
+
+
+@pytest.mark.parametrize("name", ["-rf", "a,b", "", "x y"])
+def test_an_unsafe_service_name_is_not_mapped_and_nothing_runs(tmp_path, name):
+    def never(*a):
+        pytest.fail("no session may start for an unsafe name")
+
+    svc = ServiceRoot(name=name, path="api", kind="maven-module", deployable=True)
+    assert mapper.map_service(tmp_path, svc, runner=never) is None
+
+
+def test_the_runner_reads_the_name_and_siblings(monkeypatch):
+    seen = {}
+
+    async def fake_run(service, name, siblings, retry_context):
+        seen.update(service=service, name=name, siblings=siblings)
+        return 0
+    monkeypatch.setattr(mapper_runner, "_require_sdk", lambda: None)
+    monkeypatch.setattr(mapper_runner, "run", fake_run)
+    monkeypatch.setattr("sys.argv", ["mapper.py", "--service=.", "--name=web",
+                                     "--siblings=api,worker"])
+    assert mapper_runner.main() == 0
+    assert seen == {"service": ".", "name": "web", "siblings": ["api", "worker"]}
+
+
+def test_the_made_mapper_passes_the_siblings_on(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", _FAKE_KEY)
+    seen = {}
+    monkeypatch.setattr(mapper, "map_service",
+                        lambda repo, service, **kw: seen.update(kw) or None)
+    mapper.make_mapper()(tmp_path, _svc(), siblings=["worker"])
+    assert seen["siblings"] == ["worker"]

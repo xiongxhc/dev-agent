@@ -20,6 +20,8 @@ continues. A run ends before prove when the repo cannot be read, when it has no 
 (`survey_only`), or when the design gate fails (`gate_failed`).
 """
 
+import fnmatch
+import inspect
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -29,14 +31,14 @@ from ..ledger import Ledger
 from . import assemble as _assemble
 from .prove import PROVEN, UNMAPPABLE, UNPROVEN, prove
 from .report import write_report
-from .survey import survey_repo, survey_repos
+from .survey import not_source, survey_repo, survey_repos
 
-#: Never adopted as source: vendored dependencies and prior build output. Checked against the
-#: top-level name as well as passed to copytree — `ignore_patterns` filters a directory's
-#: CONTENTS, so copytree(node_modules, ...) would happily copy the whole thing.
-_EXCLUDE_NAMES = frozenset({".git", "node_modules", "target", "dist", "build", ".venv",
-                            "__pycache__", ".idea", ".mvn", ".gradle", "out"})
-_COPY_EXCLUDE = shutil.ignore_patterns(*_EXCLUDE_NAMES, "*.log")
+
+def _copy_exclude(directory, names) -> set:
+    """What copytree leaves out of `directory`: whatever the survey does not treat as source
+    (vendored dependencies, and build output beside the build file that makes it), and logs."""
+    parent = Path(directory)
+    return {n for n in names if not_source(parent, n) or fnmatch.fnmatch(n, "*.log")}
 
 
 @dataclass
@@ -56,6 +58,14 @@ class AdoptResult:
         for v in self.verdicts:
             out[v.status] = out.get(v.status, 0) + 1
         return out
+
+
+def _takes_siblings(map_fn) -> bool:
+    """Does `map_fn` accept a `siblings` keyword? A two-argument map_fn keeps working."""
+    try:
+        return "siblings" in inspect.signature(map_fn).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _is_reactor_module(service) -> bool:
@@ -78,12 +88,15 @@ def _copy_source(service, dest: Path) -> None:
     # is built in CI.
     src = repo if (service.path == "." or _is_reactor_module(service)) else repo / service.path
     dest.mkdir(parents=True, exist_ok=True)
+    # The top level is filtered here as well as by copytree: `ignore` filters a directory's
+    # CONTENTS, so copytree(node_modules, ...) would copy the whole thing.
+    skipped = _copy_exclude(src, [item.name for item in src.iterdir()])
     for item in src.iterdir():
-        if item.name in _EXCLUDE_NAMES:
+        if item.name in skipped:
             continue
         target = dest / item.name
         if not item.is_symlink() and item.is_dir():
-            shutil.copytree(item, target, symlinks=True, ignore=_COPY_EXCLUDE,
+            shutil.copytree(item, target, symlinks=True, ignore=_copy_exclude,
                             dirs_exist_ok=True)
         else:
             shutil.copy2(item, target, follow_symlinks=False)
@@ -105,6 +118,9 @@ def check_run_dir(repos, out: Path) -> None:
 
     A run dir that already holds files is refused too: copying over a previous run's tree would
     write through the links it copied, or fail on them. Nothing is deleted to make room."""
+    if out.exists() and not out.is_dir():
+        raise ValueError(f"the run dir {out} exists and is not a directory — pass an --out "
+                         f"that is a new or empty directory")
     for repo in repos:
         if _within(out, repo):
             raise ValueError(f"the run dir {out} is inside the source repo {repo} — adopt never "
@@ -112,7 +128,8 @@ def check_run_dir(repos, out: Path) -> None:
         if _within(repo, out):
             raise ValueError(f"the source repo {repo} is inside the run dir {out} — adopt "
                              f"writes its copies under the run dir and would write into the "
-                             f"repo it describes; pass --out somewhere outside the repo")
+                             f"repo it describes; pass an --out that does not contain the "
+                             f"repo")
     if out.is_dir() and any(out.iterdir()):
         raise ValueError(f"the run dir {out} already holds a run — adopt never reuses or cleans "
                          f"one; pass a new --out")
@@ -124,7 +141,9 @@ def adopt(repo_path, out_dir, *, map_fn=None, prover=prove, title=None,
 
     `map_fn(repo, service) -> Fragment | None` is the agentic stage, injected so the lane is
     testable end to end without tokens; `None` from it (or no map_fn at all) means the service is
-    described from survey evidence and marked NOT MAPPED.
+    described from survey evidence and marked NOT MAPPED. A map_fn that also takes a `siblings`
+    keyword is given the names of the other surveyed services, so a session reading one service
+    can name the ones it depends on.
 
     `prover` receives `modules=`, each service's module path inside its copied source: the
     service's `path` for a Maven reactor module, `.` for everything else, whose copied source
@@ -151,11 +170,14 @@ def adopt(repo_path, out_dir, *, map_fn=None, prover=prove, title=None,
 
     # Map. Read-only per service; a failure degrades that service, never the run.
     fragments = []
+    names = [s.name for s in survey.services]
     for svc in survey.services:
         frag = None
         if map_fn is not None:
+            extra = {"siblings": [n for n in names if n != svc.name]} \
+                if _takes_siblings(map_fn) else {}
             try:
-                frag = map_fn(Path(svc.repo), svc)
+                frag = map_fn(Path(svc.repo), svc, **extra)
             except Exception as e:  # noqa: BLE001 — one service failing to map is a verdict
                 ledger.append({"event": "adopt_map_failed", "service": svc.name,
                                "detail": f"{type(e).__name__}: {e}"})

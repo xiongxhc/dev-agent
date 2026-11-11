@@ -112,6 +112,8 @@ def prove_service(node, source: Path, *, module: str = ".", registry=None, netwo
         return Verdict(node.name, UNPROVEN, f"no source at {source}")
     if not module.strip():
         module = "."
+    if module.startswith("-"):
+        module = f"./{module}"          # a leading "-" would make `mvn -pl` read an exclusion
     if _outside(module):
         return Verdict(node.name, UNPROVEN,
                        f"module {module!r} lies outside the copied source, so there is nothing "

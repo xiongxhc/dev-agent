@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from .. import egress
 from ..executor_deepseek import ANTHROPIC_COMPAT_URL, DEFAULT_MODEL, KEY_ENV as DEEPSEEK_KEY_ENV
 from .assemble import Fragment
+from .survey import SAFE_NAME
 
 RUNNER = Path(__file__).parent / "mapper_runner.py"
 DEFAULT_IMAGE = os.getenv("DEVAGENT_M2_IMAGE", "devagent-sandbox:m2")
@@ -80,7 +81,8 @@ def adopt_arm(env=None) -> str:
     return arm
 
 
-def _container_argv(image: str, repo: Path, service_path: str, network, proxy_url) -> list[str]:
+def _container_argv(image: str, repo: Path, service_path: str, network, proxy_url,
+                    name: str = "", siblings=()) -> list[str]:
     arm_flags = []
     if adopt_arm() == "deepseek":
         # The base URL and model are not secrets: inline so the argv shows which API was used.
@@ -97,7 +99,8 @@ def _container_argv(image: str, repo: Path, service_path: str, network, proxy_ur
             "-v", f"{repo}:/src:ro",
             "-v", f"{RUNNER}:/mapper.py:ro",
             # One `--opt=value` word, so a path starting with "-" is still a value.
-            image, "python3", "/mapper.py", f"--service={service_path}"]
+            image, "python3", "/mapper.py", f"--service={service_path}", f"--name={name}",
+            f"--siblings={','.join(siblings)}"]
 
 
 def _key_env(arm: str) -> str:
@@ -133,22 +136,42 @@ def _inside_repo(path: str) -> bool:
     return not p.is_absolute() and ".." not in p.parts
 
 
-def map_service(repo: Path, service, *, image: str = DEFAULT_IMAGE, network=None,
+#: Raised instead of an answer or an error text that carried the credential, which is never
+#: kept, shown or fed back.
+_DISCARDED = "the mapping session's answer carried the credential and was discarded"
+_WITHHELD = "the mapping session failed; its error text carried the credential and is withheld"
+
+
+def map_service(repo: Path, service, *, siblings=(), image: str = DEFAULT_IMAGE, network=None,
                 proxy_url=None, timeout: int = 900, runner=None) -> Fragment | None:
-    """Map one service. Returns None when the session produced nothing usable, or the service's
-    path points outside the repo; the lane then describes the service from survey evidence and
-    marks it NOT MAPPED."""
-    if not _inside_repo(service.path):
+    """Map one service. `siblings` are the names of the other services in the system, which the
+    session may name in depends_on.
+
+    Raises RuntimeError when the session gives no usable answer (none at all, its own reported
+    failure, or one carrying the credential), with the reason and never the credential, so the
+    lane can record why. Returns None when the answer is still invalid after the retries, or the
+    service's path or name is not one to put in a container argv; the lane then describes the
+    service from survey evidence and marks it NOT MAPPED. Names and the path come from repo
+    files, so they are checked before they reach the argv."""
+    if not _inside_repo(service.path) or not SAFE_NAME.fullmatch(service.name or ""):
         return None
+    siblings = [n for n in siblings
+                if isinstance(n, str) and SAFE_NAME.fullmatch(n) and n != service.name]
     run = runner or _run_session
     secret = _credential()
     last_error = None
     for attempt in range(1 + _MAX_RETRIES):
-        raw = run(image, repo, service.path, network, proxy_url, timeout, last_error)
-        if not raw or _carries(raw, secret) or _session_failed(raw):
-            # No answer, an answer carrying the credential, or a session that reported its own
-            # failure: none of these is worth asking again, and the first must not be kept.
-            return None
+        raw = run(image, repo, service.path, network, proxy_url, timeout, last_error,
+                  service.name, siblings)
+        # None of these is worth asking again, and an answer carrying the credential must not
+        # be kept.
+        if not raw:
+            raise RuntimeError("the mapping session printed no answer")
+        failure = _session_error(raw)
+        if failure is not None:
+            raise RuntimeError(_WITHHELD if _carries(raw, secret) else failure)
+        if _carries(raw, secret):
+            raise RuntimeError(_DISCARDED)
         try:
             out = FragmentOut.model_validate_json(raw)
         except ValidationError as e:
@@ -158,7 +181,7 @@ def map_service(repo: Path, service, *, image: str = DEFAULT_IMAGE, network=None
                 return None
             continue
         if _carries(out.model_dump_json(), secret):
-            return None                 # the same check on the validated answer
+            raise RuntimeError(_DISCARDED)  # the same check on the validated answer
         return Fragment(
             service=service.name, prd_slice=out.summary, kind=out.kind,
             provides=tuple(c.model_dump() for c in out.provides),
@@ -193,13 +216,16 @@ def _carries(text: str, secret: str | None) -> bool:
     return any(run in flat for flat in (_INVISIBLE.sub("", t) for t in texts) for run in runs)
 
 
-def _session_failed(raw: str) -> bool:
-    """The runner reports a failed session as a JSON object with an "error" key."""
+def _session_error(raw: str) -> str | None:
+    """The runner reports a failed session as a JSON object with an "error" key; its text, or
+    None for any other answer."""
     try:
         obj = json.loads(raw)
     except ValueError:
-        return False
-    return isinstance(obj, dict) and "error" in obj
+        return None
+    if not isinstance(obj, dict) or "error" not in obj:
+        return None
+    return str(obj["error"])[:1000] or "the mapping session failed without an error text"
 
 
 def _retry_context(e: ValidationError) -> str:
@@ -212,8 +238,9 @@ def _retry_context(e: ValidationError) -> str:
     return "\n".join(lines)[:1500]
 
 
-def _run_session(image, repo, service_path, network, proxy_url, timeout, prior_error):
-    argv = _container_argv(image, Path(repo), service_path, network, proxy_url)
+def _run_session(image, repo, service_path, network, proxy_url, timeout, prior_error, name,
+                 siblings):
+    argv = _container_argv(image, Path(repo), service_path, network, proxy_url, name, siblings)
     if prior_error:
         argv.append(f"--retry-context={prior_error}")
     res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
@@ -227,13 +254,14 @@ def _run_session(image, repo, service_path, network, proxy_url, timeout, prior_e
 
 
 def make_mapper(*, image: str = DEFAULT_IMAGE, network=None, proxy_url=None, timeout: int = 900):
-    """A `map_fn(repo, service)` for the lane, bound to this run's containment settings.
+    """A `map_fn(repo, service, siblings=())` for the lane, bound to this run's containment
+    settings. The lane passes `siblings`, the names of the other surveyed services.
 
     The arm and its credential are checked here, so a misconfigured run fails before any
     service is mapped instead of marking every service NOT MAPPED. Raises ValueError for an
     unknown arm and RuntimeError for a missing credential."""
     _subprocess_env()                   # the same checks the per-service path runs; env dropped
-    def mapper(repo, service):
-        return map_service(repo, service, image=image, network=network, proxy_url=proxy_url,
-                           timeout=timeout)
+    def mapper(repo, service, siblings=()):
+        return map_service(repo, service, siblings=siblings, image=image, network=network,
+                           proxy_url=proxy_url, timeout=timeout)
     return mapper

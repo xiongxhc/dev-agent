@@ -21,16 +21,31 @@ manager (by lockfile), and any Maven mirror, because a mirror with `<mirrorOf>*<
 means the build never reaches Maven Central and the mirror's host has to be reachable instead.
 """
 
+import ipaddress
 import json
 import os
+import posixpath
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
-#: Directories never worth walking into.
-_SKIP = {".git", "node_modules", "target", "dist", "build", ".venv", "__pycache__",
-         ".idea", ".vscode", ".mvn"}
+#: Never source, at any depth: version control, vendored dependencies, interpreter caches.
+_NEVER_SOURCE = frozenset({".git", "node_modules", ".venv", "__pycache__"})
+#: Build output, named by the build file that sits beside it. The same name elsewhere (a Java
+#: package called `build`, a committed `static/dist/`) is source.
+_BUILD_OUTPUT = {"pom.xml": frozenset({"target"}),
+                 "package.json": frozenset({"dist", "build", "out"})}
+
+
+def not_source(parent: Path, name: str) -> bool:
+    """Is the entry `name` inside directory `parent` something neither the survey nor the source
+    copy should treat as source?"""
+    if name in _NEVER_SOURCE:
+        return True
+    return any(name in outputs and (parent / build_file).is_file()
+               for build_file, outputs in _BUILD_OUTPUT.items())
 
 _POM_NS = "{http://maven.apache.org/POM/4.0.0}"
 
@@ -51,6 +66,10 @@ class ServiceRoot:
     gap: str | None = None        # why nothing matched, when nothing did
     evidence: dict = field(default_factory=dict)
     repo: str = ""                # the repo this root came from; set when surveys are merged
+
+
+#: What a service name must look like before it becomes a directory, a container name or argv.
+SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _safe_name(text) -> str:
@@ -82,10 +101,6 @@ class Survey:
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(asdict(self), indent=indent, ensure_ascii=False)
 
-    @property
-    def mappable(self) -> list:
-        return [s for s in self.services if s.stack]
-
 
 # ---------------------------------------------------------------- maven
 
@@ -116,6 +131,23 @@ def _findall(node, tag: str):
     return [e for e in node.iter() if _local(e.tag) == tag]
 
 
+def _children(node, tag: str) -> list:
+    return [] if node is None else [e for e in node if _local(e.tag) == tag]
+
+
+def _module_list(node) -> list[str]:
+    """The `<modules>/<module>` entries directly under `node`, stripped, blank and repeated
+    entries dropped. Reading only direct children keeps a profile's modules, which are not in
+    the default build, out of the list."""
+    out = []
+    for modules in _children(node, "modules"):
+        for m in _children(modules, "module"):
+            text = (m.text or "").strip()
+            if text and text not in out:
+                out.append(text)
+    return out
+
+
 def _java_version(root) -> str | None:
     """`<java.version>` or the compiler source declared in this POM's properties."""
     if root is None:
@@ -138,7 +170,7 @@ def java_major(value: str | None) -> int | None:
 
 
 def _maven_mirrors(repo: Path) -> list[str]:
-    """Mirror hosts from a settings.xml beside the pom.
+    """Mirror URLs from a settings.xml beside the pom.
 
     A `<mirrorOf>*</mirrorOf>` mirror means every dependency comes from there and Maven Central
     is never contacted — so the build needs that host reachable, and only that host."""
@@ -146,15 +178,12 @@ def _maven_mirrors(repo: Path) -> list[str]:
     root = _pom(settings) if settings.is_file() else None
     if root is None:
         return []
-    hosts = []
+    urls = []
     for mirror in _findall(root, "mirror"):
         url = _text(mirror, "url")
-        if not url:
-            continue
-        host = re.sub(r"^\w+://", "", url).split("/")[0]
-        if host and host not in hosts:
-            hosts.append(host)
-    return hosts
+        if url and url not in urls:
+            urls.append(url)
+    return urls
 
 
 def _is_boot_app(module_dir: Path, root) -> tuple[bool, dict]:
@@ -197,7 +226,7 @@ def _maven_reactors(repo: Path) -> list[Path]:
     if (repo / "pom.xml").is_file():
         return [repo]
     return [d for d in sorted(repo.iterdir())
-            if d.is_dir() and d.name not in _SKIP and (d / "pom.xml").is_file()]
+            if d.is_dir() and not not_source(repo, d.name) and (d / "pom.xml").is_file()]
 
 
 def _survey_maven(repo: Path, survey: Survey, label: str = "") -> None:
@@ -211,13 +240,14 @@ def _survey_maven(repo: Path, survey: Survey, label: str = "") -> None:
     java = _java_version(root)
     mirrors = _maven_mirrors(repo)
     if mirrors:
-        for h in mirrors:
-            _record_mirror(survey, h.split(":")[0])
+        for url in mirrors:
+            _mirror_url(survey, url, f"{label}settings.xml")
         survey.notes.append(
-            f"maven mirrors {mirrors} — settings.xml redirects dependency resolution, so the "
-            f"build needs those hosts reachable (and may never contact Maven Central)")
+            f"{label}maven mirrors {mirrors} — settings.xml redirects dependency resolution, so "
+            f"the build needs those hosts reachable (and may never contact Maven Central)")
 
-    declared = [m.text.strip() for m in _findall(root, "module") if m.text]
+    declared = _module_list(root)
+    _note_profile_modules(root, declared, label, survey)
     packaging = _text(root, "packaging")
     if not declared:
         # Single-module project: the reactor root IS the service.
@@ -230,33 +260,69 @@ def _survey_maven(repo: Path, survey: Survey, label: str = "") -> None:
 
     survey.notes.append(f"{label}maven parent packaging={packaging}, {len(declared)} declared "
                         f"module(s) — directories not in <modules> are not part of the build")
-    for module in declared:
-        module_dir = repo / module
-        module_root = _pom(module_dir / "pom.xml")
-        deployable, evidence = _is_boot_app(module_dir, module_root)
-        # A module's own declaration outranks the parent's: it selects the recipe.
-        # (When the module's value does not resolve, the parent's is used; the raw text is kept
-        # only if neither resolves, so the gap can quote it.)
-        own = _java_version(module_root)
-        evidence["java_version"] = own if java_major(own) is not None else (java or own)
-        last = os.path.basename(os.path.normpath(module.replace("\\", "/")))
-        entry = _root(last, Path(os.path.normpath(module_dir)).name, path=module,
-                      kind="maven-module", deployable=deployable, evidence=evidence,
-                      repo=str(repo))
-        (survey.services if deployable else survey.libraries).append(entry)
+    _survey_modules(repo, repo, "", declared, java, survey, {os.path.realpath(repo)}, label)
 
     undeclared = [d.name for d in repo.iterdir()
-                  if d.is_dir() and d.name not in _SKIP and (d / "pom.xml").is_file()
+                  if d.is_dir() and not not_source(repo, d.name) and (d / "pom.xml").is_file()
                   and d.name not in declared]
     if undeclared:
         survey.notes.append(f"{label}maven directories present but NOT declared modules: "
                             f"{sorted(undeclared)} — excluded, they are not built by this repo")
 
 
+def _note_profile_modules(pom_root, declared: list, label: str, survey: Survey) -> None:
+    """One note per profile that adds modules to those `declared` by default. They are built
+    only when the profile is active, so they are not surveyed."""
+    for profile in (p for ps in _children(pom_root, "profiles")
+                    for p in _children(ps, "profile")):
+        extra = [m for m in _module_list(profile) if m not in declared]
+        if extra:
+            survey.notes.append(
+                f"{label}maven profile {_text(profile, 'id') or '(no id)'!r} adds module(s) "
+                f"{extra} — not in the default build, so not surveyed")
+
+
+def _survey_modules(reactor: Path, base: Path, prefix: str, declared: list, java,
+                    survey: Survey, walking: set, label: str) -> None:
+    """Survey the modules an aggregator at `base` declares. A module whose own POM declares
+    modules is an aggregator too and is walked into: its modules are what the build produces.
+    Every root keeps `reactor` as its `repo` and a path relative to it, so a module build still
+    runs `-pl <path> -am` from the top. `walking` holds the aggregators on the current path,
+    so a module that names one of them is surveyed as a module rather than walked again."""
+    for module in declared:
+        module_dir = base / module
+        path = posixpath.normpath(posixpath.join(prefix, module.replace("\\", "/"))) \
+            if prefix else module
+        module_root = _pom(module_dir / "pom.xml")
+        # A module's own declaration outranks the parent's: it selects the recipe.
+        # (When the module's value does not resolve, the parent's is used; the raw text is kept
+        # only if neither resolves, so the gap can quote it.)
+        own = _java_version(module_root)
+        module_java = own if java_major(own) is not None else (java or own)
+        nested = _module_list(module_root)
+        real = os.path.realpath(module_dir)
+        if nested and real not in walking:
+            _note_profile_modules(module_root, nested, f"{label}{path}: ", survey)
+            _survey_modules(reactor, module_dir, path, nested, module_java, survey,
+                            walking | {real}, label)
+            continue
+        deployable, evidence = _is_boot_app(module_dir, module_root)
+        evidence["java_version"] = module_java
+        last = os.path.basename(os.path.normpath(module.replace("\\", "/")))
+        entry = _root(last, Path(os.path.normpath(module_dir)).name, path=path,
+                      kind="maven-module", deployable=deployable, evidence=evidence,
+                      repo=str(reactor))
+        (survey.services if deployable else survey.libraries).append(entry)
+
+
 # ---------------------------------------------------------------- node
 
 _PM_LOCKS = (("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("package-lock.json", "npm"),
              ("bun.lockb", "bun"))
+
+
+def _has_build_script(pkg: dict) -> bool:
+    return any(k == "build" or k.startswith("build:") for k in (pkg.get("scripts") or {}))
 
 
 def _package_manager(d: Path) -> tuple[str | None, list[str]]:
@@ -283,18 +349,26 @@ def _package_service_name(package_name) -> str | None:
     return None
 
 
-def _survey_node(d: Path, repo: Path, survey: Survey) -> None:
+def _survey_node(d: Path, repo: Path, survey: Survey) -> dict | None:
+    """Survey the package at `d`; returns the parsed package.json, or None when there is none
+    usable. Only a package with a `build` or `build:*` script is a service: a package that
+    builds nothing (commit hooks, formatters, a workspace root) has no artifact to prove."""
     try:
         pkg = json.loads((d / "package.json").read_text())
     except (OSError, ValueError):
-        return
+        return None
     if not isinstance(pkg, dict):
-        return
+        return None
     scripts = pkg.get("scripts") or {}
     build_scripts = sorted(k for k in scripts if k == "build" or k.startswith("build:"))
+    rel = "." if d == repo else str(d.relative_to(repo))
+    deployable = bool(build_scripts)
+    if not deployable:
+        survey.notes.append(f"{rel}: package {pkg.get('name') or d.name!r} has no build or "
+                            f"build:* script — it builds nothing, so it is not a service")
+        return pkg
     pm, all_pms = _package_manager(d)
     framework = _node_framework(pkg)
-    rel = "." if d == repo else str(d.relative_to(repo))
 
     evidence = {"package_manager": pm, "framework": framework,
                 "build_scripts": build_scripts,
@@ -314,9 +388,9 @@ def _survey_node(d: Path, repo: Path, survey: Survey) -> None:
         for line in npmrc.read_text(errors="ignore").splitlines():
             m = re.match(r"\s*(?:@[\w-]+:)?registry\s*=\s*(\S+)", line)
             if m:
-                host = re.sub(r"^\w+://", "", m.group(1)).split("/")[0]
-                if host and host not in survey.mirror_hosts:
-                    _record_mirror(survey, host)
+                known = set(survey.mirror_hosts)
+                host = _mirror_url(survey, m.group(1), f"{rel}: .npmrc")
+                if host and host not in known:
                     survey.notes.append(
                         f"{rel}: .npmrc points at {host} — the install needs that host, not the "
                         f"public registry")
@@ -327,7 +401,8 @@ def _survey_node(d: Path, repo: Path, survey: Survey) -> None:
 
     survey.services.append(_root(
         _package_service_name(pkg.get("name")), d.name, path=rel, kind="node-app",
-        deployable=bool(build_scripts), evidence=evidence))
+        deployable=deployable, evidence=evidence))
+    return pkg
 
 
 # ---------------------------------------------------------------- static site
@@ -427,28 +502,63 @@ def _match_node(candidates, framework: str, pm: str) -> str | None:
             return name
         if not recipe_pm and framework and framework in name:
             return name
-    # A static site has no framework and no package manager to satisfy.
-    if framework == "unknown" and pm == "unknown":
-        return next((n for n, _ in candidates if "static" in n), None)
+    # No fallback to the static-site recipe: it copies files instead of building them, so on a
+    # node app it would report a build that never ran. A static site is its own `kind`.
     return None
 
 
 # ---------------------------------------------------------------- entry point
 
+#: Second-level labels under which a country code is a public suffix (`co.uk`, `com.au`).
+_PUBLIC_SECOND_LEVEL = frozenset({"co", "com", "net", "org", "gov", "edu", "ac"})
+
+
+def _mirror_url(survey, url: str, where: str) -> str | None:
+    """Record the host a mirror URL names and return it, or None when nothing was recorded.
+
+    The egress proxy matches the CONNECT host without its port, so only the hostname is kept.
+    The proxy tunnels HTTPS only: a plain `http://` mirror cannot be reached through it, so it
+    is reported instead of allowlisted, rather than telling the operator it is reachable."""
+    parts = urlsplit(url.strip())
+    try:
+        host = parts.hostname
+    except ValueError:
+        host = None
+    if not host:
+        return None
+    if parts.scheme.lower() == "http":
+        survey.notes.append(
+            f"{where}: mirror {host} is plain http — the egress proxy tunnels HTTPS only, so "
+            f"with egress on the build cannot reach it; it is not allowlisted")
+        return None
+    _record_mirror(survey, host)
+    return host
+
+
+def _sibling_suffix(host: str) -> str | None:
+    """`host` with its first label dropped, when that cannot be a public suffix. A country-code
+    TLD (two letters) may sit under a public second level (`example.co.uk`), so a host ending
+    in one gets no suffix, nor does one whose second-last label is a common public second
+    level. An IP address never gets one: ".2.31" would match any address ending that way."""
+    try:
+        ipaddress.ip_address(host)
+        return None
+    except ValueError:
+        pass
+    labels = host.split(".")
+    if len(labels) < 3 or len(labels[-1]) <= 2 or labels[-2] in _PUBLIC_SECOND_LEVEL:
+        return None
+    return "." + ".".join(labels[1:])
+
+
 def _record_mirror(survey, host: str) -> None:
-    """Record a package mirror, plus its registrable-domain suffix.
+    """Record a package mirror, plus its sibling-host suffix.
 
     A registry commonly redirects tarball downloads to a sibling host (a mirror may serve metadata
     from registry.* and content from cdn.*). The redirect happens INSIDE the TLS tunnel, so the
     client opens a second CONNECT the allowlist has never heard of and the build fails naming the
     original URL. The built-in defaults already treat npmjs this way (`.npmjs.org`)."""
-    candidates = [host]
-    # An IP address (digits and dots only) gets no suffix: "192.0.2.31" would yield ".2.31",
-    # which matches any host ending in those labels and so widens the egress allowlist.
-    is_ip = bool(host) and all(ch.isdigit() or ch == "." for ch in host)
-    if not is_ip and host.count(".") >= 2:
-        candidates.append("." + ".".join(host.split(".")[-2:]))
-    for candidate in candidates:
+    for candidate in (host, _sibling_suffix(host)):
         if candidate and candidate not in survey.mirror_hosts:
             survey.mirror_hosts.append(candidate)
 
@@ -497,11 +607,15 @@ def survey_repo(repo_path, registry=None) -> Survey:
 
     # A node app can sit one level below either build root, the repo or a sub-reactor. Both are
     # scanned so a node service is found the same way whichever directory was adopted.
+    # A package at the base claims the directories below it only when it is itself the app
+    # (it has a build script) or a workspace root; a tooling package does not.
     for base in [repo] + [r for r in reactors if r != repo]:
         if (base / "package.json").is_file():
-            _survey_node(base, repo, survey)
-            continue
-        for d in sorted(p for p in base.iterdir() if p.is_dir() and p.name not in _SKIP):
+            pkg = _survey_node(base, repo, survey)
+            if pkg is not None and (_has_build_script(pkg) or "workspaces" in pkg):
+                continue
+        for d in sorted(p for p in base.iterdir()
+                        if p.is_dir() and not not_source(base, p.name)):
             if (d / "package.json").is_file():
                 _survey_node(d, repo, survey)
     _survey_static_site(repo, survey)

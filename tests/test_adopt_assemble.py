@@ -112,3 +112,20 @@ def test_an_unmatched_static_site_needs_the_static_recipe():
 
     svc = ServiceRoot(name="site", path=".", kind="static-site", deployable=True)
     assert needed_recipe(svc) == "static-web"
+
+
+def test_the_default_title_of_a_multi_repo_adoption_names_every_repo(tmp_path):
+    from devagent.adopt import survey_repos
+
+    for d in ("repo-api", "repo-web"):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "package.json").write_text(
+            f'{{"name": "{d[5:]}", "scripts": {{"build": "x"}}}}')
+    design = compose(survey_repos([tmp_path / "repo-api", tmp_path / "repo-web"]), [])
+    assert design.title == "Adopted: repo-api, repo-web"
+
+
+def test_the_default_title_of_one_repo_names_it():
+    survey = Survey(repo="/x/repo-one/", services=[
+        ServiceRoot(name="api", path=".", kind="maven-module", deployable=True)])
+    assert compose(survey, []).title == "Adopted: repo-one"
