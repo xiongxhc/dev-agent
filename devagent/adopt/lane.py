@@ -15,8 +15,9 @@ The output is shaped exactly like a `build-system` run, which is the whole point
 run dir inside a source repo is refused. Changing adopted code is a separate step that consumes
 what this produces.
 
-A failed stage degrades honestly — a service becomes unproven or unmappable and the report says
-so. Only an unreadable repo aborts the run.
+A service that fails to map or build is reported unproven, unmappable or NOT MAPPED and the run
+continues. A run ends before prove when the repo cannot be read, when it has no services
+(`survey_only`), or when the design gate fails (`gate_failed`).
 """
 
 import os

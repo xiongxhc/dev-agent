@@ -199,7 +199,7 @@ DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001 python -m devagent.cli run --buil
 
 1. **Survey.** A deterministic walk finds the service roots (Maven modules and node apps), the
    libraries, and every service no recipe fits. A repo with an `index.html` at its root and no
-   Maven or node service is one static site.
+   Maven or node service and no library is one static site.
 2. **Map.** One contained model session per service reads the source and returns a description
    and the API contract the service provides. The repo is mounted read-only. The session can
    use only the Read, Grep and Glob tools, and a call whose target resolves outside the repo is
@@ -230,7 +230,8 @@ anything is created. A session that fails on one service marks that service NOT 
 run continues.
 
 Exit codes: 0 adopted (some services may be unproven or unmappable), 1 gate failed or no
-services found, 2 bad input, a bad mapping setup, or Docker or the egress proxy not starting.
+services found, 2 bad input, a bad mapping setup, or Docker missing or the egress proxy not
+starting while egress is on.
 
 ### Feishu bot (the chat interface)
 
@@ -358,15 +359,15 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
   and 25 (chosen from the Java version the POM declares; an undeclared, unresolvable or
   unsupported version is a recipe gap), Vite with yarn or npm (a Vite app with a pnpm lockfile
   uses the existing `node-vite-react` recipe), and a static site (root `index.html`, no Maven or
-  node service). Everything else is reported as
-  a recipe gap and the service is `unmappable`.
+  node service and no library). Everything else is reported as a recipe gap and the service is
+  `unmappable`.
 - **`update-system` on an adopted run dir is not supported for Maven services yet.** The
   engine's rebuild step does not fill the `{module}` placeholder. It has not been exercised end
   to end for any adopted repo.
 - **Symlinks are copied, not followed.** A link that points outside its copied directory dangles
   in the copy, so a build that depends on it is reported `unproven`.
-- **Mapping sends source code to the model API.** The session can read anything in its
-  container. Adopt a repo you do not trust with `--skip-map`.
+- **Mapping sends source code to the model API.** The session reads the whole repo and sends
+  what it reads to the model API. Adopt a repo you do not trust with `--skip-map`.
 - **No URL intake.** "Clone this reference site" is designed-for but not built (reference-URL
   fixtures were deferred with M5's live run).
 - **The A/B baseline hasn't been run.** Both executor arms are live-verified individually, but
@@ -407,7 +408,7 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
 |---|---|---|
 | M5 | live A/B corpus run (sdk vs managed baseline numbers) | harness ✅ · live run pending |
 | M8 | ops: CI/CD + deploy per project (generated `.gitlab-ci.yml` + k8s) | open |
-| M9 | brownfield: operate inside existing repos, detect stack (Java/Maven), fit existing CI | `adopt` first slice ✅ ([spec](docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md)) · editing adopted code, existing CI open |
+| M9 | brownfield: operate inside existing repos, detect stack (Java/Maven), fit existing CI | `adopt` first slice ◐ ([spec](docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md)) · editing adopted code, existing CI open |
 | M13 | team rollout (~10 users): concurrency, per-user isolation, shared service | open |
 | M18/M19 | checkpoint/resume for days-long runs; mutable contracts / renegotiation | open |
 | M22 | eval as change-gate: ledger telemetry + corpus replay before prompt/model changes | open |

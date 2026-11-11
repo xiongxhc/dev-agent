@@ -24,9 +24,9 @@ devagent adopt <repo-path>... [--out DIR] [--skip-map] [--title T]
 - Output is a synthetic run dir shaped like a `build-system` run: `design.json`,
   `services/<name>/out` (a copy of the service's source), an append-only `ledger.jsonl` and
   `report.html`, plus `survey.json`.
-- Four stages: survey, map, assemble, prove. A service that fails to map or build is marked in the
-  report). The run ends early in two cases: a repo that cannot be read, and a failed design
-  gate, which stops it before the prove stage.
+- Four stages: survey, map, assemble, prove. A service that fails to map or build is marked in
+  the report and the run continues. A run ends before prove in three cases: a repo that cannot
+  be read, a repo with no services (`survey_only`), and a failed design gate (`gate_failed`).
 - Several repos can be adopted as one system. A frontend that calls a backend in another repo
   cannot be wired if adopted alone, so the surveys are merged before assembly. Two services
   with the same name are refused.
@@ -36,7 +36,7 @@ devagent adopt <repo-path>... [--out DIR] [--skip-map] [--title T]
   an unknown mapping arm or missing credential all exit before anything is created and before
   the shared egress proxy is touched.
 - Exit codes: 0 adopted, 1 gate failed or no services found, 2 bad input, a bad mapping setup,
-  or Docker or the egress proxy not starting.
+  or Docker missing or the egress proxy not starting while egress is on.
 
 ## 3. Stages
 
@@ -44,10 +44,10 @@ devagent adopt <repo-path>... [--out DIR] [--skip-map] [--title T]
 
 A pure-Python repo walk. It detects service roots (Maven `pom.xml`, multi-module aware;
 `package.json` with build scripts). A repo whose root holds an `index.html`, and which has no
-Maven or node service, is one static site, classifies each against the recipe registry,
-and records libraries, package mirrors the build must reach, and explicit **recipe gaps**
-("service X needs a recipe for Y"). The gap list is the evidence for which recipes are still
-missing. Fully unit-testable against fixture trees.
+Maven or node service and no library, is one static site. Each root is classified against the
+recipe registry. The survey also records libraries, package mirrors the build must reach,
+and explicit **recipe gaps** ("service X needs a recipe for Y"). The gap list is the
+evidence for which recipes are still missing. Fully unit-testable against fixture trees.
 
 ### 3.2 Map (agentic, per service)
 
@@ -61,14 +61,16 @@ validate is never repaired on the host.
 
 Mapping streams source code to a model API, so the arm is chosen on purpose. The default is
 Claude. `DEVAGENT_ADOPT_ARM=deepseek` selects the other arm. An unknown arm, or an arm whose
-credential is missing, is refused when the mapper is created, before any service is mapped. `--skip-map` skips this stage: services are described from survey
+credential is missing, is refused when the mapper is created, before any service is mapped.
+`--skip-map` skips this stage: services are described from survey
 evidence and marked NOT MAPPED.
 
 ### 3.3 Assemble + gate (deterministic)
 
 Fragments are composed into a `SystemDesign` by deterministic Python, not a model call:
 ids and consumes/provides wiring follow mechanically from the survey and the fragments, so a
-model would add nothing a gate does not have to re-check. The existing pydantic wiring validators gate structure. Two further gates:
+model would add nothing a gate does not have to re-check. The existing pydantic wiring
+validators gate structure. Two further gates:
 every surveyed service appears in the design, and every contract has a producer. A contract the
 system consumes but does not own is recorded as an external dependency and shown in the report.
 
@@ -87,20 +89,20 @@ Recipes are entries in the M11 recipe registry.
 
 - `maven-spring-boot-jdk{8,11,17,21,25}`: one per Java LTS version. The survey reads the Java
   version the POM declares and selects the matching recipe; an undeclared, unresolvable or
-  unsupported version is a recipe gap. Each recipe pins its own JDK. The build is `mvn -pl <module> -am package` and
-  the artifact is `{module}/target/*.jar`.
+  unsupported version is a recipe gap. Each recipe pins its own JDK. The build is
+  `mvn -pl <module> -am package` and the artifact is `{module}/target/*.jar`.
 - `node-vite-yarn`, `node-vite-npm`: Vite frontends by lockfile. A Vite app with a pnpm lockfile
   matches the existing `node-vite-react` recipe.
-- `static-web`: a site with no framework and no package manager (root `index.html`).
+- `static-web`: a site with a root `index.html`, no Maven or node service and no library.
 - Anything else is a recipe gap and the service is `unmappable`.
 - Datastore recipes are added only when a build needs one; booting is a later milestone.
 
 ## 5. Human review gate
 
 Adoption ends at a human gate: the operator reviews `report.html` and `design.json` before the
-artifacts are treated as truth. The report makes what is not known as visible as what is:
-unmapped services, recipe gaps, failed rebuilds and external dependencies. Nothing downstream
-consumes an unreviewed adoption.
+artifacts are treated as truth. The report lists unmapped services, recipe gaps, failed
+rebuilds and external dependencies. Nothing in the code enforces the review; it is the
+operator's step.
 
 ## 6. Testing
 
@@ -116,5 +118,5 @@ or a live rebuild.
 - Editing adopted code. The follow-on is `update-system` on the adopt run dir, which is not
   supported for Maven services yet because the engine's rebuild step does not fill the
   `{module}` placeholder.
-- Flutter/Dart and Python-pipeline recipes. Adopt surveys them; proving waits for demand.
+- Flutter/Dart and Python projects. The survey does not detect them as services.
 - Batch adoption of many unrelated systems in one run. Repos given to one run form one system.

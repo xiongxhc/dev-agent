@@ -327,20 +327,21 @@ designs live in [`docs/specs/`](docs/specs/). ✅ shipped · ◐ partial · ⬜ 
   run dir (`design.json`, `services/<name>/out`, `ledger.jsonl`, `report.html`, `survey.json`).
   The source repo is never written to; a run dir inside a source repo (or the reverse) or a run
   dir that is not empty is refused. Design: [`docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md`](docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md).
-  - ✅ **survey** (`adopt/survey.py`): deterministic detection of Maven and node services,
+  - ◐ **survey** (`adopt/survey.py`): deterministic detection of Maven and node services,
     libraries, package mirrors and recipe gaps; a repo with a root `index.html` and no Maven or
-    node service is one static site; several repos survey as one system.
+    node service and no library is one static site; several repos survey as one system.
   - ◐ **map** (`adopt/mapper.py`): one contained session per service, repo mounted read-only,
     Read/Grep/Glob only with targets outside the repo denied, egress allowlist, host-side
     validation with up to 2 retries. The arm and credential are checked before anything runs.
     Unit-tested with the model session faked; no live session has been run. Claude by
     default; `DEVAGENT_ADOPT_ARM=deepseek` opts in to the other arm. A failed mapping marks the
     service NOT MAPPED.
-  - ✅ **assemble** (`adopt/assemble.py`): deterministic composition into a `SystemDesign`, with
-    gates for service coverage and contract producers; contracts consumed from outside the system are recorded as external dependencies.
-  - ✅ **prove** (`adopt/prove.py`): rebuild from the copied source with the service's recipe;
+  - ◐ **assemble** (`adopt/assemble.py`): deterministic composition into a `SystemDesign`, with
+    gates for service coverage and contract producers; contracts consumed from outside the
+    system are recorded as external dependencies.
+  - ◐ **prove** (`adopt/prove.py`): rebuild from the copied source with the service's recipe;
     verdict `proven`, `unproven` or `unmappable`. Recipes: `maven-spring-boot-jdk{8,11,17,21,25}`,
     `node-vite-yarn`, `node-vite-npm`, `static-web`.
-  - Unit-tested without Docker, network or tokens. Not yet run: a live mapping session, and
-    `update-system` on an adopted run dir (not supported for Maven services; the rebuild step
+  - Unit-tested without Docker, network or tokens. Not yet run: a live mapping session, a live
+    rebuild, and `update-system` on an adopted run dir (not supported for Maven services; the rebuild step
     does not fill the `{module}` placeholder).
