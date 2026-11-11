@@ -343,13 +343,17 @@ designs live in [`docs/specs/`](docs/specs/). ✅ shipped · ◐ partial · ⬜ 
     verdict `proven`, `unproven` or `unmappable`. Recipes: `maven-spring-boot-jdk{8,11,17,21,25}`,
     `node-vite-yarn`, `node-vite-npm`, `static-web`.
   - Unit-tested without Docker, network or tokens. Run against real Docker: a single-module
-    Spring Boot (Java 17) repo was adopted and rebuilt with egress off and with egress on, and a
-    plain static site was adopted and rebuilt with egress on. Not run: a mapping session against
-    a model, a multi-module reactor, a Vite app, and `update-system` on an adopted run dir.
+    Spring Boot (Java 17) repo was adopted and rebuilt with egress off and with egress on; a
+    two-level Maven reactor whose service depends on a sibling library, and a plain static site,
+    were adopted and rebuilt with egress on; a Vite app with no lockfile was adopted and reported
+    `unmappable`, with no build attempted. Not run: a mapping session against a model, a Vite app
+    that has a lockfile, and `update-system` on an adopted run dir.
   - `update-system` on an adopted run dir is not supported yet, for any service kind: the update
     architect is not shown the adopt recipes, the rebuild step uses its default image and does
     not fill the `{module}` placeholder, and recipe registry hosts are not allowlisted on that
     path.
   - For existing users: `DEVAGENT_EGRESS_ALLOW` now reaches the proxy (it replaces the default
-    list, as documented), and the proxy is replaced when its allowlist differs and nothing else
-    is using it.
+    list, as documented). A running proxy that already permits every host a run needs is shared.
+    One that lacks a host the run needs is replaced when no other container is attached to the
+    egress network; while one is, the run stops with an error. An adopt that widened the proxy
+    restores the default list when it finishes, if no other container is attached.

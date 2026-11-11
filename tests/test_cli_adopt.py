@@ -18,6 +18,14 @@ def _no_egress(monkeypatch):
     monkeypatch.setenv("DEVAGENT_EGRESS", "0")
 
 
+@pytest.fixture(autouse=True)
+def restored(monkeypatch):
+    """Calls to egress.restore_default; none reaches Docker."""
+    calls = []
+    monkeypatch.setattr(egress, "restore_default", lambda *a, **kw: calls.append(1))
+    return calls
+
+
 def _app(path, name="web"):
     """A react-scripts app with an npm lockfile: surveyed as a service, matched by no recipe."""
     path.mkdir(parents=True)
@@ -218,3 +226,49 @@ def test_an_os_error_from_the_build_stage_is_not_reported_as_bad_input(tmp_path,
     monkeypatch.setattr(adopt_pkg, "prove", build_breaks)
     with pytest.raises(OSError, match="the build stage broke"):
         main(["adopt", str(_app(tmp_path / "web")), "--skip-map", "--out", str(tmp_path / "out")])
+
+
+def _mirrored_app(path):
+    repo = _app(path)
+    (repo / ".npmrc").write_text("registry=https://registry.example.com/\n")
+    return repo
+
+
+def test_an_adopt_that_added_hosts_restores_the_default_allowlist_once(tmp_path, monkeypatch,
+                                                                       restored):
+    monkeypatch.setenv("DEVAGENT_EGRESS", "1")
+    monkeypatch.setattr(egress, "ensure", lambda **kw: ("net", "http://proxy:3128"))
+    assert main(["adopt", str(_mirrored_app(tmp_path / "web")), "--skip-map",
+                 "--out", str(tmp_path / "out")]) == 0
+    assert restored == [1]
+
+
+def test_an_adopt_that_raises_still_restores_the_default_allowlist(tmp_path, monkeypatch,
+                                                                    restored):
+    import devagent.adopt as adopt_pkg
+    monkeypatch.setenv("DEVAGENT_EGRESS", "1")
+    monkeypatch.setattr(egress, "ensure", lambda **kw: ("net", "http://proxy:3128"))
+
+    def breaks(*a, **kw):
+        raise RuntimeError("the lane broke")
+    monkeypatch.setattr(adopt_pkg, "adopt", breaks)
+    with pytest.raises(RuntimeError, match="the lane broke"):
+        main(["adopt", str(_mirrored_app(tmp_path / "web")), "--skip-map",
+              "--out", str(tmp_path / "out")])
+    assert restored == [1]
+
+
+def test_an_adopt_with_egress_off_never_restores(tmp_path, restored):
+    assert main(["adopt", str(_mirrored_app(tmp_path / "web")), "--skip-map",
+                 "--out", str(tmp_path / "out")]) == 0
+    assert restored == []
+
+
+def test_an_adopt_that_added_no_hosts_never_restores(tmp_path, monkeypatch, restored):
+    monkeypatch.setenv("DEVAGENT_EGRESS", "1")
+    seen = {}
+    monkeypatch.setattr(egress, "ensure",
+                        lambda **kw: (seen.update(kw), ("net", "http://proxy:3128"))[1])
+    assert main(["adopt", str(_app(tmp_path / "web")), "--skip-map",
+                 "--out", str(tmp_path / "out")]) == 0
+    assert seen["extra_hosts"] == [] and restored == []

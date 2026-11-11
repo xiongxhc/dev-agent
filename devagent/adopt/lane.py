@@ -1,8 +1,6 @@
 """The adopt lane — survey → map → assemble → prove, into a synthetic run dir.
 
-The output is shaped exactly like a `build-system` run, which is the whole point:
-`update-system <adopt-run-dir> <change.md>` then works with no new plumbing, because it loads
-`design.json` and `services/<name>/` and does not care who wrote them.
+The run dir has the shape of a `build-system` run.
 
     <out>/
       survey.json      what the repo is, and every recipe gap

@@ -65,12 +65,12 @@ def ensure(image: str = DEFAULT_IMAGE, extra_hosts=()) -> tuple[str, str]:
     (network_name, proxy_url) for callers to attach build/verify containers to.
 
     One proxy serves every build on the Docker host and is reused across runs, so the allowlist
-    it was started with is recorded as a label and compared here. A proxy with exactly this
-    caller's allowlist is reused. While nothing else is attached to the egress network, a proxy
-    with any other allowlist, wider ones included, is replaced with exactly this caller's, so a
-    wider list does not outlive the run that needed it. While another container is attached, a
-    proxy that already permits every host this caller needs is reused, and any other raises
-    RuntimeError rather than break that build.
+    it was started with is recorded as a label and compared here. A running proxy that already
+    permits every host this caller needs is reused, whether or not anything is attached: a run
+    that holds no container between its builds may still be relying on its wider list. A proxy
+    that lacks a host this caller needs is replaced with exactly this caller's list while nothing
+    else is attached to the egress network, and raises RuntimeError rather than break another
+    build while something is. `restore_default` narrows a wider proxy back to the default list.
 
     Calls are serialised by a lock under `hostlock.lock_root()`, which is the same for every run
     of this user on this host whatever its DEVAGENT_RUNS_DIR. A lock still held after its
@@ -88,14 +88,13 @@ def _ensure_locked(image: str, allow: str) -> tuple[str, str]:
     already in use is protected by the reuse and refusal rules below, not by the lock."""
     if _run(["docker", "network", "inspect", NETWORK]).returncode != 0:
         _run(["docker", "network", "create", "--internal", NETWORK])
-    running = _run(["docker", "inspect", "-f", "{{.State.Running}}", PROXY]).stdout.strip()
-    current = _run(["docker", "inspect", "-f",
-                    "{{index .Config.Labels \"devagent.allow\"}}", PROXY]).stdout.strip()
+    running, current = _proxy_state()
+    if running == "true" and current != allow and _allow_covers(current, allow):
+        # A running proxy whose allowlist is a SUPERSET of what this run needs is shared rather
+        # than replaced: the hosts this run wants are already permitted, and the run that started
+        # it may still need the rest, even while none of its containers is attached.
+        return NETWORK, f"http://{PROXY}:{PORT}"
     if running == "true" and current != allow and _network_busy():
-        if _allow_covers(current, allow):
-            # Another build is using a proxy that already permits every host this run needs:
-            # share it. Replacing it would break that build.
-            return NETWORK, f"http://{PROXY}:{PORT}"
         # A list that lacks hosts this run needs, AND someone else is attached. Refusing beats
         # stealing: the alternative is silently killing another run's build.
         raise RuntimeError(
@@ -103,30 +102,63 @@ def _ensure_locked(image: str, allow: str) -> tuple[str, str]:
             "attached to its network, so replacing it would break another run mid-build. Wait for "
             "that run, or give both runs the same egress allowlist.")
     if running != "true" or current != allow:
-        _run(["docker", "rm", "-f", PROXY])  # dead, stale, or configured for a different allowlist
-        up = _run([
-            "docker", "run", "-d", "--name", PROXY, "--network", NETWORK,
-            "--user", "1000:1000",
-            # The proxy reads its allowlist from its OWN env, so it is passed in here. It is not
-            # a secret, and inlining makes the proxy's rules visible in `docker ps`.
-            "-e", f"DEVAGENT_EGRESS_ALLOW={allow}",
-            "--label", f"devagent.allow={allow}",
-            "-v", f"{PROXY_SCRIPT}:/proxy.py:ro",
-            image, "python3", "/proxy.py",
-        ])
-        if up.returncode != 0:
-            raise RuntimeError(f"egress proxy failed to start: {up.stderr.strip()}")
-        # Give the proxy (and ONLY the proxy) upstream internet via the default bridge.
-        _run(["docker", "network", "connect", "bridge", PROXY])
+        _start(image, allow)  # dead, stale, or configured for a different allowlist
     return NETWORK, f"http://{PROXY}:{PORT}"
+
+
+def restore_default(image: str = DEFAULT_IMAGE) -> None:
+    """Replace a running proxy whose allowlist is wider than the default list (`allowlist()`
+    with no extra hosts) with the default list, if nothing else is attached to the egress
+    network; otherwise do nothing. For a run that started the proxy with extra hosts, so they
+    do not stay open to the builds that come after it.
+
+    Best effort: a missing Docker binary, a lock timeout or a proxy that fails to start is
+    ignored. A failed start comes after the wider proxy was removed, so it leaves no wider list
+    behind."""
+    allow = allowlist()
+    try:
+        with _ensure_lock():
+            running, current = _proxy_state()
+            if (running == "true" and _allow_covers(current, allow)
+                    and not _allow_covers(allow, current) and not _network_busy()):
+                _start(image, allow)
+    except (OSError, TimeoutError, RuntimeError):
+        pass
+
+
+def _proxy_state() -> tuple[str, str]:
+    """(running, allowlist label) of the proxy container; empty strings when there is none."""
+    running = _run(["docker", "inspect", "-f", "{{.State.Running}}", PROXY]).stdout.strip()
+    current = _run(["docker", "inspect", "-f",
+                    "{{index .Config.Labels \"devagent.allow\"}}", PROXY]).stdout.strip()
+    return running, current
+
+
+def _start(image: str, allow: str) -> None:
+    """Remove any proxy container and start one that enforces `allow`."""
+    _run(["docker", "rm", "-f", PROXY])
+    up = _run([
+        "docker", "run", "-d", "--name", PROXY, "--network", NETWORK,
+        "--user", "1000:1000",
+        # The proxy reads its allowlist from its OWN env, so it is passed in here. It is not
+        # a secret, and inlining makes the proxy's rules visible in `docker ps`.
+        "-e", f"DEVAGENT_EGRESS_ALLOW={allow}",
+        "--label", f"devagent.allow={allow}",
+        "-v", f"{PROXY_SCRIPT}:/proxy.py:ro",
+        image, "python3", "/proxy.py",
+    ])
+    if up.returncode != 0:
+        raise RuntimeError(f"egress proxy failed to start: {up.stderr.strip()}")
+    # Give the proxy (and ONLY the proxy) upstream internet via the default bridge.
+    _run(["docker", "network", "connect", "bridge", PROXY])
 
 
 @contextmanager
 def _ensure_lock():
-    """Serialise `ensure` across the runs of this user on this host. A lock directory that cannot
-    be created must not stop a build, so the lock is then skipped. A lock still held after the
-    timeout raises TimeoutError to the caller, because running unlocked would reopen the race.
-    An error from the body propagates, and the lock is released."""
+    """Serialise `ensure` and `restore_default` across the runs of this user on this host. A
+    lock directory that cannot be created must not stop a build, so the lock is then skipped. A
+    lock still held after the timeout raises TimeoutError to the caller, because running unlocked
+    would reopen the race. An error from the body propagates, and the lock is released."""
     lock = hostlock.exclusive("egress", timeout_s=180.0,
                               on_wait=lambda n: print(
                                   "  -> waiting for another run to finish preparing the shared "

@@ -232,7 +232,7 @@ def _adopt(args) -> int:
             return 2
     cfg = Config.load()
     out = Path(args.out) if args.out else cfg.runs_dir / f"adopt-{_new_run_id()[4:]}"
-    building = False
+    building = widened = False
 
     def prover(*a, **kw):
         nonlocal building
@@ -267,11 +267,18 @@ def _adopt(args) -> int:
             except (RuntimeError, TimeoutError) as e:
                 print(f"error: {e}", file=sys.stderr)
                 return 2
-        map_fn = None
-        if not args.skip_map:
-            map_fn = mapper.make_mapper(network=network, proxy_url=proxy)
-        result = adopt(repos, out, map_fn=map_fn, prover=prover, network=network,
-                       proxy_url=proxy, title=args.title)
+            # The proxy now permits this repo's registries and mirrors, and is shared by every
+            # build on the host until it is replaced; narrow it back once the adoption is over.
+            widened = bool(hosts)
+        try:
+            map_fn = None
+            if not args.skip_map:
+                map_fn = mapper.make_mapper(network=network, proxy_url=proxy)
+            result = adopt(repos, out, map_fn=map_fn, prover=prover, network=network,
+                           proxy_url=proxy, title=args.title)
+        finally:
+            if widened:
+                egress.restore_default()
     except (ValueError, NotADirectoryError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

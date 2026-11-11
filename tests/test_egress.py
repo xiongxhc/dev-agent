@@ -207,13 +207,11 @@ def _untouched(calls):
     return not [c for c in calls if c[:2] in (["docker", "run"], ["docker", "rm"])]
 
 
-def test_a_default_ensure_replaces_an_idle_proxy_whose_allowlist_is_wider(monkeypatch):
+def test_a_default_ensure_reuses_an_idle_proxy_whose_allowlist_is_wider(monkeypatch):
     wider = allowlist(["repo1.maven.org", ".example.com"])
     calls = _fake_docker(monkeypatch, running="true", label=wider, others=f"{egress.PROXY} ")
-    egress.ensure()
-    assert _replaced_once(calls)
-    run = next(c for c in calls if c[:2] == ["docker", "run"])
-    assert f"devagent.allow={allowlist()}" in run and f"devagent.allow={wider}" not in run
+    assert egress.ensure() == (egress.NETWORK, f"http://{egress.PROXY}:{egress.PORT}")
+    assert _untouched(calls)
 
 
 def test_a_default_ensure_reuses_a_wider_proxy_while_another_build_uses_it(monkeypatch):
@@ -279,3 +277,58 @@ def test_runs_with_different_runs_dirs_contend_for_one_egress_lock(tmp_path, mon
     egress.ensure()
     t.join()
     assert calls and order[0] == "first out"
+
+
+# --- restore_default(): narrow a wider proxy back to the default list -----------------------
+
+def test_restore_default_replaces_an_idle_wider_proxy_with_the_default_list(monkeypatch):
+    wider = allowlist(["repo1.maven.org", ".example.com"])
+    calls = _fake_docker(monkeypatch, running="true", label=wider, others=f"{egress.PROXY} ")
+    egress.restore_default()
+    assert _replaced_once(calls)
+    run = next(c for c in calls if c[:2] == ["docker", "run"])
+    assert ["--label", f"devagent.allow={allowlist()}"] == \
+        run[run.index("--label"):run.index("--label") + 2]
+
+
+def test_restore_default_leaves_a_wider_proxy_another_build_uses(monkeypatch):
+    calls = _fake_docker(monkeypatch, running="true", label=allowlist(["repo1.maven.org"]),
+                         others=f"{egress.PROXY} some-build ")
+    egress.restore_default()
+    assert _untouched(calls)
+
+
+@pytest.mark.parametrize("label", [None, "other.example", ""])
+def test_restore_default_leaves_a_proxy_that_is_not_wider(monkeypatch, label):
+    calls = _fake_docker(monkeypatch, running="true",
+                         label=allowlist() if label is None else label, others=f"{egress.PROXY} ")
+    egress.restore_default()
+    assert _untouched(calls)
+
+
+def test_restore_default_does_nothing_when_no_proxy_runs(monkeypatch):
+    calls = _fake_docker(monkeypatch, running="false")
+    egress.restore_default()
+    assert _untouched(calls)
+
+
+def test_restore_default_does_not_raise_without_docker(monkeypatch):
+    def no_docker(args):
+        raise FileNotFoundError(2, "No such file or directory", "docker")
+    monkeypatch.setattr(egress, "_run", no_docker)
+    egress.restore_default()
+
+
+def test_restore_default_does_not_raise_on_a_lock_timeout(monkeypatch):
+    calls = _fake_docker(monkeypatch, running="true", label=allowlist(["repo1.maven.org"]))
+
+    class TimesOut:
+        def __enter__(self):
+            raise TimeoutError("waited 180s for the 'egress' lock")
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(egress.hostlock, "exclusive", lambda *a, **kw: TimesOut())
+    egress.restore_default()
+    assert calls == []

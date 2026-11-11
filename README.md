@@ -373,6 +373,11 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
   path.
 - **A plain `http://` package mirror cannot be reached with egress on.** The egress proxy
   tunnels HTTPS only. The survey notes such a mirror and does not allowlist it.
+- **While an adopt is running, other builds on the machine share its wider allowlist.** The
+  egress proxy is shared, and an adopt starts it with its recipe registries and mirror hosts
+  added. When the adopt finishes it restores the default list if no other build is attached to
+  the egress network. After an adopt that was killed, the wider list stays until the next adopt
+  finishes. Two adopts at once can narrow each other's allowlist, so run them one at a time.
 - **Symlinks are copied, not followed.** A link that points outside its copied directory dangles
   in the copy, so a build that depends on it is reported `unproven`.
 - **Mapping sends source code to the model API.** The session reads the whole repo and sends
