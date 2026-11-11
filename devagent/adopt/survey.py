@@ -215,7 +215,35 @@ def _is_boot_app(module_dir: Path, root) -> tuple[bool, dict]:
     return bool(apps) or evidence.get("spring_boot_maven_plugin", False), evidence
 
 
-def _maven_reactors(repo: Path) -> list[Path]:
+def _leads_outside(d: Path, repo: Path) -> bool:
+    """Is `d` a link whose target is not inside `repo`?"""
+    if not d.is_symlink():
+        return False
+    real, root = os.path.realpath(d), os.path.realpath(repo)
+    return real != root and not real.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _source_dirs(base: Path, repo: Path, survey: Survey) -> list[Path]:
+    """The directories directly under `base` that may hold a service. The source copy reads a
+    service's directory through a link, so a linked directory that leads outside the repo is
+    left out: adopting it would bring a tree from outside the repo into the run dir. It is
+    noted when it holds a build file."""
+    out = []
+    for d in sorted(base.iterdir()):
+        if not d.is_dir() or not_source(base, d.name):
+            continue
+        if _leads_outside(d, repo):
+            note = (f"{d.relative_to(repo)}: a link to a directory outside the repo — not "
+                    f"surveyed, since adopt copies only what is inside the repo")
+            if ((d / "pom.xml").is_file() or (d / "package.json").is_file()) \
+                    and note not in survey.notes:
+                survey.notes.append(note)
+            continue
+        out.append(d)
+    return out
+
+
+def _maven_reactors(repo: Path, survey: Survey) -> list[Path]:
     """Where this repo's Maven builds actually start.
 
     The root when it carries a pom.xml; otherwise its immediate children that do. Reading only
@@ -225,8 +253,7 @@ def _maven_reactors(repo: Path) -> list[Path]:
     same depth as the node walk; deeper would be guessing at directory habits."""
     if (repo / "pom.xml").is_file():
         return [repo]
-    return [d for d in sorted(repo.iterdir())
-            if d.is_dir() and not not_source(repo, d.name) and (d / "pom.xml").is_file()]
+    return [d for d in _source_dirs(repo, repo, survey) if (d / "pom.xml").is_file()]
 
 
 def _survey_maven(repo: Path, survey: Survey, label: str = "") -> None:
@@ -321,8 +348,15 @@ _PM_LOCKS = (("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("package-lock.j
              ("bun.lockb", "bun"))
 
 
+def _table(pkg: dict, key: str) -> dict:
+    """`pkg[key]` when it is an object, else {}. package.json is repo text, so a field of
+    another type is read as absent."""
+    value = pkg.get(key)
+    return value if isinstance(value, dict) else {}
+
+
 def _has_build_script(pkg: dict) -> bool:
-    return any(k == "build" or k.startswith("build:") for k in (pkg.get("scripts") or {}))
+    return any(k == "build" or k.startswith("build:") for k in _table(pkg, "scripts"))
 
 
 def _package_manager(d: Path) -> tuple[str | None, list[str]]:
@@ -333,7 +367,7 @@ def _package_manager(d: Path) -> tuple[str | None, list[str]]:
 
 
 def _node_framework(pkg: dict) -> str | None:
-    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    deps = {**_table(pkg, "dependencies"), **_table(pkg, "devDependencies")}
     for name, label in (("next", "next"), ("vite", "vite"), ("react-scripts", "cra"),
                         ("@umijs/max", "umi"), ("umi", "umi"), ("webpack", "webpack")):
         if name in deps:
@@ -359,8 +393,8 @@ def _survey_node(d: Path, repo: Path, survey: Survey) -> dict | None:
         return None
     if not isinstance(pkg, dict):
         return None
-    scripts = pkg.get("scripts") or {}
-    build_scripts = sorted(k for k in scripts if k == "build" or k.startswith("build:"))
+    build_scripts = sorted(k for k in _table(pkg, "scripts")
+                           if k == "build" or k.startswith("build:"))
     rel = "." if d == repo else str(d.relative_to(repo))
     deployable = bool(build_scripts)
     if not deployable:
@@ -407,11 +441,18 @@ def _survey_node(d: Path, repo: Path, survey: Survey) -> dict | None:
 
 # ---------------------------------------------------------------- static site
 
-def _survey_static_site(repo: Path, survey: Survey) -> None:
+def _survey_static_site(repo: Path, survey: Survey, root_pkg: dict | None = None) -> None:
     """A repo with no Maven or node service whose root holds an `index.html` is one static site.
     Anything already found wins: an `index.html` beside a `package.json` is that app's entry
-    page, not a second service."""
+    page, not a second service. `root_pkg` is the root package.json when there is one. If it
+    declares a framework or workspaces, a tool builds the page, and the static recipe, which
+    copies files, would report unbuilt source as proven."""
     if survey.services or survey.libraries or not (repo / "index.html").is_file():
+        return
+    if root_pkg and (_node_framework(root_pkg) or "workspaces" in root_pkg):
+        survey.notes.append("index.html at the repo root sits beside a package.json that "
+                            "declares a framework or workspaces — a tool builds that page, so "
+                            "it is not a static site")
         return
     survey.services.append(_root(repo.name, "", path=".", kind="static-site", deployable=True,
                                  evidence={"entry": "index.html"}, repo=str(repo)))
@@ -519,11 +560,13 @@ def _mirror_url(survey, url: str, where: str) -> str | None:
     The egress proxy matches the CONNECT host without its port, so only the hostname is kept.
     The proxy tunnels HTTPS only: a plain `http://` mirror cannot be reached through it, so it
     is reported instead of allowlisted, rather than telling the operator it is reachable."""
-    parts = urlsplit(url.strip())
     try:
+        parts = urlsplit(url.strip())
         host = parts.hostname
     except ValueError:
-        host = None
+        survey.notes.append(f"{where}: mirror {url.strip()[:200]!r} cannot be read as a URL — "
+                            f"it is not allowlisted")
+        return None
     if not host:
         return None
     if parts.scheme.lower() == "http":
@@ -600,7 +643,7 @@ def survey_repo(repo_path, registry=None) -> Survey:
         raise NotADirectoryError(f"{repo} is not a directory")
     survey = Survey(repo=str(repo))
 
-    reactors = _maven_reactors(repo)
+    reactors = _maven_reactors(repo, survey)
     for reactor in reactors:
         _survey_maven(reactor, survey,
                       label="" if reactor == repo else f"{reactor.relative_to(repo)}: ")
@@ -609,16 +652,18 @@ def survey_repo(repo_path, registry=None) -> Survey:
     # scanned so a node service is found the same way whichever directory was adopted.
     # A package at the base claims the directories below it only when it is itself the app
     # (it has a build script) or a workspace root; a tooling package does not.
+    root_pkg = None
     for base in [repo] + [r for r in reactors if r != repo]:
         if (base / "package.json").is_file():
             pkg = _survey_node(base, repo, survey)
+            if base == repo:
+                root_pkg = pkg
             if pkg is not None and (_has_build_script(pkg) or "workspaces" in pkg):
                 continue
-        for d in sorted(p for p in base.iterdir()
-                        if p.is_dir() and not not_source(base, p.name)):
+        for d in _source_dirs(base, repo, survey):
             if (d / "package.json").is_file():
                 _survey_node(d, repo, survey)
-    _survey_static_site(repo, survey)
+    _survey_static_site(repo, survey, root_pkg)
     _deployment_evidence(repo, survey)
     match_recipes(survey, registry)
     for root in survey.services + survey.libraries:

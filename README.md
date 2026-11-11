@@ -202,7 +202,8 @@ DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001 python -m devagent.cli run --buil
    module that is itself an aggregator is followed into its own modules. A module listed only in
    a profile is noted and not adopted. A node package with no `build` or `build:*` script is
    not a service. A repo with an `index.html` at its root and no Maven or node service and no
-   library is one static site.
+   library is one static site, unless a `package.json` beside it declares a framework or
+   workspaces. A linked directory that leads outside the repo is not surveyed.
 2. **Map.** One contained model session per service reads the source and returns a description
    and the API contract the service provides. The repo is mounted read-only. The session can
    use only the Read, Grep and Glob tools, and a call whose target resolves outside the repo is
@@ -379,7 +380,8 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
   the egress network. After an adopt that was killed, the wider list stays until the next adopt
   finishes. Two adopts at once can narrow each other's allowlist, so run them one at a time.
 - **Symlinks are copied, not followed.** A link that points outside its copied directory dangles
-  in the copy, so a build that depends on it is reported `unproven`.
+  in the copy, so a build that depends on it is reported `unproven`. A service directory that is
+  itself a link is adopted only when it leads to a directory inside the repo.
 - **Mapping sends source code to the model API.** The session reads the whole repo and sends
   what it reads to the model API. Adopt a repo you do not trust with `--skip-map`.
 - **No URL intake.** "Clone this reference site" is designed-for but not built (reference-URL

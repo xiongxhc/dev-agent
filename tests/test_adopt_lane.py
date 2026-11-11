@@ -127,6 +127,20 @@ def test_a_run_dir_that_already_holds_a_run_is_refused_and_left_alone(tmp_path):
     assert (tmp_path / "victim").read_text() == "untouched"
 
 
+def test_a_tree_outside_the_repo_is_never_copied_through_a_linked_directory(tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "package.json").write_text('{"name": "other", "scripts": {"build": "x"}}')
+    (outside / "private.txt").write_text("not part of the repo")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "web").symlink_to(outside, target_is_directory=True)
+    out = tmp_path / "out"
+    result = adopt(repo, out, prover=_unmappable)
+    assert result.status == "survey_only"
+    assert not [p for p in out.rglob("*") if p.name in ("private.txt", "package.json")]
+
+
 def test_an_existing_empty_run_dir_is_accepted(tmp_path):
     out = tmp_path / "out"
     out.mkdir()

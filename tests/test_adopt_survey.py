@@ -446,14 +446,42 @@ def test_an_unresolvable_java_version_is_reported_as_declared_not_undeclared(tmp
     assert "undeclared" not in s.gaps[0]
 
 
-def test_an_app_directory_that_is_a_symlink_is_surveyed(tmp_path):
-    real = tmp_path / "elsewhere"
-    _write(real, "package.json", json.dumps({"scripts": {"build": "x"}}))
+def test_an_app_directory_that_is_a_link_inside_the_repo_is_surveyed(tmp_path):
     repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "web").symlink_to(real, target_is_directory=True)
+    _write(repo, "packages/real/package.json", json.dumps({"scripts": {"build": "x"}}))
+    (repo / "web").symlink_to(repo / "packages/real", target_is_directory=True)
     s = survey_repo(repo)
     assert [(x.name, x.path) for x in s.services] == [("web", "web")]
+
+
+@pytest.mark.parametrize("manifest,body", [
+    ("package.json", json.dumps({"scripts": {"build": "x"}})),
+    ("pom.xml", _pom("api", boot_plugin=True, java="17")),
+])
+def test_a_linked_directory_that_leads_outside_the_repo_is_not_surveyed(tmp_path, manifest, body):
+    """The source copy reads a service's directory through such a link, so adopting it would
+    bring a tree from outside the repo into the run dir."""
+    _write(tmp_path / "elsewhere", manifest, body)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "web").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    s = survey_repo(repo)
+    assert s.services == [] and s.libraries == []
+    assert sum("web" in n and "outside the repo" in n for n in s.notes) == 1
+
+
+@pytest.mark.parametrize("package", [
+    {"name": "a", "scripts": 5},
+    {"name": "a", "scripts": ["build"]},
+    {"name": "a", "scripts": {"build": "x"}, "dependencies": ["vite"]},
+    {"name": "a", "scripts": {"build": "x"}, "dependencies": None, "devDependencies": "vite"},
+    {"name": 7, "scripts": {"build": "x"}, "workspaces": None},
+])
+def test_a_package_json_with_fields_of_the_wrong_type_is_surveyed_not_a_crash(tmp_path, package):
+    _write(tmp_path, "package.json", json.dumps(package))
+    s = survey_repo(tmp_path)
+    assert all(x.kind == "node-app" and x.evidence["framework"] is None for x in s.services)
+    assert len(s.services) == (1 if isinstance(package["scripts"], dict) else 0)
 
 
 def test_the_same_id_across_repos_is_refused_even_when_the_names_differ(tmp_path):
@@ -521,6 +549,26 @@ def test_index_html_beside_a_package_json_is_not_a_second_service(tmp_path):
     (tmp_path / "index.html").write_text("<html>")
     (tmp_path / "package.json").write_text('{"name": "web", "scripts": {"build": "vite build"}}')
     assert [r.kind for r in survey_repo(tmp_path).services] == ["node-app"]
+
+
+@pytest.mark.parametrize("package", [
+    {"name": "web", "devDependencies": {"vite": "5"}},
+    {"name": "mono", "workspaces": ["packages/*"]},
+])
+def test_index_html_beside_an_app_or_workspace_package_is_not_a_static_site(tmp_path, package):
+    """The page is that app's entry, built by a tool. Adopting it as a static site would report
+    unbuilt source as proven."""
+    (tmp_path / "index.html").write_text("<html>")
+    (tmp_path / "package.json").write_text(json.dumps(package))
+    s = survey_repo(tmp_path)
+    assert s.services == []
+    assert sum("index.html" in n and "not a static site" in n for n in s.notes) == 1
+
+
+def test_index_html_beside_a_tooling_package_is_a_static_site(tmp_path):
+    (tmp_path / "index.html").write_text("<html>")
+    (tmp_path / "package.json").write_text('{"name": "site", "devDependencies": {"prettier": "3"}}')
+    assert [r.kind for r in survey_repo(tmp_path).services] == ["static-site"]
 
 
 def test_a_directory_with_no_index_html_has_no_services(tmp_path):
@@ -664,6 +712,18 @@ def test_an_npmrc_mirror_with_a_port_is_recorded_without_it(tmp_path):
 def test_the_sibling_suffix_never_opens_a_public_suffix_or_an_ip_range(tmp_path, url, hosts):
     _settings(tmp_path, url)
     assert survey_repo(tmp_path).mirror_hosts == hosts
+
+
+@pytest.mark.parametrize("where", ["settings.xml", ".npmrc"])
+def test_a_mirror_url_that_cannot_be_parsed_is_a_note_naming_its_file(tmp_path, where):
+    if where == "settings.xml":
+        _settings(tmp_path, "https://[bad/maven/")
+    else:
+        _write(tmp_path, "package.json", json.dumps({"name": "web", "scripts": {"build": "x"}}))
+        _write(tmp_path, ".npmrc", "registry=https://[bad/npm/\n")
+    s = survey_repo(tmp_path)
+    assert s.mirror_hosts == [] and len(s.services) == 1
+    assert any(where in n and "cannot be read as a URL" in n for n in s.notes)
 
 
 @pytest.mark.parametrize("where", ["settings.xml", ".npmrc"])

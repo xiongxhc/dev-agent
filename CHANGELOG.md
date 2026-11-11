@@ -329,7 +329,9 @@ designs live in [`docs/specs/`](docs/specs/). ✅ shipped · ◐ partial · ⬜ 
   dir that is not empty is refused. Design: [`docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md`](docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md).
   - ◐ **survey** (`adopt/survey.py`): deterministic detection of Maven and node services,
     libraries, package mirrors and recipe gaps; a repo with a root `index.html` and no Maven or
-    node service and no library is one static site; several repos survey as one system.
+    node service and no library is one static site, unless a root `package.json` declares a
+    framework or workspaces; a linked directory that leads outside the repo is not surveyed;
+    several repos survey as one system.
   - ◐ **map** (`adopt/mapper.py`): one contained session per service, repo mounted read-only,
     Read/Grep/Glob only with targets outside the repo denied, egress allowlist, host-side
     validation with up to 2 retries. The arm and credential are checked before anything runs.

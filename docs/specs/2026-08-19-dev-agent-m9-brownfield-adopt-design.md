@@ -31,7 +31,8 @@ devagent adopt <repo-path>... [--out DIR] [--skip-map] [--title T]
   cannot be wired if adopted alone, so the surveys are merged before assembly. Two services
   with the same id are refused; a service's id is its name in lower case with `_` read as `-`.
 - A service name is one path component matching `[A-Za-z0-9][A-Za-z0-9._-]*`. Symlinks in the
-  source are copied as links and never followed.
+  source are copied as links and never followed. A linked directory that leads outside the repo
+  is not surveyed as a service.
 - Refusals come first and cost nothing: a path that is not a directory, an unusable run dir, and
   an unknown mapping arm or missing credential all exit before anything is created and before
   the shared egress proxy is touched.
@@ -48,7 +49,8 @@ A pure-Python repo walk. It detects service roots (Maven `pom.xml`, multi-module
 itself an aggregator is followed into its own modules, and a module listed only in a profile is
 noted and not adopted. A node package with no `build` or `build:*` script is not a service. A
 repo whose root holds an `index.html`, and which has no Maven or node service and no library, is
-one static site. Each root is classified against the
+one static site, unless a `package.json` beside it declares a framework or workspaces: a tool
+builds that page, and the static recipe only copies files. Each root is classified against the
 recipe registry. The survey also records libraries, package mirrors the build must reach,
 and explicit **recipe gaps** ("service X needs a recipe for Y"). The gap list is the
 evidence for which recipes are still missing. Fully unit-testable against fixture trees.
