@@ -1,29 +1,31 @@
-"""Map — one contained, read-only session per service; emits a scope fragment and a contract.
+"""Map — one contained session per service that reads it; emits a scope fragment and a contract.
 
 Three properties are deliberate and each is a containment decision, not a style choice:
 
-* **Read-only.** The repo is mounted `:ro` and the session is given reading tools only. A model
-  with tools must not be able to change the code it is describing, so both locks are applied
-  and neither relies on the other.
+* **Reading inside the repo only.** The repo is mounted `:ro`, and the session is locked to the
+  Read, Grep and Glob tools on paths inside the mount (the three locks are described in
+  mapper_runner.py). A model with tools must not be able to change the code it is describing.
 * **Host-side validation.** The session's answer is parsed and validated with pydantic on the
-  host and re-asked on a ValidationError, with the validator's message fed back. A fragment
-  that does not validate is never repaired here: a hand-repaired answer is no longer what the
-  model read.
+  host and re-asked on a ValidationError, with the failing fields and the validator's messages
+  fed back. A fragment that does not validate is never repaired here: a hand-repaired answer is
+  no longer what the model read.
 * **Claude by default.** Mapping sends the repo's source code to a model API, so the operator
   chooses which API on purpose: the arm is Claude unless `DEVAGENT_ADOPT_ARM` names another
   one, and an arm whose credential is missing refuses to run.
 
 Credentials follow the executors' rule: the `docker run` argv names each secret variable
 (`-e ANTHROPIC_API_KEY`) and the value travels only in the subprocess environment, so it never
-appears in the argv, which callers may log.
+appears in the argv, which callers may log. The session's own process holds the value, so an
+answer that contains it is discarded, never kept or fed back.
 """
 
+import json
 import os
 import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from .. import egress
 from ..executor_deepseek import ANTHROPIC_COMPAT_URL, DEFAULT_MODEL, KEY_ENV as DEEPSEEK_KEY_ENV
@@ -44,11 +46,22 @@ class ContractOut(BaseModel):
 class FragmentOut(BaseModel):
     """What one mapping session must return. Kept small on purpose: a description and the
     contracts the service provides, not a full design; assemble composes the design."""
-    summary: str = Field(..., min_length=20)
-    kind: str | None = None                       # frontend | backend | datastore
+    summary: str = Field(..., min_length=20, max_length=4000)
+    kind: Literal["frontend", "backend", "datastore"] | None = None
     provides: list[ContractOut] = Field(default_factory=list)
     consumes: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        """Contradictions inside one answer are refused here, so they are re-asked for this
+        service instead of failing the assembled design for every service."""
+        ids = [c.id for c in self.provides]
+        if len(ids) != len(set(ids)):
+            raise ValueError("provides lists the same contract id more than once")
+        if set(ids) & set(self.consumes):
+            raise ValueError("consumes names a contract this service itself provides")
+        return self
 
 
 def adopt_arm(env=None) -> str:
@@ -73,16 +86,29 @@ def _container_argv(image: str, repo: Path, service_path: str, network, proxy_ur
             *arm_flags,
             "-e", "HOME=/home/node",
             "--user", "1000:1000",
-            # :ro is the containment: the session cannot modify what it describes.
+            # :ro, so nothing in the container can change the repo it is describing.
             "-v", f"{repo}:/src:ro",
             "-v", f"{RUNNER}:/mapper.py:ro",
-            image, "python3", "/mapper.py", "--service", service_path]
+            # One `--opt=value` word, so a path starting with "-" is still a value.
+            image, "python3", "/mapper.py", f"--service={service_path}"]
+
+
+def _key_env(arm: str) -> str:
+    return DEEPSEEK_KEY_ENV if arm == "deepseek" else "ANTHROPIC_API_KEY"
+
+
+def _credential() -> str | None:
+    """The value the session will hold, if it is set; used only to recognise it in output."""
+    try:
+        return os.environ.get(_key_env(adopt_arm())) or None
+    except ValueError:
+        return None
 
 
 def _subprocess_env() -> dict:
     """Env for the `docker run` subprocess, where the by-name `-e` flags pick their values."""
     arm = adopt_arm()
-    var = DEEPSEEK_KEY_ENV if arm == "deepseek" else "ANTHROPIC_API_KEY"
+    var = _key_env(arm)
     key = os.environ.get(var)
     if not key:
         raise RuntimeError(
@@ -108,19 +134,24 @@ def map_service(repo: Path, service, *, image: str = DEFAULT_IMAGE, network=None
     if not _inside_repo(service.path):
         return None
     run = runner or _run_session
+    secret = _credential()
     last_error = None
     for attempt in range(1 + _MAX_RETRIES):
         raw = run(image, repo, service.path, network, proxy_url, timeout, last_error)
-        if not raw:
+        if not raw or (secret and secret in raw) or _session_failed(raw):
+            # No answer, an answer carrying the credential, or a session that reported its own
+            # failure: none of these is worth asking again, and the first must not be kept.
             return None
         try:
             out = FragmentOut.model_validate_json(raw)
         except ValidationError as e:
-            # Feed the validator's message back and re-ask; never repair it here.
-            last_error = str(e)[:1500]
-            if attempt == _MAX_RETRIES:
+            # Feed the failure back and re-ask; never repair it here.
+            last_error = _retry_context(e)
+            if attempt == _MAX_RETRIES or (secret and secret in last_error):
                 return None
             continue
+        if secret and secret in out.model_dump_json():
+            return None                 # the same check on the decoded answer (JSON escapes)
         return Fragment(
             service=service.name, prd_slice=out.summary, kind=out.kind,
             provides=tuple(c.model_dump() for c in out.provides),
@@ -128,10 +159,29 @@ def map_service(repo: Path, service, *, image: str = DEFAULT_IMAGE, network=None
     return None
 
 
+def _session_failed(raw: str) -> bool:
+    """The runner reports a failed session as a JSON object with an "error" key."""
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(obj, dict) and "error" in obj
+
+
+def _retry_context(e: ValidationError) -> str:
+    """What failed, from each error's location and message only. The input values are left
+    out, since they are the model's own output and could carry anything it read."""
+    lines = []
+    for err in e.errors(include_url=False, include_input=False, include_context=False):
+        loc = ".".join(str(p) for p in err.get("loc", ())) or "answer"
+        lines.append(f"{loc}: {err.get('msg', '')}")
+    return "\n".join(lines)[:1500]
+
+
 def _run_session(image, repo, service_path, network, proxy_url, timeout, prior_error):
     argv = _container_argv(image, Path(repo), service_path, network, proxy_url)
     if prior_error:
-        argv += ["--retry-context", prior_error]
+        argv.append(f"--retry-context={prior_error}")
     res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
                          env=_subprocess_env())
     # The runner prints exactly one JSON object on stdout; anything else is a failed session.
