@@ -448,3 +448,33 @@ def test_an_overlong_summary_is_re_asked(tmp_path):
     assert mapper.map_service(tmp_path, _svc(), runner=long) is None
     assert len(calls) == 3 and "summary" in calls[1]
     assert mapper.map_service(tmp_path, _svc(), runner=lambda *a: _answer(summary="A" * 4000))
+
+
+def test_making_the_mapper_refuses_an_unknown_arm(monkeypatch):
+    monkeypatch.setenv("DEVAGENT_ADOPT_ARM", "bogus")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", _FAKE_KEY)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", _FAKE_KEY)
+    with pytest.raises(ValueError, match="known: claude, deepseek") as e:
+        mapper.make_mapper()
+    assert _FAKE_KEY not in str(e.value)
+
+
+@pytest.mark.parametrize("arm,var", [("claude", "ANTHROPIC_API_KEY"),
+                                     ("deepseek", "DEEPSEEK_API_KEY")])
+def test_making_the_mapper_refuses_a_missing_credential(monkeypatch, arm, var):
+    """The other arm's key is set, so a message that leaked any key value would show it."""
+    monkeypatch.setenv("DEVAGENT_ADOPT_ARM", arm)
+    for other in ("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"):
+        monkeypatch.setenv(other, _FAKE_KEY)
+    monkeypatch.delenv(var)
+    with pytest.raises(RuntimeError, match=var) as e:
+        mapper.make_mapper()
+    assert _FAKE_KEY not in str(e.value)
+
+
+@pytest.mark.parametrize("arm,var", [("claude", "ANTHROPIC_API_KEY"),
+                                     ("deepseek", "DEEPSEEK_API_KEY")])
+def test_making_the_mapper_with_a_valid_setup_returns_a_map_function(monkeypatch, arm, var):
+    monkeypatch.setenv("DEVAGENT_ADOPT_ARM", arm)
+    monkeypatch.setenv(var, _FAKE_KEY)
+    assert callable(mapper.make_mapper())

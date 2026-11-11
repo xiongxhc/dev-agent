@@ -193,7 +193,12 @@ def _run_session(image, repo, service_path, network, proxy_url, timeout, prior_e
 
 
 def make_mapper(*, image: str = DEFAULT_IMAGE, network=None, proxy_url=None, timeout: int = 900):
-    """A `map_fn(repo, service)` for the lane, bound to this run's containment settings."""
+    """A `map_fn(repo, service)` for the lane, bound to this run's containment settings.
+
+    The arm and its credential are checked here, so a misconfigured run fails before any
+    service is mapped instead of marking every service NOT MAPPED. Raises ValueError for an
+    unknown arm and RuntimeError for a missing credential."""
+    _subprocess_env()                   # the same checks the per-service path runs; env dropped
     def mapper(repo, service):
         return map_service(repo, service, image=image, network=network, proxy_url=proxy_url,
                            timeout=timeout)
