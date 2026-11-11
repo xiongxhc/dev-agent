@@ -1,22 +1,20 @@
 """Survey — find the service roots in an existing repo, deterministically and without an LLM.
 
-M9 stage 3.1. This is the stage that decides what the rest of adopt even looks at, so it is
+This is the stage that decides what the rest of adopt even looks at, so it is
 pure Python and fully testable against fixture trees: a mapping session is expensive and a
 model asked "what services are here" will invent a plausible answer, whereas a `pom.xml`'s
 `<modules>` list is a fact.
 
-Three things it must get right, each learned from the pilot codebase rather than guessed:
+Three things it must get right:
 
-* **Declared modules, not directories.** A multi-module Maven repo has directories that are
-  not part of the build (the pilot backend ships `shop-generate` and `shop-mcp` beside five
-  declared modules). Walking directories adopts things the project does not build.
-* **Deployable versus library.** Only some modules are services. `shop-common`, `shop-dao` and
-  `shop-service` are libraries; `shop-admin-api` and `shop-staff-api` carry
-  `spring-boot-maven-plugin` and a `*Application.java`. Mapping a library as a service
+* **Declared modules, not directories.** A multi-module Maven repo can have directories that
+  are not part of the build. Walking directories adopts things the project does not build.
+* **Deployable versus library.** Only some modules are services. A deployable module carries
+  `spring-boot-maven-plugin` or a `*Application.java`. Mapping a library as a service
   produces a design with no runnable shape.
 * **Explicit gaps.** A root with no matching recipe is reported as a gap, not dropped. The
-  point of the survey is to finalize the recipe list from evidence — silence would hide
-  exactly the work the milestone exists to size.
+  gap list is the evidence for which recipes are still missing — silence would hide exactly
+  that work.
 
 It also collects what a build would need but cannot infer later: the Java version, the package
 manager (by lockfile), and any Maven mirror, because a mirror with `<mirrorOf>*</mirrorOf>`
@@ -24,6 +22,7 @@ means the build never reaches Maven Central and the mirror's host has to be reac
 """
 
 import json
+import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
@@ -34,6 +33,11 @@ _SKIP = {".git", "node_modules", "target", "dist", "build", ".venv", "__pycache_
          ".idea", ".vscode", ".mvn"}
 
 _POM_NS = "{http://maven.apache.org/POM/4.0.0}"
+
+
+def slug(name: str) -> str:
+    """The design id for a service or library name. Ids are what must be unique in a system."""
+    return name.replace("_", "-").lower()
 
 
 @dataclass
@@ -77,8 +81,8 @@ def _pom(path: Path):
 
 def _local(tag: str) -> str:
     """The tag without its namespace. Maven files use several (the POM namespace, the SETTINGS
-    namespace, sometimes none), so matching a fixed one silently finds nothing — which is how a
-    settings.xml mirror went unreported."""
+    namespace, sometimes none), so matching a fixed one silently finds nothing and a
+    settings.xml mirror goes unreported."""
     return tag.rpartition("}")[2]
 
 
@@ -105,6 +109,13 @@ def _java_version(root) -> str | None:
         if value:
             return value
     return None
+
+
+def _java_major(value: str | None) -> int | None:
+    """The major Java version of a declared value: `1.8` and `8` are 8, `17` is 17. A property
+    reference such as `${jdk}` or anything else that is not a number is unknown."""
+    m = re.fullmatch(r"(?:1\.)?(\d+)(?:\.\d+)*", (value or "").strip())
+    return int(m.group(1)) if m else None
 
 
 def _maven_mirrors(repo: Path) -> list[str]:
@@ -150,9 +161,8 @@ def _is_boot_app(module_dir: Path, root) -> tuple[bool, dict]:
     if apps:
         evidence["entry_points"] = sorted(apps)
     if bare_mains:
-        # Deliberately NOT decisive. The pilot's shop-common is a library whose crypto utility
-        # carries a demo main(); treating any main() as a service turns every such library into
-        # a service and the design into fiction.
+        # Deliberately NOT decisive. A library can carry a demo main(); treating any main() as
+        # a service turns every such library into a service and the design into fiction.
         evidence["bare_mains"] = sorted(bare_mains)[:3]
     return bool(apps) or evidence.get("spring_boot_maven_plugin", False), evidence
 
@@ -161,11 +171,10 @@ def _maven_reactors(repo: Path) -> list[Path]:
     """Where this repo's Maven builds actually start.
 
     The root when it carries a pom.xml; otherwise its immediate children that do. Reading only
-    `<repo>/pom.xml` was a silent blind spot on the pilot codebase's uniform layout — a Maven `backend/`
-    beside a node `frontend/`. The node walk already descends one level, so `adopt <repo>` found
-    the frontend, missed a five-module Spring Boot backend, and reported no gap: an adoption that
-    looks complete while describing half the system. One level, the same depth as the node walk;
-    deeper would be guessing at someone's directory habits."""
+    `<repo>/pom.xml` is a silent blind spot for a repo that keeps a Maven `backend/` beside a
+    node `frontend/`: the node walk finds the frontend, the backend is missed, and no gap is
+    reported, so the adoption looks complete while describing half the system. One level, the
+    same depth as the node walk; deeper would be guessing at directory habits."""
     if (repo / "pom.xml").is_file():
         return [repo]
     return [d for d in sorted(repo.iterdir())
@@ -308,7 +317,7 @@ def _deployment_evidence(repo: Path, survey: Survey) -> None:
         survey.notes.append(f"compose file(s): {composes}")
     for ci in ("Jenkinsfile", ".gitlab-ci.yml", ".github/workflows"):
         if (repo / ci).exists():
-            survey.notes.append(f"existing CI: {ci} — M9's tail is fitting it, not replacing it")
+            survey.notes.append(f"existing CI: {ci} — later stages fit it, not replace it")
 
 
 # ---------------------------------------------------------------- recipe matching
@@ -316,8 +325,8 @@ def _deployment_evidence(repo: Path, survey: Survey) -> None:
 def match_recipes(survey: Survey, registry=None) -> None:
     """Fill in `stack` where a registered recipe fits, and `gap` where none does.
 
-    A gap is a first-class output: the pilot's survey is what finalizes the recipe list, so
-    "maven-spring-boot (java 8): no recipe" is the deliverable, not a failure."""
+    A gap is a first-class output: it names the recipe that is still missing, so "needs a Maven
+    recipe for Java 9" is the deliverable, not a failure."""
     if registry is None:
         from .. import recipes as _recipes
         registry = _recipes.REGISTRY
@@ -328,8 +337,12 @@ def match_recipes(survey: Survey, registry=None) -> None:
     for svc in survey.services:
         ev = svc.evidence
         if svc.kind == "maven-module":
-            want = f"maven-spring-boot (java {ev.get('java_version') or '?'})"
-            svc.stack = next((n for n, _ in by_type.get("backend", []) if "maven" in n), None)
+            major = _java_major(ev.get("java_version"))
+            svc.stack = _match_maven(by_type.get("backend", []), major)
+            want = (f"a Maven recipe for Java {major}" if major is not None else
+                    "a Maven recipe for an undeclared Java version")
+            tail = (" — no registered recipe" if major is not None
+                    else " — declare java.version in the POM")
         else:
             fw = ev.get("framework") or "unknown"
             pm = ev.get("package_manager") or "unknown"
@@ -337,11 +350,23 @@ def match_recipes(survey: Survey, registry=None) -> None:
             # problem from a missing recipe: no install can be frozen, so two builds of the same
             # commit may resolve different trees and a `proven` verdict would mean nothing. Name
             # it, or the gap reads as recipe work when it is repo work.
+            tail = " — no registered recipe"
             want = f"node {fw} + {'no lockfile' if pm == 'unknown' else pm}"
             svc.stack = _match_node(by_type.get("frontend", []), fw, pm)
         if not svc.stack:
-            svc.gap = f"{svc.name}: needs {want} — no registered recipe"
+            svc.gap = f"{svc.name}: needs {want}{tail}"
             survey.gaps.append(svc.gap)
+
+
+def _match_maven(candidates, major: int | None) -> str | None:
+    """A Maven recipe fits a module whose Java version it builds. Recipes are per Java version
+    (`...-jdk17`); one with no version suffix builds any, and is the fallback."""
+    maven = [n for n, _ in candidates if "maven" in n]
+    if major is not None:
+        for name in maven:
+            if name.endswith(f"-jdk{major}"):
+                return name
+    return next((n for n in maven if not re.search(r"-jdk\d+$", n)), None)
 
 
 def _match_node(candidates, framework: str, pm: str) -> str | None:
@@ -366,7 +391,7 @@ def _match_node(candidates, framework: str, pm: str) -> str | None:
 def _record_mirror(survey, host: str) -> None:
     """Record a package mirror, plus its registrable-domain suffix.
 
-    A registry commonly redirects tarball downloads to a sibling host (npmmirror serves metadata
+    A registry commonly redirects tarball downloads to a sibling host (a mirror may serve metadata
     from registry.* and content from cdn.*). The redirect happens INSIDE the TLS tunnel, so the
     client opens a second CONNECT the allowlist has never heard of and the build fails naming the
     original URL. The built-in defaults already treat npmjs this way (`.npmjs.org`)."""
@@ -385,17 +410,26 @@ def _record_mirror(survey, host: str) -> None:
 
 
 def _refuse_duplicate_names(survey: Survey, repo: Path) -> None:
-    """Service ids must be unique across a system, so two services sharing a name inside one repo
-    are refused here, as `survey_repos` refuses them across repos. Libraries are not checked."""
+    """Service ids must be unique across a system, so two services whose names give the same id
+    are refused here, as `survey_repos` refuses them across repos. Libraries are not checked.
+
+    Paths are shown relative to the repo, built only on a collision: a module may legally live
+    outside the repo tree (`../shared`), which has no path relative to it in the subpath sense."""
     seen: dict = {}
     for svc in survey.services:
-        here = str(Path(svc.repo, svc.path).resolve().relative_to(repo))
-        if svc.name in seen:
-            raise ValueError(
-                f"service name {svc.name!r} appears in both {seen[svc.name]} and {here} — "
-                f"service ids must be unique across a system, so one of them needs renaming "
-                f"before it can be adopted")
-        seen[svc.name] = here
+        sid = slug(svc.name)
+        if sid not in seen:
+            seen[sid] = svc
+            continue
+        first = seen[sid]
+        raise ValueError(
+            f"service name {svc.name!r} appears in both {_shown(first, repo)} and "
+            f"{_shown(svc, repo)} — service ids must be unique across a system, so one of them "
+            f"needs renaming before it can be adopted")
+
+
+def _shown(svc: ServiceRoot, repo: Path) -> str:
+    return os.path.relpath(os.path.join(svc.repo, svc.path), repo)
 
 
 def survey_repo(repo_path, registry=None) -> Survey:
@@ -410,10 +444,10 @@ def survey_repo(repo_path, registry=None) -> Survey:
         _survey_maven(reactor, survey,
                       label="" if reactor == repo else f"{reactor.relative_to(repo)}: ")
 
-    # A node app sits one level below a BUILD ROOT, and in the pilot codebase there can be two: the repo
-    # and a sub-reactor. `adopt billing/backend` found billing-mcp (a TypeScript service beside the
-    # Maven modules); `adopt billing` did not, and — like the missed backend before it — said nothing
-    # about it. Scanning one level below each build root keeps the two walks symmetric.
+    # A node app sits one level below a BUILD ROOT, and there can be two: the repo and a
+    # sub-reactor. A node service beside the Maven modules would be found when the sub-reactor is
+    # adopted but missed when its parent is, with nothing said about it. Scanning one level below
+    # each build root keeps the two walks symmetric.
     for base in [repo] + [r for r in reactors if r != repo]:
         if (base / "package.json").is_file():
             _survey_node(base, repo, survey)
@@ -434,8 +468,8 @@ def survey_repo(repo_path, registry=None) -> Survey:
 def survey_repos(paths, registry=None) -> Survey:
     """Survey several repos as ONE system.
 
-    A system is not always one repository. The first pilot is a Spring Boot backend and a React
-    frontend in two repositories, and adopting either alone produces a design whose frontend
+    A system is not always one repository. A Spring Boot backend and a React frontend can live
+    in two repositories, and adopting either alone produces a design whose frontend
     consumes an API no service in it provides — which the wiring gate rightly refuses. Merging
     the surveys is what makes the gate meaningful rather than an obstacle."""
     paths = [paths] if isinstance(paths, (str, Path)) else list(paths)

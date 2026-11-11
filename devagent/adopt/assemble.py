@@ -1,6 +1,6 @@
 """Assemble — compose a SystemDesign from the survey and the per-service map fragments.
 
-M9 stage 3.3, plus the two deterministic gates the spec adds. The pydantic wiring validators on
+Two deterministic gates sit on top of the composition. The pydantic wiring validators on
 SystemDesign already gate structure for free (unique ids, producers exist, depends_on resolves,
 acyclic); these two gates cover what those cannot see:
 
@@ -11,23 +11,21 @@ acyclic); these two gates cover what those cannot see:
   that is not in the design is a wiring hole.
 
 What is deliberately NOT a gate failure: a service consuming something this system does not
-own. The pilot's mapping found the system calling LDAP, a national-ID OAuth2 provider, a
-portal SSO, a request-log service and a separate org-directory system — none of which live in its
-repos. Refusing those would make adoption impossible for any integrated system, which is every
-system in the pilot codebase. They are recorded as EXTERNAL dependencies instead: a finding for
-the reviewer, and
-exactly the kind of thing an adoption should surface.
+own. A system that calls LDAP, an OAuth2 provider, an SSO, a logging service or another team's
+API does not contain them in its repos, and refusing those would make adoption impossible for any
+integrated system. They are recorded as EXTERNAL dependencies instead: a finding for the reviewer,
+and exactly the kind of thing an adoption should surface.
 
 `stack` is required by the schema, so an UNMAPPABLE service still carries one: the recipe it
-*needs* (`maven-spring-boot`), not a recipe that exists. That keeps the service visible in the
-design, makes the gap self-documenting, and lets `prove` classify it as unmappable rather than
-pretending it built.
+*needs* (for example `maven-spring-boot-jdk9`), not a recipe that exists. That keeps the
+service visible in the design, makes the gap self-documenting, and lets `prove` classify it as
+unmappable rather than pretending it built.
 """
 
-import re
 from dataclasses import dataclass
 
 from ..schema import Contract, ServiceNode, SystemDesign
+from .survey import _java_major, slug
 
 #: Survey `kind` -> the ArtifactSpec type the build machinery understands.
 _KIND = {"maven-module": "backend", "node-app": "frontend"}
@@ -36,9 +34,9 @@ _KIND = {"maven-module": "backend", "node-app": "frontend"}
 def _node_kind(evidence: dict) -> str:
     """A node app with a recognised UI framework is a frontend; one without is a service.
 
-    The pilot's `shop-mcp` is a TypeScript MCP server with build/start scripts and no UI
-    framework — calling it a frontend would put it on the wrong build and deploy path. This is
-    still only a default: the map stage reads the code and may correct it."""
+    A node package with build scripts and no UI framework is a service, not a frontend, and
+    calling it a frontend would put it on the wrong build and deploy path. This is still only a
+    default: the map stage reads the code and may correct it."""
     return "frontend" if evidence.get("framework") else "backend"
 
 
@@ -64,7 +62,8 @@ def needed_recipe(service) -> str:
         return service.stack
     ev = service.evidence or {}
     if service.kind == "maven-module":
-        return "maven-spring-boot"
+        major = _java_major(ev.get("java_version"))
+        return f"maven-spring-boot-jdk{major}" if major is not None else "maven-spring-boot"
     framework, pm = ev.get("framework"), ev.get("package_manager")
     if framework and pm:
         return f"node-{framework}-{pm}"
@@ -76,18 +75,14 @@ def needed_recipe(service) -> str:
     return "static-web"
 
 
-def _slug(name: str) -> str:
-    return name.replace("_", "-").lower()
-
-
 def contract_id(raw: str) -> str:
     """Normalise a consumed reference to a contract id.
 
-    A mapping session tends to be over-specific: the pilot's shop-mcp reported consuming
-    `shop-admin-api:GET /api/user/getLoginUser` — eighteen endpoint-level entries that are all
-    the SAME contract. Left alone they read as eighteen external dependencies when in fact the
-    service consumes one internal API. Splitting on the first ':' or whitespace recovers the
-    contract, which is the granularity the design models."""
+    A mapping session tends to be over-specific: it may report `api:GET /users` and
+    `api:POST /orders` as separate entries when they are all the SAME contract. Left alone they
+    read as many external dependencies when in fact the service consumes one internal API.
+    Splitting on the first ':' or whitespace recovers the contract, which is the granularity
+    the design models."""
     text = raw.strip()
     for i, ch in enumerate(text):
         if ch == ":" or ch.isspace():
@@ -106,11 +101,11 @@ def compose(survey, fragments, *, title: str | None = None, externals=None) -> S
     produced = {c["id"] for f in fragments for c in f.provides}
     external_seen = {}
     # A mapping session names whatever it sees a dependency on, which includes LIBRARY modules.
-    # `shop-admin-api` depends on `shop-service`, a library the survey correctly excluded from the
+    # A service may depend on a library module that the survey correctly excluded from the
     # services — so it is a fact about the build, not an edge in the service DAG. Filtering here
     # keeps the design valid; recording it keeps the fact.
-    service_ids = {_slug(svc.name) for svc in survey.services}
-    library_ids = {_slug(lib.name): lib.name for lib in survey.libraries}
+    service_ids = {slug(svc.name) for svc in survey.services}
+    library_ids = {slug(lib.name): lib.name for lib in survey.libraries}
     library_deps = {}
 
     for svc in survey.services:
@@ -120,10 +115,10 @@ def compose(survey, fragments, *, title: str | None = None, externals=None) -> S
         if frag and frag.kind:
             kind = frag.kind          # the mapping session read the code; it outranks a default
         slice_text = frag.prd_slice if frag else _slice_from_evidence(svc)
-        declared_deps = [_slug(d) for d in (frag.depends_on if frag else ())]
+        declared_deps = [slug(d) for d in (frag.depends_on if frag else ())]
         deps = []
         for dep in declared_deps:
-            if dep in service_ids and dep != _slug(svc.name):
+            if dep in service_ids and dep != slug(svc.name):
                 deps.append(dep)
             elif dep in library_ids:
                 library_deps.setdefault(svc.name, []).append(library_ids[dep])
@@ -137,7 +132,7 @@ def compose(survey, fragments, *, title: str | None = None, externals=None) -> S
             if cid not in produced:
                 external_seen.setdefault(cid, []).append(svc.name)
         services.append(ServiceNode(
-            id=_slug(svc.name), name=svc.name, kind=kind, stack=needed_recipe(svc),
+            id=slug(svc.name), name=svc.name, kind=kind, stack=needed_recipe(svc),
             prd_slice=slice_text,
             depends_on=deps,
             provides=[c["id"] for c in (frag.provides if frag else ())],
@@ -145,7 +140,7 @@ def compose(survey, fragments, *, title: str | None = None, externals=None) -> S
         ))
         for c in (frag.provides if frag else ()):
             contracts.append(Contract(id=c["id"], kind=c.get("kind", "openapi"),
-                                      producer=_slug(svc.name), spec=c.get("spec") or {}))
+                                      producer=slug(svc.name), spec=c.get("spec") or {}))
 
     # Derive the dependency edges from the contract graph. A mapping session sees ONE service,
     # so it can name the contract it calls but not reliably the sibling that serves it — and
