@@ -52,7 +52,7 @@ def test_deepseek_api_allowed_for_the_deepseek_arm():
 
 
 def test_hosts_for_stacks_collects_recipe_hosts_once():
-    hosts = hosts_for_stacks(["maven-spring-boot", "node-vite-yarn", "maven-spring-boot", None, "no-such-recipe"])
+    hosts = hosts_for_stacks(["maven-spring-boot-jdk17", "node-vite-yarn", "maven-spring-boot-jdk17", None, "no-such-recipe"])
     assert hosts == ["repo.maven.apache.org", "repo1.maven.org", "registry.yarnpkg.com", ".yarnpkg.com"]
 
 

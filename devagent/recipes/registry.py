@@ -78,64 +78,64 @@ _STATIC_HINT = (
 NODE_YARN = Toolchain(image=NODE.image,
                       egress_hosts=("registry.yarnpkg.com", ".yarnpkg.com"))
 
-MAVEN_JDK8 = Toolchain(image="maven:3.9-eclipse-temurin-8",
-                       # The pilot codebase's parent POMs pin java.version 8, and the deployed images are
-                       # openjdk:8-jdk-slim — a newer JDK would compile but not match production.
-                       egress_hosts=("repo.maven.apache.org", "repo1.maven.org"))
+# One Maven recipe per Java LTS: the build JDK must match the Java level the project declares,
+# or it compiles against the wrong language level and library APIs. The adopt survey reads the
+# declared level and picks the matching recipe.
+MAVEN_JDKS = (8, 11, 17, 21)
+_MAVEN_HOSTS = ("repo.maven.apache.org", "repo1.maven.org")
 
 _MAVEN_HINT = (
     "This target is a Maven module in a multi-module Spring Boot project. It inherits from the "
     "parent POM and may depend on sibling modules, so it is built from the REACTOR ROOT with "
     "`-pl <module> -am`, never from inside the module directory.\n"
-    "Java 8 source/target — do not use language features above 8, and do not raise the "
-    "compiler level: the deployed runtime is an openjdk:8 image.\n"
+    "Keep the project's declared Java level (source/target/release in the POM) — do not raise "
+    "it and do not use language features above it.\n"
     "If the repo carries a settings.xml, the build must use it (`-s settings.xml`): it usually "
     "redirects dependency resolution to an internal mirror, and without it the build reaches for "
     "Maven Central and fails in a restricted network."
 )
 
-_VITE_YARN_HINT = (
-    "This target is a Vite + React + TypeScript app installed with YARN (a yarn.lock is "
-    "present). Use `yarn install --frozen-lockfile`; npm or pnpm cannot install a yarn.lock "
-    "project reproducibly.\n"
-    "The build output directory comes from the env file's VITE_APP_OUT_DIR, and the build is "
-    "selected by `--mode` — one repo can produce several apps. Keep the existing env files and "
-    "modes; do not introduce a new build pipeline.\n"
+# Built from the reactor root so the parent POM and sibling modules resolve; `-am` builds the
+# sibling modules the target needs. The local repo goes inside the writable mount because the
+# container runs as uid 1000 with no writable HOME. The JVM ignores HTTP_PROXY/HTTPS_PROXY (it
+# needs -Dhttp.proxyHost/-Dhttp.proxyPort), so a contained build behind the egress proxy reaches
+# the network only if the command translates them; without that Maven reports "Network is
+# unreachable" against a host that is in fact allowlisted.
+_MAVEN_BUILD = (
+    'P="${HTTP_PROXY:-$http_proxy}"; PX=""; '
+    'if [ -n "$P" ]; then H="${P#*//}"; H="${H%%/*}"; '
+    'PX="-Dhttp.proxyHost=${H%%:*} -Dhttp.proxyPort=${H##*:} '
+    '-Dhttps.proxyHost=${H%%:*} -Dhttps.proxyPort=${H##*:} '
+    '-Dhttp.nonProxyHosts=localhost|127.0.0.1"; fi; '
+    'mvn -B -q -DskipTests -Dmaven.repo.local=/out/.m2 $PX '
+    '$([ -f settings.xml ] && echo -s settings.xml) '
+    '-pl {name} -am package')
+
+_VITE_HINT = (
+    "This target is a Vite app that already has a lockfile. Install with the package manager "
+    "that lockfile belongs to (yarn.lock -> yarn, package-lock.json -> npm); another manager "
+    "cannot reproduce the locked install.\n"
+    "Keep the existing env files and `--mode` build scripts and do not introduce a new build "
+    "pipeline: one repo can define several builds through its modes.\n"
     "If a .npmrc names a registry, it is there for a reason (a restricted network); leave it in "
     "place."
 )
 
 REGISTRY: dict[str, Recipe] = {
-    "maven-spring-boot": Recipe(
-        name="maven-spring-boot", type="backend", toolchain=MAVEN_JDK8,
-        scaffold_hint=_MAVEN_HINT,
-        # Built from the reactor root, exactly as the project's own CI does (`mvn` at the
-        # repo root, then each Dockerfile copies its module's jar). `-am` builds the sibling
-        # modules this one needs; the local repo goes inside the writable mount because the
-        # container runs as uid 1000 with no writable HOME.
-        # The JVM ignores HTTP_PROXY/HTTPS_PROXY — it needs -Dhttp.proxyHost/-Dhttp.proxyPort —
-        # so a contained build behind the egress proxy reaches the network only if the recipe
-        # translates them. Without this Maven reports "Network is unreachable" against an
-        # internal mirror that is in fact allowlisted and reachable.
-        build_cmd=(
-            'P="${HTTP_PROXY:-$http_proxy}"; PX=""; '
-            'if [ -n "$P" ]; then H="${P#*//}"; H="${H%%/*}"; '
-            'PX="-Dhttp.proxyHost=${H%%:*} -Dhttp.proxyPort=${H##*:} '
-            '-Dhttps.proxyHost=${H%%:*} -Dhttps.proxyPort=${H##*:} '
-            '-Dhttp.nonProxyHosts=localhost|127.0.0.1"; fi; '
-            'mvn -B -q -DskipTests -Dmaven.repo.local=/out/.m2 $PX '
-            '$([ -f settings.xml ] && echo -s settings.xml) '
-            '-pl {name} -am package'),
-        artifact_glob="{name}/target/*.jar",
-        boot=None,
-        supported_checks=("route_status", "api_json"),
-    ),
     "node-vite-yarn": Recipe(
         name="node-vite-yarn", type="frontend", toolchain=NODE_YARN,
-        scaffold_hint=_VITE_YARN_HINT,
+        scaffold_hint=_VITE_HINT,
         # yarn 1.x ships in the image already; `corepack enable` fails as uid 1000 (EACCES
         # unlinking /usr/local/bin/pnpm) and, chained with &&, took the whole build down.
         build_cmd="yarn install --frozen-lockfile && yarn build",
+        artifact_glob="dist/**/index.html",
+        boot=None,
+        supported_checks=("route_status", "selector_present", "mobile_fit"),
+    ),
+    "node-vite-npm": Recipe(
+        name="node-vite-npm", type="frontend", toolchain=NODE,
+        scaffold_hint=_VITE_HINT,
+        build_cmd="npm ci && npm run build",
         artifact_glob="dist/**/index.html",
         boot=None,
         supported_checks=("route_status", "selector_present", "mobile_fit"),
@@ -194,8 +194,18 @@ REGISTRY: dict[str, Recipe] = {
     ),
 }
 
+REGISTRY.update({
+    f"maven-spring-boot-jdk{v}": Recipe(
+        name=f"maven-spring-boot-jdk{v}", type="backend",
+        toolchain=Toolchain(image=f"maven:3.9-eclipse-temurin-{v}", egress_hosts=_MAVEN_HOSTS),
+        scaffold_hint=_MAVEN_HINT, build_cmd=_MAVEN_BUILD,
+        artifact_glob="{name}/target/*.jar", boot=None,
+        supported_checks=("route_status", "api_json"),
+    ) for v in MAVEN_JDKS})
+
 # Recipes for stacks found in an existing repo. They are not offered when scoping a new build.
-ADOPT_ONLY = frozenset({"maven-spring-boot", "node-vite-yarn", "static-web"})
+ADOPT_ONLY = frozenset({f"maven-spring-boot-jdk{v}" for v in MAVEN_JDKS}
+                       | {"node-vite-yarn", "node-vite-npm", "static-web"})
 
 
 def load_external_recipes(directory) -> dict[str, Recipe]:

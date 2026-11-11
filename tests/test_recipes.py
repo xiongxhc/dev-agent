@@ -230,16 +230,30 @@ def test_one_dockerfile_backing_many_recipes_builds_once(tmp_path):
 
 
 def test_adopt_recipes_are_registered():
-    for name, typ in (("maven-spring-boot", "backend"), ("node-vite-yarn", "frontend"),
-                      ("static-web", "frontend")):
-        assert recipes.get(name).type == typ
-    mvn = recipes.get("maven-spring-boot")
-    assert "-pl {name} -am package" in mvn.build_cmd
-    assert mvn.artifact_glob == "{name}/target/*.jar"
-    assert mvn.toolchain.image == "maven:3.9-eclipse-temurin-8"
-    assert mvn.toolchain.egress_hosts == ("repo.maven.apache.org", "repo1.maven.org")
+    for v in (8, 11, 17, 21):
+        mvn = recipes.get(f"maven-spring-boot-jdk{v}")
+        assert mvn.type == "backend"
+        assert mvn.toolchain.image == f"maven:3.9-eclipse-temurin-{v}"
+        assert "-pl {name} -am package" in mvn.build_cmd
+        assert mvn.artifact_glob == "{name}/target/*.jar"
+        assert mvn.toolchain.egress_hosts == ("repo.maven.apache.org", "repo1.maven.org")
+    assert not recipes.is_registered("maven-spring-boot")
+    npm = recipes.get("node-vite-npm")
+    assert npm.type == "frontend"
+    assert npm.build_cmd == "npm ci && npm run build"
     yarn = recipes.get("node-vite-yarn")
+    assert yarn.type == "frontend"
     assert yarn.build_cmd == "yarn install --frozen-lockfile && yarn build"
     assert yarn.toolchain.egress_hosts == ("registry.yarnpkg.com", ".yarnpkg.com")
+    assert recipes.get("static-web").type == "frontend"
     assert recipes.get("static-web").artifact_glob == "dist/index.html"
-    assert recipes.ADOPT_ONLY == {"maven-spring-boot", "node-vite-yarn", "static-web"}
+    assert recipes.ADOPT_ONLY == {
+        "maven-spring-boot-jdk8", "maven-spring-boot-jdk11", "maven-spring-boot-jdk17",
+        "maven-spring-boot-jdk21", "node-vite-yarn", "node-vite-npm", "static-web"}
+
+
+def test_adopt_recipe_hints_name_no_single_project_convention():
+    for name in recipes.ADOPT_ONLY:
+        hint = recipes.get(name).scaffold_hint
+        for banned in ("VITE_APP_OUT_DIR", "Java 8", "openjdk:8"):
+            assert banned not in hint
