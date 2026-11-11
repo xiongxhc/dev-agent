@@ -219,8 +219,11 @@ def _update_system(args) -> int:
 def _adopt(args) -> int:
     """M9 adopt: survey, map, assemble and prove an existing repo into a run dir. Never writes
     to the source repo. A partly unproven adoption is still a reviewable artifact (exit 0); a
-    failed gate or a repo with no services is not (exit 1); bad input or a failed proxy is 2."""
+    failed gate or a repo with no services is not (exit 1); bad input, a bad mapping setup or a
+    proxy that cannot start is 2. Refusals run cheapest first, before anything is created or
+    the shared egress proxy is touched."""
     from .adopt import adopt, survey_repos
+    from .adopt.lane import check_run_dir
 
     repos = [Path(r) for r in args.repo]
     for repo in repos:
@@ -230,6 +233,14 @@ def _adopt(args) -> int:
     cfg = Config.load()
     out = Path(args.out) if args.out else cfg.runs_dir / f"adopt-{_new_run_id()[4:]}"
     try:
+        check_run_dir(repos, out)
+        if not args.skip_map:
+            from .adopt import mapper
+            try:
+                mapper.make_mapper()      # validates the arm and credential; discarded
+            except RuntimeError as e:     # a missing credential
+                print(f"error: {e}", file=sys.stderr)
+                return 2
         network = proxy = None
         if cfg.egress:
             # Survey first (deterministic, free) so the allowlist can include the package
@@ -240,24 +251,33 @@ def _adopt(args) -> int:
                       if h not in hosts]
             if hosts:
                 print(f"  -> allowlisting for the build: {', '.join(hosts)}")
-            network, proxy = egress.ensure(extra_hosts=hosts)
-
+            try:
+                network, proxy = egress.ensure(extra_hosts=hosts)
+            except FileNotFoundError:
+                print("error: docker was not found. adopt rebuilds each service in a "
+                      "container; install Docker and run it again", file=sys.stderr)
+                return 2
+            except (RuntimeError, TimeoutError) as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
         map_fn = None
         if not args.skip_map:
-            from .adopt import make_mapper
-            map_fn = make_mapper(network=network, proxy_url=proxy)
-
+            map_fn = mapper.make_mapper(network=network, proxy_url=proxy)
         result = adopt(repos, out, map_fn=map_fn, network=network, proxy_url=proxy,
                        title=args.title)
-    except (ValueError, NotADirectoryError, RuntimeError, TimeoutError) as e:
+    except (ValueError, NotADirectoryError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
     counts = result.counts
     print(f"{out.name} {result.status}")
-    print("  -> services: " + (", ".join(f"{v.service}={v.status}" for v in result.verdicts)
-                                or "no services"))
-    if result.detail:
+    if result.verdicts:
+        print("  -> services: " + ", ".join(f"{v.service}={v.status}" for v in result.verdicts))
+    elif result.survey.services:
+        print("  -> surveyed services: " + ", ".join(s.name for s in result.survey.services))
+    else:
+        print("  -> no services")
+    if result.status != "adopted" and result.detail:
         print(f"  -> {result.detail}")
     if result.survey.gaps:
         print(f"  -> {len(result.survey.gaps)} recipe gap(s):", file=sys.stderr)

@@ -98,7 +98,7 @@ def _within(path: Path, root: Path) -> bool:
     return any(p.exists() and os.path.samefile(p, root) for p in (resolved, *resolved.parents))
 
 
-def _refuse_unsafe_run_dir(out: Path, repos) -> None:
+def check_run_dir(repos, out: Path) -> None:
     """Adopt describes a repo; it never writes into one. A run dir under a source repo would
     write into it, and so would a source repo under the run dir, where the copies go.
 
@@ -131,12 +131,12 @@ def adopt(repo_path, out_dir, *, map_fn=None, prover=prove, title=None,
     paths = [repo_path] if isinstance(repo_path, (str, Path)) else list(repo_path)
     repos = [Path(p).resolve() for p in paths]
     out = Path(out_dir)
-    _refuse_unsafe_run_dir(out, repos)
+    check_run_dir(repos, out)
+    # Survey before anything is created: a survey that raises leaves no run dir behind.
+    survey = survey_repos(repos, registry) if len(repos) > 1 else survey_repo(repos[0], registry)
     out.mkdir(parents=True, exist_ok=True)
     ledger = ledger if ledger is not None else Ledger(out)
     ledger.append({"event": "adopt_start", "repos": [str(r) for r in repos]})
-
-    survey = survey_repos(repos, registry) if len(repos) > 1 else survey_repo(repos[0], registry)
     (out / "survey.json").write_text(survey.to_json())
     ledger.append({"event": "adopt_survey", "services": [s.name for s in survey.services],
                    "libraries": [s.name for s in survey.libraries], "gaps": survey.gaps})

@@ -24,22 +24,27 @@ devagent adopt <repo-path>... [--out DIR] [--skip-map] [--title T]
 - Output is a synthetic run dir shaped like a `build-system` run: `design.json`,
   `services/<name>/out` (a copy of the service's source), an append-only `ledger.jsonl` and
   `report.html`, plus `survey.json`.
-- Four stages: survey, map, assemble, prove. A failed service degrades honestly (marked in the
-  report); only an unreadable repo aborts the run.
+- Four stages: survey, map, assemble, prove. A service that fails to map or build is marked in the
+  report). The run ends early in two cases: a repo that cannot be read, and a failed design
+  gate, which stops it before the prove stage.
 - Several repos can be adopted as one system. A frontend that calls a backend in another repo
   cannot be wired if adopted alone, so the surveys are merged before assembly. Two services
   with the same name are refused.
 - A service name is one path component matching `[A-Za-z0-9][A-Za-z0-9._-]*`. Symlinks in the
   source are copied as links and never followed.
-- Exit codes: 0 adopted, 1 gate failed or no services found, 2 bad input or an egress proxy
-  that could not start.
+- Refusals come first and cost nothing: a path that is not a directory, an unusable run dir, and
+  an unknown mapping arm or missing credential all exit before anything is created and before
+  the shared egress proxy is touched.
+- Exit codes: 0 adopted, 1 gate failed or no services found, 2 bad input, a bad mapping setup,
+  or Docker or the egress proxy not starting.
 
 ## 3. Stages
 
 ### 3.1 Survey (deterministic, no model)
 
 A pure-Python repo walk. It detects service roots (Maven `pom.xml`, multi-module aware;
-`package.json` with build scripts; static sites), classifies each against the recipe registry,
+`package.json` with build scripts). A repo whose root holds an `index.html`, and which has no
+Maven or node service, is one static site, classifies each against the recipe registry,
 and records libraries, package mirrors the build must reach, and explicit **recipe gaps**
 ("service X needs a recipe for Y"). The gap list is the evidence for which recipes are still
 missing. Fully unit-testable against fixture trees.
@@ -47,22 +52,23 @@ missing. Fully unit-testable against fixture trees.
 ### 3.2 Map (agentic, per service)
 
 One contained session per service: sandbox container, repo mounted **read-only**, egress
-allowlist as for builds, reading tools only. The session reads the code and returns a
+allowlist as for builds. The session can use only Read, Grep and Glob; every other tool is
+removed, a call not pre-approved is denied, and a hook denies any call whose target resolves
+outside the repo. The session reads the code and returns a
 description and the API contract the service provides. The host validates the answer with
 pydantic and re-asks on a validation error, capped at 2 retries. A fragment that does not
 validate is never repaired on the host.
 
 Mapping streams source code to a model API, so the arm is chosen on purpose. The default is
-Claude. `DEVAGENT_ADOPT_ARM=deepseek` selects the other arm, and an arm whose credential is
-missing refuses to run. `--skip-map` skips this stage: services are described from survey
+Claude. `DEVAGENT_ADOPT_ARM=deepseek` selects the other arm. An unknown arm, or an arm whose
+credential is missing, is refused when the mapper is created, before any service is mapped. `--skip-map` skips this stage: services are described from survey
 evidence and marked NOT MAPPED.
 
 ### 3.3 Assemble + gate (deterministic)
 
-Fragments are composed into a `SystemDesign` by deterministic Python. This deviates from the
-original plan, which had a model call compose the design: ids and consumes/provides wiring
-follow mechanically from the survey and the fragments, so a model adds nothing a gate would
-not have to re-check. The existing pydantic wiring validators gate structure. Two further gates:
+Fragments are composed into a `SystemDesign` by deterministic Python, not a model call:
+ids and consumes/provides wiring follow mechanically from the survey and the fragments, so a
+model would add nothing a gate does not have to re-check. The existing pydantic wiring validators gate structure. Two further gates:
 every surveyed service appears in the design, and every contract has a producer. A contract the
 system consumes but does not own is recorded as an external dependency and shown in the report.
 
@@ -81,11 +87,11 @@ Recipes are entries in the M11 recipe registry.
 
 - `maven-spring-boot-jdk{8,11,17,21,25}`: one per Java LTS version. The survey reads the Java
   version the POM declares and selects the matching recipe; an undeclared, unresolvable or
-  unsupported version is a recipe gap. There is no single pinned JDK. The build is `mvn -pl <module> -am package` and
-  the artifact is `target/*.jar`.
+  unsupported version is a recipe gap. Each recipe pins its own JDK. The build is `mvn -pl <module> -am package` and
+  the artifact is `{module}/target/*.jar`.
 - `node-vite-yarn`, `node-vite-npm`: Vite frontends by lockfile. A Vite app with a pnpm lockfile
   matches the existing `node-vite-react` recipe.
-- `static-web`: a site with no framework and no package manager.
+- `static-web`: a site with no framework and no package manager (root `index.html`).
 - Anything else is a recipe gap and the service is `unmappable`.
 - Datastore recipes are added only when a build needs one; booting is a later milestone.
 
@@ -98,11 +104,11 @@ consumes an unreviewed adoption.
 
 ## 6. Testing
 
-TDD throughout. Unit: survey detection on fixture repo trees; assemble gates on hand-built
+Unit: survey detection on fixture repo trees; assemble gates on hand-built
 fragments; recipe manifests parse and resolve; the mapper's containment and validation loop;
-the CLI. Integration: adopt a small fixture repo end to end with the map stage faked. None
-needs Docker, the network or a model. A live mapping session and a live rebuild are run by
-hand.
+the CLI. Integration: adopt a small fixture repo end to end with the map stage faked. The
+automated suite needs no Docker, network or model, so it does not include a live mapping session
+or a live rebuild.
 
 ## 7. Non-goals
 
@@ -111,4 +117,4 @@ hand.
   supported for Maven services yet because the engine's rebuild step does not fill the
   `{module}` placeholder.
 - Flutter/Dart and Python-pipeline recipes. Adopt surveys them; proving waits for demand.
-- Adopting a whole portfolio at once; one reviewed adoption first.
+- Batch adoption of many unrelated systems in one run. Repos given to one run form one system.

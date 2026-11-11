@@ -507,3 +507,31 @@ def test_a_single_repo_still_works_unchanged(tmp_path):
     api, _ = _two_repos(tmp_path)
     result = adopt(api, tmp_path / "single", prover=_unmappable)
     assert result.status == "adopted" and len(result.design.services) == 1
+
+
+def test_a_survey_that_raises_leaves_no_run_dir(tmp_path):
+    """Two services with one name abort the survey; nothing may have been created by then."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    for d in (a, b):
+        d.mkdir()
+        (d / "package.json").write_text(json.dumps({"name": "web", "scripts": {"build": "x"}}))
+        (d / "pnpm-lock.yaml").write_text("")
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match="appears in both"):
+        adopt([a, b], out, prover=_unmappable)
+    assert not out.exists()
+
+
+def test_check_run_dir_refuses_what_adopt_refuses(tmp_path):
+    from devagent.adopt.lane import check_run_dir
+
+    repo = _repo(tmp_path)
+    with pytest.raises(ValueError, match="inside the source repo"):
+        check_run_dir([repo], repo / "runs" / "x")
+    used = tmp_path / "used"
+    used.mkdir()
+    (used / "f").write_text("x")
+    with pytest.raises(ValueError, match="already holds a run"):
+        check_run_dir([repo], used)
+    check_run_dir([repo], tmp_path / "fresh")
+    assert not (tmp_path / "fresh").exists()

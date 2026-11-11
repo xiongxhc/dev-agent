@@ -7,6 +7,7 @@ import json
 import pytest
 
 from devagent import egress
+from devagent.adopt import mapper
 from devagent.cli import main
 
 
@@ -79,7 +80,7 @@ def test_adopt_refuses_two_services_with_one_name(tmp_path, capsys):
     err = capsys.readouterr().err
     assert err.startswith("error:")
     assert str(a) in err and str(b) in err
-    assert not (out / "design.json").exists()
+    assert not out.exists()
 
 
 @pytest.mark.parametrize("exc", [RuntimeError("docker is not running"),
@@ -109,3 +110,84 @@ def test_adopt_passes_the_survey_hosts_to_the_egress_proxy(tmp_path, monkeypatch
     (repo / ".npmrc").write_text("registry=https://registry.example.com/\n")
     assert main(["adopt", str(repo), "--skip-map", "--out", str(tmp_path / "out")]) == 0
     assert "registry.example.com" in seen["extra_hosts"]
+
+
+def _ensure_must_not_run(monkeypatch):
+    def fail(**kw):
+        raise AssertionError("the egress proxy was prepared before a refusal")
+    monkeypatch.setattr(egress, "ensure", fail)
+
+
+def test_an_unknown_arm_exits_2_before_the_proxy_or_the_run_dir(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DEVAGENT_EGRESS", "1")
+    monkeypatch.setenv("DEVAGENT_ADOPT_ARM", "bogus")
+    _ensure_must_not_run(monkeypatch)
+    out = tmp_path / "out"
+    assert main(["adopt", str(_app(tmp_path / "web")), "--out", str(out)]) == 2
+    assert "unknown adopt arm" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_a_missing_key_exits_2_naming_the_variable(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DEVAGENT_EGRESS", "1")
+    monkeypatch.delenv("DEVAGENT_ADOPT_ARM", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _ensure_must_not_run(monkeypatch)
+    out = tmp_path / "out"
+    assert main(["adopt", str(_app(tmp_path / "web")), "--out", str(out)]) == 2
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_a_refused_run_dir_exits_2_before_the_proxy(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DEVAGENT_EGRESS", "1")
+    _ensure_must_not_run(monkeypatch)
+    repo = _app(tmp_path / "web")
+    assert main(["adopt", str(repo), "--skip-map", "--out", str(repo / "r")]) == 2
+    assert "inside the source repo" in capsys.readouterr().err
+
+
+def test_the_mapper_gets_the_network_and_proxy_the_cli_prepared(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVAGENT_EGRESS", "1")
+    monkeypatch.setattr(egress, "ensure", lambda **kw: ("net", "http://proxy:3128"))
+    seen = {}
+
+    def fake_make_mapper(**kw):
+        seen.update(kw)
+        return lambda repo, svc: None
+    monkeypatch.setattr(mapper, "make_mapper", fake_make_mapper)
+    assert main(["adopt", str(_app(tmp_path / "web")), "--out", str(tmp_path / "out")]) == 0
+    assert seen["network"] == "net" and seen["proxy_url"] == "http://proxy:3128"
+
+
+def test_skip_map_never_builds_a_mapper(tmp_path, monkeypatch):
+    def fail(**kw):
+        raise AssertionError("make_mapper called under --skip-map")
+    monkeypatch.setattr(mapper, "make_mapper", fail)
+    assert main(["adopt", str(_app(tmp_path / "web")), "--skip-map",
+                 "--out", str(tmp_path / "out")]) == 0
+
+
+def test_a_failed_gate_exits_1_and_names_the_failure(tmp_path, monkeypatch, capsys):
+    from devagent.adopt import assemble
+
+    def boom(*a, **kw):
+        raise assemble.GateFailure("contract x has no producing service")
+    monkeypatch.setattr(assemble, "compose", boom)
+    assert main(["adopt", str(_app(tmp_path / "web")), "--skip-map",
+                 "--out", str(tmp_path / "out")]) == 1
+    out = capsys.readouterr().out
+    assert "gate_failed" in out and "no producing service" in out
+    assert "web" in out and "no services" not in out
+
+
+def test_adopt_reports_missing_docker_without_a_traceback(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DEVAGENT_EGRESS", "1")
+
+    def no_docker(**kw):
+        raise FileNotFoundError(2, "No such file or directory", "docker")
+    monkeypatch.setattr(egress, "ensure", no_docker)
+    assert main(["adopt", str(_app(tmp_path / "web")), "--skip-map",
+                 "--out", str(tmp_path / "out")]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: docker was not found") and "DEVAGENT_EGRESS=0" not in err

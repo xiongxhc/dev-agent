@@ -165,7 +165,7 @@ Full design docs: [`docs/specs/`](docs/specs/).
 | `deploy.py` `phases/deploy.py` `preview_server.py` | previews: datastore → backend → frontend bring-up, conn-URL injection, named volumes | no |
 | `report.py` | self-contained `report.html` per run (phases, gates, cost, acceptance, preview URL) | no |
 | `eval/` | M5 A/B harness: frozen fixtures, deterministic + blinded-judge + cost scoring | judge only |
-| `adopt/` | M9 brownfield: survey -> read-only mapping session -> assemble (two gates) -> rebuild-to-prove, into a `build-system`-shaped run dir | mapping only |
+| `adopt/` | M9 brownfield: survey → read-only mapping session → assemble (two gates) → rebuild-to-prove, into a `build-system`-shaped run dir | mapping only |
 | `recipes/` | open recipe registry; external JSON manifests + declarative toolchain images (M11) | no |
 | `channels/` | Feishu app bot (inbound long-connection + outbound replies) | no |
 
@@ -197,11 +197,13 @@ DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001 python -m devagent.cli run --buil
 
 `adopt` points dev-agent at a repo it did not build. It runs four stages:
 
-1. **Survey.** A deterministic walk finds the service roots (Maven, node, static sites), the
-   libraries, and every service no recipe fits.
+1. **Survey.** A deterministic walk finds the service roots (Maven modules and node apps), the
+   libraries, and every service no recipe fits. A repo with an `index.html` at its root and no
+   Maven or node service is one static site.
 2. **Map.** One contained model session per service reads the source and returns a description
-   and the API contract the service provides. The repo is mounted read-only and the session has
-   reading tools only.
+   and the API contract the service provides. The repo is mounted read-only. The session can
+   use only the Read, Grep and Glob tools, and a call whose target resolves outside the repo is
+   denied.
 3. **Assemble.** The fragments are composed into a `SystemDesign` by deterministic code. Two
    gates apply: every surveyed service is in the design, and every contract in it has a
    producing service. A contract the system consumes but does not own is listed as an external
@@ -223,11 +225,12 @@ Give several repos to adopt them as one system. Two services with the same name 
 `--skip-map` leaves out the mapping stage. Services are described from survey evidence and
 marked NOT MAPPED. No tokens are spent and no source leaves the machine. Without it, mapping
 uses Claude and needs `ANTHROPIC_API_KEY`; `DEVAGENT_ADOPT_ARM=deepseek` switches it to the
-DeepSeek arm and needs `DEEPSEEK_API_KEY`. A mapping failure marks that service NOT MAPPED and
-the run continues.
+DeepSeek arm and needs `DEEPSEEK_API_KEY`. An unknown arm or a missing key is refused before
+anything is created. A session that fails on one service marks that service NOT MAPPED and the
+run continues.
 
 Exit codes: 0 adopted (some services may be unproven or unmappable), 1 gate failed or no
-services found, 2 bad input or the egress proxy could not start.
+services found, 2 bad input, a bad mapping setup, or Docker or the egress proxy not starting.
 
 ### Feishu bot (the chat interface)
 
@@ -292,7 +295,7 @@ All knobs are environment variables (see `config.py`; template in `.env.example`
 | `DEVAGENT_LLM_MODEL` | `claude-sonnet-5` | brain model (scope / plan / architect) |
 | `DEVAGENT_BUILD_MODEL` | Agent SDK default | SDK build executor model (e.g. Haiku for test builds) |
 | `DEVAGENT_MANAGED_MODEL` | `claude-opus-5` | managed-arm model |
-| `DEEPSEEK_API_KEY` | — (deepseek arm only) | key for the deepseek build arm; brain phases still use `ANTHROPIC_API_KEY` |
+| `DEEPSEEK_API_KEY` | — (deepseek arm only) | key for the deepseek build arm and for the `adopt` mapper's deepseek arm; brain phases still use `ANTHROPIC_API_KEY` |
 | `DEVAGENT_DEEPSEEK_MODEL` | `deepseek-v4-pro` | deepseek-arm model (`deepseek-v4-pro` or `deepseek-v4-flash`) |
 | `DEVAGENT_MAX_COST_USD` | `10` | hard $ ceiling per run; `0`/empty disables |
 | `DEVAGENT_MAX_TOKENS` | `1000000` | runaway token ceiling per run |
@@ -354,7 +357,8 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
 - **Adopt recipes are limited.** Built-in recipes cover Maven Spring Boot on Java 8, 11, 17, 21
   and 25 (chosen from the Java version the POM declares; an undeclared, unresolvable or
   unsupported version is a recipe gap), Vite with yarn or npm (a Vite app with a pnpm lockfile
-  uses the existing `node-vite-react` recipe), and static sites. Everything else is reported as
+  uses the existing `node-vite-react` recipe), and a static site (root `index.html`, no Maven or
+  node service). Everything else is reported as
   a recipe gap and the service is `unmappable`.
 - **`update-system` on an adopted run dir is not supported for Maven services yet.** The
   engine's rebuild step does not fill the `{module}` placeholder. It has not been exercised end
