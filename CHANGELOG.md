@@ -322,3 +322,22 @@ designs live in [`docs/specs/`](docs/specs/). ✅ shipped · ◐ partial · ⬜ 
   chat reports), fingerprints findings, and files deduplicated issues in the app's M7 repo with
   evidence at detection time; the M25 update loop is the one-command fix path. Confirm-first:
   the monitor never spends tokens or redeploys unprompted. Depends on M7.
+- **M9** ◐ — **brownfield adopt, first slice.** `devagent adopt <repo>... [--out DIR]
+  [--skip-map] [--title T]` points dev-agent at existing repos and writes a `build-system`-shaped
+  run dir (`design.json`, `services/<name>/out`, `ledger.jsonl`, `report.html`, `survey.json`).
+  The source repo is never written to; a run dir inside a source repo (or the reverse) or a run
+  dir that is not empty is refused. Design: [`docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md`](docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md).
+  - ✅ **survey** (`adopt/survey.py`): deterministic detection of Maven, node and static-site
+    services, libraries, package mirrors and recipe gaps; several repos survey as one system.
+  - ✅ **map** (`adopt/mapper.py`): one contained session per service, repo mounted read-only,
+    reading tools only, egress allowlist, host-side validation with up to 2 retries. Claude by
+    default; `DEVAGENT_ADOPT_ARM=deepseek` opts in to the other arm. A failed mapping marks the
+    service NOT MAPPED.
+  - ✅ **assemble** (`adopt/assemble.py`): deterministic composition into a `SystemDesign`, with
+    gates for service coverage and contract producers; contracts consumed from outside the system are recorded as external dependencies.
+  - ✅ **prove** (`adopt/prove.py`): rebuild from the copied source with the service's recipe;
+    verdict `proven`, `unproven` or `unmappable`. Recipes: `maven-spring-boot-jdk{8,11,17,21,25}`,
+    `node-vite-yarn`, `node-vite-npm`, `static-web`.
+  - Unit-tested without Docker, network or tokens. Not yet run: a live mapping session, and
+    `update-system` on an adopted run dir (not supported for Maven services; the rebuild step
+    does not fill the `{module}` placeholder).

@@ -165,6 +165,7 @@ Full design docs: [`docs/specs/`](docs/specs/).
 | `deploy.py` `phases/deploy.py` `preview_server.py` | previews: datastore → backend → frontend bring-up, conn-URL injection, named volumes | no |
 | `report.py` | self-contained `report.html` per run (phases, gates, cost, acceptance, preview URL) | no |
 | `eval/` | M5 A/B harness: frozen fixtures, deterministic + blinded-judge + cost scoring | judge only |
+| `adopt/` | M9 brownfield: survey -> read-only mapping session -> assemble (two gates) -> rebuild-to-prove, into a `build-system`-shaped run dir | mapping only |
 | `recipes/` | open recipe registry; external JSON manifests + declarative toolchain images (M11) | no |
 | `channels/` | Feishu app bot (inbound long-connection + outbound replies) | no |
 
@@ -183,12 +184,50 @@ python -m devagent.cli build-system <prd.md>       # multi-service system from o
 python -m devagent.cli build-system --repo <url> <prd.md>  # publish into an existing repo
 python -m devagent.cli update-system <run_dir> <change.md> # apply a change to a prior system, in place
 
+python -m devagent.cli adopt <repo>... [--out DIR] [--skip-map] [--title T]   # M9: adopt existing repo(s)
+
 python -m devagent.cli eval examples/corpus.json   # M5 A/B eval harness (real builds, real tokens)
 
 DEVAGENT_EXECUTOR=managed  python -m devagent.cli run --build <prd.md>   # hosted build arm
 DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001 python -m devagent.cli run --build <prd.md>
 #   cheap model for test builds; brain model is separate (DEVAGENT_LLM_MODEL)
 ```
+
+### Adopting an existing repo
+
+`adopt` points dev-agent at a repo it did not build. It runs four stages:
+
+1. **Survey.** A deterministic walk finds the service roots (Maven, node, static sites), the
+   libraries, and every service no recipe fits.
+2. **Map.** One contained model session per service reads the source and returns a description
+   and the API contract the service provides. The repo is mounted read-only and the session has
+   reading tools only.
+3. **Assemble.** The fragments are composed into a `SystemDesign` by deterministic code. Two
+   gates apply: every surveyed service is in the design, and every contract in it has a
+   producing service. A contract the system consumes but does not own is listed as an external
+   dependency.
+4. **Prove.** Each service's source is copied into the run dir and rebuilt with its recipe.
+   The verdict is `proven`, `unproven` or `unmappable`.
+
+The run dir has the shape of a `build-system` run: `design.json`, `services/<name>/out` (a copy
+of the source), `ledger.jsonl` and `report.html`, plus `survey.json`. The source repo is never
+written to. A `--out` inside a source repo, a source repo inside `--out`, or an `--out` that is
+not empty is refused.
+
+`report.html` is a human review gate. It lists unmapped services, recipe gaps, failed rebuilds
+and contracts the system consumes but does not provide. Review it before treating the adoption
+as a description of the system.
+
+Give several repos to adopt them as one system. Two services with the same name are refused.
+
+`--skip-map` leaves out the mapping stage. Services are described from survey evidence and
+marked NOT MAPPED. No tokens are spent and no source leaves the machine. Without it, mapping
+uses Claude and needs `ANTHROPIC_API_KEY`; `DEVAGENT_ADOPT_ARM=deepseek` switches it to the
+DeepSeek arm and needs `DEEPSEEK_API_KEY`. A mapping failure marks that service NOT MAPPED and
+the run continues.
+
+Exit codes: 0 adopted (some services may be unproven or unmappable), 1 gate failed or no
+services found, 2 bad input or the egress proxy could not start.
 
 ### Feishu bot (the chat interface)
 
@@ -263,6 +302,7 @@ All knobs are environment variables (see `config.py`; template in `.env.example`
 | `DEVAGENT_BUILD_CONCURRENCY` | `3` | parallel per-target build cap: `min(targets, N)` |
 | `DEVAGENT_EGRESS` | `1` | egress allowlist on build/verify containers (`0` disables) |
 | `DEVAGENT_EGRESS_ALLOW` | api.anthropic.com + api.deepseek.com + npm | comma-separated allowlist **override** for the proxy |
+| `DEVAGENT_ADOPT_ARM` | `claude` | `adopt` mapping arm: `claude` or `deepseek` |
 | `DEVAGENT_M2_IMAGE` | `devagent-sandbox:m2` | sandbox/runtime image name |
 | `DEVAGENT_RECIPES_DIR` | unset | directory of external recipe manifests (M11) |
 | `DEVAGENT_RUNS_DIR` | `runs` | where run artifacts land |
@@ -307,8 +347,22 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
 - **API key required.** All model calls are pay-per-token; Pro/Max subscription auth is not
   permitted for headless use. Typical single builds run $0.15–0.50 (Haiku) — multi-service
   systems more; the `DEVAGENT_MAX_COST_USD` cap (default $10) is the backstop.
-- **Greenfield only (for now).** Every build scaffolds a fresh app from a recipe; operating
-  inside an existing repo / detecting its stack (Java/Maven etc.) is the open M9 milestone.
+- **Greenfield builds; adoption is the first slice of brownfield.** `build-system` scaffolds a
+  fresh app from a recipe. `adopt` describes and rebuilds an existing repo but does not change
+  it; editing adopted code and fitting existing CI are still open (M9).
+- **Adopted services are rebuilt, not booted.** No acceptance probes run against them.
+- **Adopt recipes are limited.** Built-in recipes cover Maven Spring Boot on Java 8, 11, 17, 21
+  and 25 (chosen from the Java version the POM declares; an undeclared, unresolvable or
+  unsupported version is a recipe gap), Vite with yarn or npm (a Vite app with a pnpm lockfile
+  uses the existing `node-vite-react` recipe), and static sites. Everything else is reported as
+  a recipe gap and the service is `unmappable`.
+- **`update-system` on an adopted run dir is not supported for Maven services yet.** The
+  engine's rebuild step does not fill the `{module}` placeholder. It has not been exercised end
+  to end for any adopted repo.
+- **Symlinks are copied, not followed.** A link that points outside its copied directory dangles
+  in the copy, so a build that depends on it is reported `unproven`.
+- **Mapping sends source code to the model API.** The session can read anything in its
+  container. Adopt a repo you do not trust with `--skip-map`.
 - **No URL intake.** "Clone this reference site" is designed-for but not built (reference-URL
   fixtures were deferred with M5's live run).
 - **The A/B baseline hasn't been run.** Both executor arms are live-verified individually, but
@@ -349,7 +403,7 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
 |---|---|---|
 | M5 | live A/B corpus run (sdk vs managed baseline numbers) | harness ✅ · live run pending |
 | M8 | ops: CI/CD + deploy per project (generated `.gitlab-ci.yml` + k8s) | open |
-| M9 | brownfield: operate inside existing repos, detect stack (Java/Maven), fit existing CI | adopt slice design ✅ ([spec](docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md)) |
+| M9 | brownfield: operate inside existing repos, detect stack (Java/Maven), fit existing CI | `adopt` first slice ✅ ([spec](docs/specs/2026-08-19-dev-agent-m9-brownfield-adopt-design.md)) · editing adopted code, existing CI open |
 | M13 | team rollout (~10 users): concurrency, per-user isolation, shared service | open |
 | M18/M19 | checkpoint/resume for days-long runs; mutable contracts / renegotiation | open |
 | M22 | eval as change-gate: ledger telemetry + corpus replay before prompt/model changes | open |

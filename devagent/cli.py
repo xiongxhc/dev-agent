@@ -216,6 +216,59 @@ def _update_system(args) -> int:
     return 0 if report.status == "succeeded" else 1
 
 
+def _adopt(args) -> int:
+    """M9 adopt: survey, map, assemble and prove an existing repo into a run dir. Never writes
+    to the source repo. A partly unproven adoption is still a reviewable artifact (exit 0); a
+    failed gate or a repo with no services is not (exit 1); bad input or a failed proxy is 2."""
+    from .adopt import adopt, survey_repos
+
+    repos = [Path(r) for r in args.repo]
+    for repo in repos:
+        if not repo.is_dir():
+            print(f"error: not a directory: {repo}", file=sys.stderr)
+            return 2
+    cfg = Config.load()
+    out = Path(args.out) if args.out else cfg.runs_dir / f"adopt-{_new_run_id()[4:]}"
+    try:
+        network = proxy = None
+        if cfg.egress:
+            # Survey first (deterministic, free) so the allowlist can include the package
+            # mirrors the builds resolve from; the lane surveys again.
+            pre = survey_repos(repos)
+            hosts = list(pre.mirror_hosts)
+            hosts += [h for h in egress.hosts_for_stacks({s.stack for s in pre.services})
+                      if h not in hosts]
+            if hosts:
+                print(f"  -> allowlisting for the build: {', '.join(hosts)}")
+            network, proxy = egress.ensure(extra_hosts=hosts)
+
+        map_fn = None
+        if not args.skip_map:
+            from .adopt import make_mapper
+            map_fn = make_mapper(network=network, proxy_url=proxy)
+
+        result = adopt(repos, out, map_fn=map_fn, network=network, proxy_url=proxy,
+                       title=args.title)
+    except (ValueError, NotADirectoryError, RuntimeError, TimeoutError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    counts = result.counts
+    print(f"{out.name} {result.status}")
+    print("  -> services: " + (", ".join(f"{v.service}={v.status}" for v in result.verdicts)
+                                or "no services"))
+    if result.detail:
+        print(f"  -> {result.detail}")
+    if result.survey.gaps:
+        print(f"  -> {len(result.survey.gaps)} recipe gap(s):", file=sys.stderr)
+        for gap in result.survey.gaps:
+            print(f"     - {gap}", file=sys.stderr)
+    print(f"  -> proven {counts.get('proven', 0)} · unproven {counts.get('unproven', 0)} "
+          f"· unmappable {counts.get('unmappable', 0)}")
+    print(f"  -> review before use: {out / 'report.html'}")
+    return 0 if result.status == "adopted" else 1
+
+
 def _single_run_design_shim(artifacts):
     """A SecurityVerifyPhase-shaped design for the single-run preview. Single runs hold no
     probeable openapi contract today (build_pipeline_phases passes no provided_contracts), so
@@ -250,6 +303,19 @@ def main(argv: list[str] | None = None) -> int:
     us_p.add_argument("run_dir", help="prior run dir (holds design.json + services/)")
     us_p.add_argument("change", help="path to the change-request text file")
 
+    ad_p = sub.add_parser("adopt", help="M9: survey, map, assemble and rebuild an existing repo "
+                                        "into a run dir (never writes to the source repo)")
+    ad_p.add_argument("repo", nargs="+",
+                      help="path(s) to the existing repo(s), read-only; give several when one "
+                           "system spans several repos")
+    ad_p.add_argument("--out", default=None, metavar="DIR",
+                      help="run dir to create; must not exist or be empty "
+                           "(default: <runs dir>/adopt-<id>)")
+    ad_p.add_argument("--skip-map", action="store_true",
+                      help="skip the model mapping stage; services are described from survey "
+                           "evidence only and marked NOT MAPPED. No tokens, no source sent out")
+    ad_p.add_argument("--title", default=None, help="title for the design and report")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "eval":
@@ -260,6 +326,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "update-system":
         return _update_system(args)
+
+    if args.cmd == "adopt":
+        return _adopt(args)
 
     if not Path(args.input).is_file():
         print(f"error: input file not found: {args.input}", file=sys.stderr)
