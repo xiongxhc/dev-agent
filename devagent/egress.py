@@ -12,8 +12,11 @@ The proxy is long-lived and reused across runs; `teardown()` removes it.
 
 import os
 import subprocess
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 
+from . import hostlock
 from .egress_proxy import DEFAULT_ALLOW
 
 PROXY_SCRIPT = Path(__file__).parent / "egress_proxy.py"
@@ -66,6 +69,17 @@ def ensure(image: str = DEFAULT_IMAGE, extra_hosts=()) -> tuple[str, str]:
     proxy instead of silently inheriting the old one's rules, unless another container is
     attached to it, in which case the call refuses rather than break that build."""
     allow = allowlist(extra_hosts)
+    with _ensure_lock():
+        return _ensure_locked(image, allow)
+
+
+def _ensure_locked(image: str, allow: str) -> tuple[str, str]:
+    """The body of `ensure`, under the host lock.
+
+    Everything here is an inspect-then-act on a resource shared by every run on the machine. Two
+    runs starting together would both see "no proxy" and both create one, and a run needing a
+    different allowlist could `docker rm -f` a proxy another run had just started. The lock removes
+    those races; the adoption and refusal rules below protect builds already attached."""
     if _run(["docker", "network", "inspect", NETWORK]).returncode != 0:
         _run(["docker", "network", "create", "--internal", NETWORK])
     running = _run(["docker", "inspect", "-f", "{{.State.Running}}", PROXY]).stdout.strip()
@@ -100,6 +114,29 @@ def ensure(image: str = DEFAULT_IMAGE, extra_hosts=()) -> tuple[str, str]:
         # Give the proxy (and ONLY the proxy) upstream internet via the default bridge.
         _run(["docker", "network", "connect", "bridge", PROXY])
     return NETWORK, f"http://{PROXY}:{PORT}"
+
+
+@contextmanager
+def _ensure_lock():
+    """Serialise `ensure` across every run on this host. An unwritable runs dir must not stop a
+    build, so a lock that cannot be created is skipped (errors from the body still propagate)."""
+    root = os.getenv("DEVAGENT_RUNS_DIR") or "runs"
+    lock = hostlock.exclusive(root, "egress", timeout_s=180.0,
+                              on_wait=lambda n: print(
+                                  "  -> waiting for another run to finish preparing the shared "
+                                  "egress proxy", flush=True))
+    try:
+        lock.__enter__()
+    except OSError:
+        yield
+        return
+    try:
+        yield
+    except BaseException:
+        if not lock.__exit__(*sys.exc_info()):
+            raise
+    else:
+        lock.__exit__(None, None, None)
 
 
 def _allow_covers(current: str, needed: str) -> bool:

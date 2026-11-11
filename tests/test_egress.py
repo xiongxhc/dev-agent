@@ -69,6 +69,11 @@ def test_allowlist_override_replaces_defaults_but_keeps_extras(monkeypatch):
 
 # --- ensure(): Docker faked by recording every argv --------------------------------------
 
+@pytest.fixture(autouse=True)
+def _runs_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path))
+
+
 def _fake_docker(monkeypatch, *, running="false", label="", others=""):
     """Replace egress._run; return the list of recorded argvs."""
     calls = []
@@ -138,3 +143,30 @@ def test_ensure_replaces_an_idle_proxy_with_a_different_allowlist(monkeypatch):
     rm = [i for i, c in enumerate(calls) if c == ["docker", "rm", "-f", egress.PROXY]]
     run = [i for i, c in enumerate(calls) if c[:2] == ["docker", "run"]]
     assert len(rm) == 1 and len(run) == 1 and rm[0] < run[0]
+
+
+def test_ensure_runs_its_docker_calls_while_holding_the_lock(monkeypatch):
+    from contextlib import contextmanager
+
+    events = []
+
+    @contextmanager
+    def fake_exclusive(root, name, **kw):
+        events.append(("enter", name))
+        yield
+        events.append(("exit", name))
+
+    calls = _fake_docker(monkeypatch, running="false")
+    real = egress._run
+    monkeypatch.setattr(egress, "_run", lambda a: (events.append(("docker", a[1])), real(a))[1])
+    monkeypatch.setattr(egress.hostlock, "exclusive", fake_exclusive)
+    egress.ensure()
+    assert calls and events[0] == ("enter", "egress") and events[-1] == ("exit", "egress")
+    assert all(e[0] == "docker" for e in events[1:-1]) and len(events) == len(calls) + 2
+
+
+def test_an_unusable_lock_does_not_stop_ensure(monkeypatch):
+    calls = _fake_docker(monkeypatch, running="false")
+    monkeypatch.setenv("DEVAGENT_RUNS_DIR", "/dev/null/runs")      # lock dir cannot be created
+    assert egress.ensure()[0] == egress.NETWORK
+    assert [c for c in calls if c[:2] == ["docker", "run"]]
