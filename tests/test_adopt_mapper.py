@@ -55,6 +55,14 @@ def test_the_session_options_restrict_tools_rather_than_pre_approve_them():
     assert opts["system_prompt"] == mapper_runner.SYSTEM
 
 
+def test_the_deny_list_uses_documented_tool_names_not_section_headings():
+    denied = mapper_runner.session_options()["disallowed_tools"]
+    for name in ("ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"):
+        assert name in denied, name
+    for heading in ("ListMcpResources", "ReadMcpResource", "ReadMcpResourceDir"):
+        assert heading not in denied, heading
+
+
 def test_the_runner_never_uses_bypass_permissions():
     assert "bypassPermissions" not in mapper.RUNNER.read_text()
     assert "bypassPermissions" not in Path(mapper.__file__).read_text()
@@ -116,6 +124,25 @@ def test_a_search_pattern_cannot_climb_out_of_the_repo():
     assert mapper_runner.decide("Glob", {"pattern": "../**/*"}) is not None
     assert mapper_runner.decide("Grep", {"pattern": "x", "glob": "*.java"}) is None
     assert mapper_runner.decide("Grep", {"pattern": "x", "glob": "../../**"}) is not None
+
+
+@pytest.mark.parametrize("pattern", ["{/etc/*,x}", "{..,x}/*", "a/{b,../c}/*", "{x,{y,~/z}}",
+                                     ".{.,x}/*"])
+@pytest.mark.parametrize("tool,field", [("Glob", "pattern"), ("Grep", "glob")])
+def test_a_brace_alternative_cannot_climb_out_of_the_repo(tool, field, pattern):
+    tool_input = {"pattern": pattern} if field == "pattern" else {"pattern": "x", "glob": pattern}
+    assert mapper_runner.decide(tool, tool_input) is not None
+
+
+@pytest.mark.parametrize("pattern", ["**/*.{ts,tsx}", "src/{a,b}/*.py", "{a,b", "*.{java"])
+@pytest.mark.parametrize("tool,field", [("Glob", "pattern"), ("Grep", "glob")])
+def test_brace_alternatives_inside_the_repo_are_allowed(tool, field, pattern):
+    tool_input = {"pattern": pattern} if field == "pattern" else {"pattern": "x", "glob": pattern}
+    assert mapper_runner.decide(tool, tool_input) is None
+
+
+def test_a_pattern_with_too_many_alternatives_to_check_is_refused():
+    assert mapper_runner.decide("Glob", {"pattern": "{a,b}" * 12}) is not None
 
 
 @pytest.mark.parametrize("tool,tool_input", [
@@ -355,6 +382,35 @@ def test_an_escaped_credential_in_the_answer_is_still_recognised(tmp_path, monke
     raw = raw.replace("KEY", escaped)
     assert _FAKE_KEY not in raw and json.loads(raw)["summary"].count(_FAKE_KEY) == 1
     assert mapper.map_service(tmp_path, _svc(), runner=lambda *a: raw) is None
+
+
+def _every_ten(key, sep):
+    return sep.join(key[i:i + 10] for i in range(0, len(key), 10))
+
+
+@pytest.mark.parametrize("leak", [
+    _every_ten(_FAKE_KEY, " "), _every_ten(_FAKE_KEY, "\n"), _every_ten(_FAKE_KEY, "\u200b"),
+    _FAKE_KEY[:24],
+], ids=["split-by-space", "split-by-newline", "split-by-zero-width-space", "24-char-prefix"])
+def test_a_split_or_partial_credential_in_the_answer_is_recognised(tmp_path, monkeypatch, leak):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", _FAKE_KEY)
+    raw = _answer(summary=f"A service whose environment holds {leak} for its outbound calls.")
+    assert _FAKE_KEY not in raw
+    assert mapper.map_service(tmp_path, _svc(), runner=lambda *a: raw) is None
+
+
+def test_an_answer_sharing_only_a_short_run_with_the_credential_is_kept(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", _FAKE_KEY)
+    raw = _answer(summary=f"A service that tags each order with {_FAKE_KEY[8:18]} as its code.")
+    assert mapper.map_service(tmp_path, _svc(), runner=lambda *a: raw) is not None
+
+
+def test_a_credential_shorter_than_the_run_is_checked_whole(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-short-key")
+    leaked = _answer(summary="A service whose environment holds sk-short-key for its calls.")
+    assert mapper.map_service(tmp_path, _svc(), runner=lambda *a: leaked) is None
+    partial = _answer(summary="A service whose environment holds sk-short for its calls.")
+    assert mapper.map_service(tmp_path, _svc(), runner=lambda *a: partial) is not None
 
 
 def test_the_retry_context_names_the_failure_without_echoing_the_answer(tmp_path, monkeypatch):

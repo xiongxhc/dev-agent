@@ -294,7 +294,11 @@ def test_the_report_states_the_missing_surface_at_the_human_gate(tmp_path):
                                                for n in d.services])
     page = write_report(result, out / "report.html").read_text()
     assert "No integration surface" in page
-    assert "update-system" in page
+    assert "nothing in this design can be probed against a running system" in page
+    assert "Mapping the services is what creates those checks" in page
+    # The page states only what holds for this design, not how a later run would behave.
+    assert "update-system" not in page
+    assert "integration_failed" not in page
 
 
 def test_a_frontend_adoption_report_omits_the_missing_surface_caveat(tmp_path):

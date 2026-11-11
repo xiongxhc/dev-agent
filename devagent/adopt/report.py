@@ -70,9 +70,7 @@ def _caveats(result) -> list[str]:
                    f"describes only the part we can see.")
     if design is not None and not derive_integration_checks(design):
         out.append("<strong>No integration surface</strong> — no contract and no frontend root, "
-                   "so nothing in this design can be probed against a running system. A later "
-                   "<code>update-system</code> run on this directory will build successfully and "
-                   "still report <code>integration_failed</code>, because it proved nothing. "
+                   "so nothing in this design can be probed against a running system. "
                    "Mapping the services is what creates those checks; inventing a route here "
                    "would manufacture a false pass.")
     if result.status == "gate_failed":

@@ -1,15 +1,18 @@
 """In-container mapper: read one service and print a fragment as JSON.
 
 A model with tools must not be able to change the code it is describing, or read anything but
-that code. Besides the host's `:ro` mount of the repo at /src, the session is locked three ways,
-and each lock fails closed:
+that code. Besides the host's `:ro` mount of the repo at /src, the session is locked three ways:
 
-1. `disallowed_tools` removes every built-in tool except Read, Grep and Glob from the session,
-   and denies every MCP tool.
-2. `permission_mode="dontAsk"` with `allowed_tools=["Read", "Grep", "Glob"]`: a call that is not
-   pre-approved is denied instead of prompting.
+1. `disallowed_tools` names every built-in tool the tool references document, except Read, Grep
+   and Glob, plus `mcp__*` for every MCP tool. A named tool is removed from the request and a
+   call to it is denied in every permission mode. A tool the list does not name is untouched by
+   this lock.
+2. `permission_mode="dontAsk"` with `allowed_tools=["Read", "Grep", "Glob"]`: the three are
+   pre-approved, and a call that would otherwise ask for approval is denied instead. A call that
+   needs no approval still runs, so this lock alone does not confine the session.
 3. A `PreToolUse` hook on every tool call denies any tool that is not Read, Grep or Glob, and any
-   of those three whose target resolves (symlinks followed) outside /src. Its matcher sets
+   of those three whose target resolves (symlinks followed) outside /src or whose file pattern
+   could match outside it. Anything it does not recognise is denied. Its matcher sets
    `on_failure="block"`, so a hook that fails blocks the call; an SDK too old to support that
    option is refused before the session starts.
 
@@ -28,15 +31,16 @@ import sys
 ROOT = "/src"
 READ_TOOLS = ("Read", "Grep", "Glob")
 
-#: Every built-in tool except the three reading tools, from the Claude Code tools reference
-#: (code.claude.com/docs/en/tools-reference) and the Agent SDK's tool input types
-#: (code.claude.com/docs/en/agent-sdk/typescript#tool-input-types). "mcp__*" denies every MCP
-#: tool. A tool missing from this list is still denied by the mode and by the guard.
+#: The built-in tools, other than the three reading tools, by the tool name the Claude Code tools
+#: reference (code.claude.com/docs/en/tools-reference) and the Agent SDK's tool input types
+#: (code.claude.com/docs/en/agent-sdk/typescript#tool-input-types) give it; a deny rule matches
+#: the tool name, not the section heading. "mcp__*" denies every MCP tool. A tool missing from
+#: this list is still denied by the guard.
 DENIED_TOOLS = (
     "Agent", "Artifact", "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList",
     "Edit", "EndConversation", "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree",
-    "ListAgents", "ListMcpResources", "ListMcpResourcesTool", "LSP", "Monitor", "NotebookEdit",
-    "PowerShell", "Projects", "PushNotification", "ReadMcpResource", "ReadMcpResourceDir",
+    "ListAgents", "ListMcpResourcesTool", "LSP", "Monitor", "NotebookEdit",
+    "PowerShell", "Projects", "PushNotification", "ReadMcpResourceDirTool",
     "ReadMcpResourceTool", "RefreshMcpTools", "RemoteTrigger", "ReportFindings",
     "ScheduleWakeup", "SendFeedback", "SendMessage", "SendUserFile", "ShareOnboardingGuide",
     "ShowOnboardingRolePicker", "Skill", "SubagentHandback", "TaskCreate", "TaskGet",
@@ -103,9 +107,41 @@ def _inside(target: str, root: str) -> bool:
     return real == real_root or real.startswith(real_root.rstrip("/") + "/")
 
 
+#: More brace alternatives than this are not expanded; the pattern is refused instead.
+MAX_ALTERNATIVES = 256
+
+
+def _alternatives(pattern: str):
+    """Each pattern a glob's brace alternatives (`{a,b}`, nested too) expand to. A brace with
+    no closing match is literal text."""
+    for start, ch in enumerate(pattern):
+        if ch != "{":
+            continue
+        depth, last, parts = 0, start + 1, []
+        for i in range(start, len(pattern)):
+            c = pattern[i]
+            if c == "{":
+                depth += 1
+            elif c == "," and depth == 1:
+                parts.append(pattern[last:i])
+                last = i + 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    parts.append(pattern[last:i])
+                    for part in parts:
+                        yield from _alternatives(pattern[:start] + part + pattern[i + 1:])
+                    return
+    yield pattern
+
+
 def _climbs(pattern: str) -> bool:
-    """A file pattern that starts outside the search directory or steps up out of it."""
-    return pattern.startswith(("/", "~")) or ".." in pattern.split("/")
+    """A file pattern any of whose brace alternatives starts outside the search directory or
+    steps up out of it. A glob matches every alternative, so each is judged on its own."""
+    for n, alt in enumerate(_alternatives(pattern)):
+        if n >= MAX_ALTERNATIVES or alt.startswith(("/", "~")) or ".." in alt.split("/"):
+            return True
+    return False
 
 
 def decide(tool_name: str, tool_input: dict, root: str = ROOT) -> str | None:

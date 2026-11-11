@@ -16,11 +16,15 @@ Three properties are deliberate and each is a containment decision, not a style 
 Credentials follow the executors' rule: the `docker run` argv names each secret variable
 (`-e ANTHROPIC_API_KEY`) and the value travels only in the subprocess environment, so it never
 appears in the argv, which callers may log. The session's own process holds the value, so an
-answer that contains it is discarded, never kept or fed back.
+answer that contains it is discarded, never kept or fed back. "Contains" means the key itself,
+or any run of `CREDENTIAL_RUN` of its characters, once whitespace and zero-width characters are
+removed from the answer (a shorter key is looked for whole). An encoded or reversed key is not
+detectable this way.
 """
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -35,6 +39,9 @@ RUNNER = Path(__file__).parent / "mapper_runner.py"
 DEFAULT_IMAGE = os.getenv("DEVAGENT_M2_IMAGE", "devagent-sandbox:m2")
 ARMS = ("claude", "deepseek")
 _MAX_RETRIES = 2
+#: Long enough that ordinary text does not share a run with a random key by chance.
+CREDENTIAL_RUN = 20
+_INVISIBLE = re.compile(r"[\s\u200b\u200c\u200d\u2060\ufeff]+")
 
 
 class ContractOut(BaseModel):
@@ -138,7 +145,7 @@ def map_service(repo: Path, service, *, image: str = DEFAULT_IMAGE, network=None
     last_error = None
     for attempt in range(1 + _MAX_RETRIES):
         raw = run(image, repo, service.path, network, proxy_url, timeout, last_error)
-        if not raw or (secret and secret in raw) or _session_failed(raw):
+        if not raw or _carries(raw, secret) or _session_failed(raw):
             # No answer, an answer carrying the credential, or a session that reported its own
             # failure: none of these is worth asking again, and the first must not be kept.
             return None
@@ -147,16 +154,43 @@ def map_service(repo: Path, service, *, image: str = DEFAULT_IMAGE, network=None
         except ValidationError as e:
             # Feed the failure back and re-ask; never repair it here.
             last_error = _retry_context(e)
-            if attempt == _MAX_RETRIES or (secret and secret in last_error):
+            if attempt == _MAX_RETRIES or _carries(last_error, secret):
                 return None
             continue
-        if secret and secret in out.model_dump_json():
-            return None                 # the same check on the decoded answer (JSON escapes)
+        if _carries(out.model_dump_json(), secret):
+            return None                 # the same check on the validated answer
         return Fragment(
             service=service.name, prd_slice=out.summary, kind=out.kind,
             provides=tuple(c.model_dump() for c in out.provides),
             consumes=tuple(out.consumes), depends_on=tuple(out.depends_on))
     return None
+
+
+def _strings(value) -> str:
+    """Every string in a decoded JSON value, keys included, joined."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "".join(_strings(k) + _strings(v) for k, v in value.items())
+    if isinstance(value, list):
+        return "".join(_strings(v) for v in value)
+    return ""
+
+
+def _carries(text: str, secret: str | None) -> bool:
+    """Does `text` hold the credential or a `CREDENTIAL_RUN`-character run of it, once whitespace
+    and zero-width characters are removed? A JSON text is also judged by its decoded strings,
+    so an escape sequence does not hide what it encodes."""
+    if not secret:
+        return False
+    texts = [text]
+    try:
+        texts.append(_strings(json.loads(text)))
+    except ValueError:
+        pass
+    n = min(CREDENTIAL_RUN, len(secret))
+    runs = {secret[i:i + n] for i in range(len(secret) - n + 1)}
+    return any(run in flat for flat in (_INVISIBLE.sub("", t) for t in texts) for run in runs)
 
 
 def _session_failed(raw: str) -> bool:

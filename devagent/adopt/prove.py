@@ -49,7 +49,8 @@ def _run_build(image: str, workdir: Path, build_cmd: str, network, proxy_url, ti
 
 
 def _mount_visible(image: str, source: Path, runner=subprocess.run) -> str | None:
-    """Explain why `source` will not be visible inside the build container, or None if it will.
+    """Explain why `source` will not be visible inside the build container, or why Docker cannot
+    run at all, or None if it will be visible.
 
     On a VM-backed Docker (Colima, Docker Desktop, Rancher Desktop) only configured host paths
     are shared, and a `-v` of anything else does NOT fail: the daemon creates an empty directory
@@ -66,8 +67,11 @@ def _mount_visible(image: str, source: Path, runner=subprocess.run) -> str | Non
         return None                      # nothing to see — the caller reports the empty source
     plain = next((p for p in entries if not p.is_symlink()), None)
     flag, marker = ("-e", plain.name) if plain is not None else ("-L", entries[0].name)
-    probe = runner(["docker", "run", "--rm", "-v", f"{source}:/probe:ro", image,
-                    "test", flag, f"/probe/{marker}"], capture_output=True, text=True)
+    try:
+        probe = runner(["docker", "run", "--rm", "-v", f"{source}:/probe:ro", image,
+                        "test", flag, f"/probe/{marker}"], capture_output=True, text=True)
+    except OSError as e:   # a toolchain that cannot run is a verdict, not a crash
+        return f"Docker could not be run, so nothing was built: {type(e).__name__}: {e}"
     if getattr(probe, "returncode", 1) == 0:
         return None
     return (f"{source} is not shared with the Docker daemon, so the build container sees an "

@@ -317,6 +317,28 @@ def test_prove_survives_a_broken_toolchain(tmp_path):
     assert v.status == UNPROVEN and "could not run" in v.detail
 
 
+def test_a_missing_docker_binary_is_a_verdict_and_the_run_continues(tmp_path):
+    """The mount probe is the first thing that runs Docker; a binary that is not there makes
+    each service unproven instead of ending the run."""
+    from devagent.adopt.prove import _mount_visible, prove
+
+    def no_docker(argv, **kw):
+        raise FileNotFoundError(2, "No such file or directory", argv[0])
+
+    for name in ("api", "worker"):
+        (tmp_path / "services" / name / "out").mkdir(parents=True)
+        (tmp_path / "services" / name / "out" / "pom.xml").write_text("<project/>")
+    built = []
+    verdicts = prove(SimpleNamespace(services=[_node(name="api"), _node(name="worker")]),
+                     tmp_path, registry={"r": _recipe()},
+                     runner=lambda *a: built.append(a) or _ok(),
+                     mount_check=lambda image, source: _mount_visible(image, source,
+                                                                      runner=no_docker))
+    assert [v.status for v in verdicts] == [UNPROVEN, UNPROVEN]
+    assert all("Docker could not be run" in v.detail for v in verdicts)
+    assert built == []
+
+
 _MODULE_RECIPE = _recipe(build_cmd="mvn -pl {module} -am package",
                          artifact="{module}/target/*.jar")
 

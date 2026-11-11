@@ -1,6 +1,7 @@
 import pytest
 from devagent import recipes
 from devagent.recipes.base import Recipe, ServiceSpec, Toolchain
+from devagent.recipes.registry import MAVEN_JDKS
 
 
 def test_registry_has_the_two_m6_recipes():
@@ -255,6 +256,30 @@ def test_adopt_recipes_are_registered():
     assert recipes.ADOPT_ONLY == {
         "maven-spring-boot-jdk8", "maven-spring-boot-jdk11", "maven-spring-boot-jdk17",
         "maven-spring-boot-jdk21", "maven-spring-boot-jdk25", "node-vite-yarn", "node-vite-npm", "static-web"}
+
+
+def _maven_args(build_cmd, cwd, proxy):
+    """Run a Maven build_cmd in sh with `mvn` replaced by a function that prints its arguments."""
+    import subprocess
+    env = {"PATH": "/usr/bin:/bin"}
+    if proxy:
+        env["HTTP_PROXY"] = proxy
+    script = 'mvn() { printf "%s\\n" "$@"; }; ' + build_cmd.replace("{module}", ".")
+    return subprocess.run(["sh", "-c", script], cwd=cwd, env=env, capture_output=True,
+                          text=True, check=True).stdout.split()
+
+
+def test_maven_build_tells_its_transport_to_use_the_proxy_only_when_one_is_set(tmp_path):
+    flag = "-Daether.connector.http.useSystemProperties=true"
+    for v in MAVEN_JDKS:
+        cmd = recipes.get(f"maven-spring-boot-jdk{v}").build_cmd
+        proxied = _maven_args(cmd, tmp_path, "http://proxy.example.com:3128")
+        assert "-Dhttps.proxyHost=proxy.example.com" in proxied
+        assert "-Dhttps.proxyPort=3128" in proxied
+        assert flag in proxied
+        direct = _maven_args(cmd, tmp_path, None)
+        assert not any(a.startswith("-Dhttp") for a in direct)
+        assert flag not in direct
 
 
 def test_adopt_recipe_hints_name_no_single_project_convention():

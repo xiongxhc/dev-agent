@@ -1,6 +1,8 @@
 """`devagent adopt` through the CLI. No test reaches Docker, the network or a model. The fixture
 service has no registered recipe, so its verdict is `unmappable` and nothing is built; egress is
-off unless a test fakes `egress.ensure`, and the mapper is faked wherever mapping is not skipped."""
+off unless a test fakes `egress.ensure`. Where mapping is not skipped, the mapper is faked, or
+the test sets up an unknown arm or a missing key so `make_mapper` refuses before any session
+starts."""
 
 import json
 

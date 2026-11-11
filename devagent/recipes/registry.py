@@ -98,16 +98,19 @@ _MAVEN_HINT = (
 # `{module}` is the module's path inside the build root (`.` for a single-module repo).
 # Built from the reactor root so the parent POM and sibling modules resolve; `-am` builds the
 # sibling modules the target needs. The local repo goes inside the writable mount because the
-# container runs as uid 1000 with no writable HOME. The JVM ignores HTTP_PROXY/HTTPS_PROXY (it
-# needs -Dhttp.proxyHost/-Dhttp.proxyPort), so a contained build behind the egress proxy reaches
-# the network only if the command translates them; without that Maven reports "Network is
-# unreachable" against a host that is in fact allowlisted.
+# container runs as uid 1000 with no writable HOME. The JVM ignores HTTP_PROXY/HTTPS_PROXY, and
+# Maven's default HTTP transport takes a proxy from the JVM proxy properties only when told to
+# (aether.connector.http.useSystemProperties). A contained build behind the egress proxy reaches
+# the network only if the command translates the variables into those properties and sets that
+# switch; without them Maven resolves the registry host directly, which the contained network
+# cannot do.
 _MAVEN_BUILD = (
     'P="${HTTP_PROXY:-$http_proxy}"; PX=""; '
     'if [ -n "$P" ]; then H="${P#*//}"; H="${H%%/*}"; '
     'PX="-Dhttp.proxyHost=${H%%:*} -Dhttp.proxyPort=${H##*:} '
     '-Dhttps.proxyHost=${H%%:*} -Dhttps.proxyPort=${H##*:} '
-    '-Dhttp.nonProxyHosts=localhost|127.0.0.1"; fi; '
+    '-Dhttp.nonProxyHosts=localhost|127.0.0.1 '
+    '-Daether.connector.http.useSystemProperties=true"; fi; '
     'mvn -B -q -DskipTests -Dmaven.repo.local=/out/.m2 $PX '
     '$([ -f settings.xml ] && echo -s settings.xml) '
     '-pl {module} -am package')
