@@ -10,7 +10,7 @@ import pytest
 from devagent.adopt import Fragment, GateFailure, ServiceRoot, Survey, compose
 
 
-# ---------------------------------------------------------------- the two new gates
+# ---------------------------------------------------------------- the gates
 
 def test_gate_refuses_a_design_that_omits_a_surveyed_service(tmp_path):
     """Otherwise "the design validates" is achievable by dropping whatever was hard."""

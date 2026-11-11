@@ -202,7 +202,7 @@ def test_vendored_dependencies_are_never_walked(tmp_path):
 
 def test_a_root_with_no_matching_recipe_becomes_an_explicit_gap(tmp_path):
     """The deliverable of a survey is the gap list — it is what finalizes the recipe work. A node
-    app with no recognised framework has no recipe, so it is still the honest example."""
+    app with no recognised framework has no recipe."""
     _write(tmp_path, "package.json", json.dumps({"name": "tool", "scripts": {"build": "tsc"}}))
     _write(tmp_path, "package-lock.json", "{}")
     s = survey_repo(tmp_path)
@@ -274,7 +274,8 @@ def _node_app(root, rel, name):
 
 @pytest.mark.parametrize("declared,stack", [
     ("1.8", "maven-spring-boot-jdk8"), ("11", "maven-spring-boot-jdk11"),
-    ("17", "maven-spring-boot-jdk17"), ("21", "maven-spring-boot-jdk21")])
+    ("17", "maven-spring-boot-jdk17"), ("21", "maven-spring-boot-jdk21"),
+    ("25", "maven-spring-boot-jdk25")])
 def test_a_maven_service_gets_the_recipe_for_its_declared_java_version(tmp_path, declared, stack):
     _boot_app(tmp_path, java_version=declared)
     assert survey_repo(tmp_path).services[0].stack == stack
@@ -305,9 +306,9 @@ def test_an_external_maven_recipe_without_a_jdk_suffix_matches_any_version(tmp_p
     ("1.8", 8), ("8", 8), ("17", 17), ("21", 21), ("11.0.2", 11),
     (None, None), ("", None), ("${jdk.version}", None), ("latest", None)])
 def test_java_major_reads_declared_values(value, major):
-    from devagent.adopt.survey import _java_major
+    from devagent.adopt.survey import java_major
 
-    assert _java_major(value) == major
+    assert java_major(value) == major
 
 
 # ---------------------------------------------------------------- names
@@ -337,8 +338,11 @@ def test_names_that_give_the_same_service_id_are_refused(tmp_path):
     """The design id is the slug of the name, so `my_app` and `my-app` collide."""
     _node_app(tmp_path, "a", "my_app")
     _node_app(tmp_path, "b", "my-app")
-    with pytest.raises(ValueError, match="appears in both a and b"):
+    with pytest.raises(ValueError) as err:
         survey_repo(tmp_path)
+    msg = str(err.value)
+    assert "'my_app'" in msg and "'my-app'" in msg and "id 'my-app'" in msg
+    assert "(at a)" in msg and "(at b)" in msg
 
 
 def test_a_maven_module_and_a_node_directory_sharing_a_name_are_refused(tmp_path):
@@ -353,10 +357,97 @@ def test_a_maven_module_and_a_node_directory_sharing_a_name_are_refused(tmp_path
     assert str(tmp_path) not in msg
 
 
-def test_a_maven_module_outside_the_repo_tree_is_not_an_error(tmp_path):
-    """`<module>../shared</module>` is legal Maven; it must not break the survey."""
+def test_a_maven_module_outside_the_repo_tree_is_named_for_its_directory(tmp_path):
+    """`<module>../shared</module>` is legal Maven; the name is one path component, the path
+    keeps the location as declared."""
     repo = tmp_path / "repo"
     _write(repo, "pom.xml", _pom("root", modules=["../shared"], packaging="pom", java="17"))
     _write(tmp_path, "shared/pom.xml", _pom("shared", boot_plugin=True))
     _node_app(repo, "web", "web")
-    assert len(survey_repo(repo).services) == 2
+    s = survey_repo(repo)
+    shared = next(x for x in s.services if x.path == "../shared")
+    assert shared.name == "shared"
+
+
+def test_a_nested_maven_module_is_named_for_its_last_directory(tmp_path):
+    _write(tmp_path, "pom.xml", _pom("root", modules=["services/api"], packaging="pom", java="17"))
+    _write(tmp_path, "services/api/pom.xml", _pom("api", boot_plugin=True))
+    s = survey_repo(tmp_path)
+    assert [(x.name, x.path) for x in s.services] == [("api", "services/api")]
+
+
+def test_a_package_named_with_a_path_component_gets_its_directory_name(tmp_path):
+    _node_app(tmp_path, "dash", "..")
+    assert [x.name for x in survey_repo(tmp_path).services] == ["dash"]
+
+
+def test_a_root_package_with_an_unsafe_name_gets_the_repo_directory_name(tmp_path):
+    repo = tmp_path / "my-repo"
+    _write(repo, "package.json", json.dumps({"name": ".", "scripts": {"build": "x"}}))
+    assert [x.name for x in survey_repo(repo).services] == ["my-repo"]
+
+
+def test_modules_in_different_folders_with_one_last_component_are_refused(tmp_path):
+    _write(tmp_path, "pom.xml",
+           _pom("root", modules=["x/api", "y/api"], packaging="pom", java="17"))
+    for d in ("x/api", "y/api"):
+        _write(tmp_path, f"{d}/pom.xml", _pom("api", boot_plugin=True))
+    with pytest.raises(ValueError) as err:
+        survey_repo(tmp_path)
+    assert "service name 'api' appears in both x/api and y/api" in str(err.value)
+
+
+def test_every_service_and_library_name_is_one_safe_path_component(tmp_path):
+    repo = tmp_path / "repo"
+    _write(repo, "pom.xml", _pom(
+        "root", modules=["../shared", "services/api", "libs/core", "."], packaging="pom",
+        java="17"))
+    _write(tmp_path, "shared/pom.xml", _pom("shared", boot_plugin=True))
+    _write(repo, "services/api/pom.xml", _pom("api", boot_plugin=True))
+    _write(repo, "libs/core/pom.xml", _pom("core"))
+    _node_app(repo, "dash", "..")
+    _node_app(repo, "scoped", "@acme/scoped")
+    _node_app(repo, "dotted", ".")
+    s = survey_repo(repo)
+    names = [x.name for x in s.services + s.libraries]
+    assert len(names) >= 6
+    for name in names:
+        assert name and "/" not in name and "\\" not in name and name not in (".", ".."), name
+
+
+def test_a_module_java_version_overrides_the_parent(tmp_path):
+    """The version selects the recipe, so a module's own declaration outranks the parent's."""
+    _write(tmp_path, "pom.xml", _pom("root", modules=["old", "new"], packaging="pom", java="17"))
+    _write(tmp_path, "old/pom.xml", _pom("old", boot_plugin=True, java="8"))
+    _write(tmp_path, "new/pom.xml", _pom("new", boot_plugin=True))
+    s = survey_repo(tmp_path)
+    assert {x.name: x.stack for x in s.services} == {
+        "old": "maven-spring-boot-jdk8", "new": "maven-spring-boot-jdk17"}
+
+
+def test_an_unresolvable_java_version_is_reported_as_declared_not_undeclared(tmp_path):
+    _boot_app(tmp_path, java_version="${jdk.level}")
+    s = survey_repo(tmp_path)
+    assert s.services[0].stack is None
+    assert ("needs a Maven recipe, but its Java version is declared as '${jdk.level}', "
+            "which this survey does not resolve") in s.gaps[0]
+    assert "undeclared" not in s.gaps[0]
+
+
+def test_an_app_directory_that_is_a_symlink_is_surveyed(tmp_path):
+    real = tmp_path / "elsewhere"
+    _write(real, "package.json", json.dumps({"scripts": {"build": "x"}}))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "web").symlink_to(real, target_is_directory=True)
+    s = survey_repo(repo)
+    assert [(x.name, x.path) for x in s.services] == [("web", "web")]
+
+
+def test_the_same_id_across_repos_is_refused_even_when_the_names_differ(tmp_path):
+    from devagent.adopt import survey_repos
+
+    for d, name in (("one", "my_app"), ("two", "my-app")):
+        _node_app(tmp_path, d, name)
+    with pytest.raises(ValueError, match="my_app.*my-app.*id 'my-app'"):
+        survey_repos([tmp_path / "one", tmp_path / "two"])

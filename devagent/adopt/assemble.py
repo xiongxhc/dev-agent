@@ -25,7 +25,7 @@ unmappable rather than pretending it built.
 from dataclasses import dataclass
 
 from ..schema import Contract, ServiceNode, SystemDesign
-from .survey import _java_major, slug
+from .survey import java_major, slug
 
 #: Survey `kind` -> the ArtifactSpec type the build machinery understands.
 _KIND = {"maven-module": "backend", "node-app": "frontend"}
@@ -62,7 +62,7 @@ def needed_recipe(service) -> str:
         return service.stack
     ev = service.evidence or {}
     if service.kind == "maven-module":
-        major = _java_major(ev.get("java_version"))
+        major = java_major(ev.get("java_version"))
         return f"maven-spring-boot-jdk{major}" if major is not None else "maven-spring-boot"
     framework, pm = ev.get("framework"), ev.get("package_manager")
     if framework and pm:
@@ -206,7 +206,7 @@ def _slice_from_evidence(svc) -> str:
             + ". No mapping session read this code, so nothing here describes its behaviour.")
 
 
-# ---------------------------------------------------------------- the two new gates
+# ---------------------------------------------------------------- the gates
 
 def gate_every_service_present(design: SystemDesign, survey) -> None:
     """Every surveyed service must appear in the design."""

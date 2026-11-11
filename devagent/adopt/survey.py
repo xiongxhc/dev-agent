@@ -53,6 +53,20 @@ class ServiceRoot:
     repo: str = ""                # the repo this root came from; set when surveys are merged
 
 
+def _safe_component(candidate, fallback: str) -> str:
+    """`candidate` when it is one safe path component (non-empty, no separator, not `.` or `..`),
+    else `fallback`. Later stages use a name as a directory under the run dir."""
+    if (isinstance(candidate, str) and candidate and "/" not in candidate
+            and "\\" not in candidate and candidate not in (".", "..")):
+        return candidate
+    return fallback
+
+
+def _root(name, fallback: str, **fields) -> ServiceRoot:
+    """The one place a ServiceRoot is built, so no name can skip the safe-component rule."""
+    return ServiceRoot(name=_safe_component(name, _safe_component(fallback, "app")), **fields)
+
+
 @dataclass
 class Survey:
     repo: str
@@ -100,7 +114,9 @@ def _findall(node, tag: str):
 
 
 def _java_version(root) -> str | None:
-    """`<java.version>` or the compiler source, wherever the parent declares it."""
+    """`<java.version>` or the compiler source declared in this POM's properties."""
+    if root is None:
+        return None
     props = root.find(f"{_POM_NS}properties")
     if props is None:
         props = root.find("properties")
@@ -111,7 +127,7 @@ def _java_version(root) -> str | None:
     return None
 
 
-def _java_major(value: str | None) -> int | None:
+def java_major(value: str | None) -> int | None:
     """The major Java version of a declared value: `1.8` and `8` are 8, `17` is 17. A property
     reference such as `${jdk}` or anything else that is not a number is unknown."""
     m = re.fullmatch(r"(?:1\.)?(\d+)(?:\.\d+)*", (value or "").strip())
@@ -203,21 +219,24 @@ def _survey_maven(repo: Path, survey: Survey, label: str = "") -> None:
     if not declared:
         # Single-module project: the reactor root IS the service.
         deployable, evidence = _is_boot_app(repo, root)
-        survey.services.append(ServiceRoot(
-            name=_text(root, "artifactId") or repo.name, path=".", kind="maven-module",
+        survey.services.append(_root(
+            _text(root, "artifactId"), repo.name, path=".", kind="maven-module",
             deployable=deployable, evidence={"java_version": java, **evidence},
             repo=str(repo)))
         return
 
     survey.notes.append(f"{label}maven parent packaging={packaging}, {len(declared)} declared "
                         f"module(s) — directories not in <modules> are not part of the build")
-    for name in declared:
-        module_dir = repo / name
+    for module in declared:
+        module_dir = repo / module
         module_root = _pom(module_dir / "pom.xml")
         deployable, evidence = _is_boot_app(module_dir, module_root)
-        evidence["java_version"] = java
-        entry = ServiceRoot(name=name, path=name, kind="maven-module", deployable=deployable,
-                            evidence=evidence, repo=str(repo))
+        # A module's own declaration outranks the parent's: it selects the recipe.
+        evidence["java_version"] = _java_version(module_root) or java
+        last = os.path.basename(os.path.normpath(module.replace("\\", "/")))
+        entry = _root(last, Path(os.path.normpath(module_dir)).name, path=module,
+                      kind="maven-module", deployable=deployable, evidence=evidence,
+                      repo=str(repo))
         (survey.services if deployable else survey.libraries).append(entry)
 
     undeclared = [d.name for d in repo.iterdir()
@@ -250,12 +269,12 @@ def _node_framework(pkg: dict) -> str | None:
     return None
 
 
-def _service_name(package_name, d: Path) -> str:
+def _package_service_name(package_name) -> str | None:
     """The package name made directory-safe: a scope's leading `@` is dropped and `/` becomes
-    `-`, so `@acme/web` is `acme-web`. Falls back to the directory name."""
+    `-`, so `@acme/web` is `acme-web`."""
     if isinstance(package_name, str) and package_name:
         return package_name.removeprefix("@").replace("/", "-")
-    return d.name
+    return None
 
 
 def _survey_node(d: Path, repo: Path, survey: Survey) -> None:
@@ -300,8 +319,8 @@ def _survey_node(d: Path, repo: Path, survey: Survey) -> None:
     if out_dir:
         evidence["out_dir"] = out_dir.group(1).strip()
 
-    survey.services.append(ServiceRoot(
-        name=_service_name(pkg.get("name"), d), path=rel, kind="node-app",
+    survey.services.append(_root(
+        _package_service_name(pkg.get("name")), d.name, path=rel, kind="node-app",
         deployable=bool(build_scripts), evidence=evidence))
 
 
@@ -337,12 +356,18 @@ def match_recipes(survey: Survey, registry=None) -> None:
     for svc in survey.services:
         ev = svc.evidence
         if svc.kind == "maven-module":
-            major = _java_major(ev.get("java_version"))
+            declared = ev.get("java_version")
+            major = java_major(declared)
             svc.stack = _match_maven(by_type.get("backend", []), major)
-            want = (f"a Maven recipe for Java {major}" if major is not None else
-                    "a Maven recipe for an undeclared Java version")
-            tail = (" — no registered recipe" if major is not None
-                    else " — declare java.version in the POM")
+            if major is not None:
+                want, tail = f"a Maven recipe for Java {major}", " — no registered recipe"
+            elif declared:
+                want = "a Maven recipe, but its Java version is declared as "
+                want += f"{declared!r}, which this survey does not resolve"
+                tail = ""
+            else:
+                want = "a Maven recipe for an undeclared Java version"
+                tail = " — declare java.version in the POM"
         else:
             fw = ev.get("framework") or "unknown"
             pm = ev.get("package_manager") or "unknown"
@@ -409,12 +434,22 @@ def _record_mirror(survey, host: str) -> None:
             survey.mirror_hosts.append(candidate)
 
 
-def _refuse_duplicate_names(survey: Survey, repo: Path) -> None:
-    """Service ids must be unique across a system, so two services whose names give the same id
-    are refused here, as `survey_repos` refuses them across repos. Libraries are not checked.
+def _collision(first_name: str, first_at: str, name: str, at: str) -> ValueError:
+    """The error for two services that would get the same design id (the slug of the name)."""
+    fix = ("service ids must be unique across a system, so one of them needs renaming before "
+           "it can be adopted")
+    if first_name == name:
+        return ValueError(f"service name {name!r} appears in both {first_at} and {at} — {fix}")
+    return ValueError(f"service names {first_name!r} (at {first_at}) and {name!r} (at {at}) "
+                      f"both give the id {slug(name)!r} — {fix}")
 
-    Paths are shown relative to the repo, built only on a collision: a module may legally live
-    outside the repo tree (`../shared`), which has no path relative to it in the subpath sense."""
+
+def _refuse_duplicate_names(survey: Survey, repo: Path) -> None:
+    """Refuse two services whose names give the same id; `survey_repos` applies the same rule
+    across repos. Libraries are not checked.
+
+    Paths are shown relative to the repo and built only on a collision: a module may live
+    outside the repo tree (`../shared`), which a subpath computation would reject."""
     seen: dict = {}
     for svc in survey.services:
         sid = slug(svc.name)
@@ -422,10 +457,7 @@ def _refuse_duplicate_names(survey: Survey, repo: Path) -> None:
             seen[sid] = svc
             continue
         first = seen[sid]
-        raise ValueError(
-            f"service name {svc.name!r} appears in both {_shown(first, repo)} and "
-            f"{_shown(svc, repo)} — service ids must be unique across a system, so one of them "
-            f"needs renaming before it can be adopted")
+        raise _collision(first.name, _shown(first, repo), svc.name, _shown(svc, repo))
 
 
 def _shown(svc: ServiceRoot, repo: Path) -> str:
@@ -444,10 +476,7 @@ def survey_repo(repo_path, registry=None) -> Survey:
         _survey_maven(reactor, survey,
                       label="" if reactor == repo else f"{reactor.relative_to(repo)}: ")
 
-    # A node app sits one level below a BUILD ROOT, and there can be two: the repo and a
-    # sub-reactor. A node service beside the Maven modules would be found when the sub-reactor is
-    # adopted but missed when its parent is, with nothing said about it. Scanning one level below
-    # each build root keeps the two walks symmetric.
+    # Node apps are scanned one level below each build root, the repo and any sub-reactor.
     for base in [repo] + [r for r in reactors if r != repo]:
         if (base / "package.json").is_file():
             _survey_node(base, repo, survey)
@@ -478,12 +507,11 @@ def survey_repos(paths, registry=None) -> Survey:
     for path in paths:
         one = survey_repo(path, registry)
         for root in one.services:
-            if root.name in seen:
-                raise ValueError(
-                    f"service name {root.name!r} appears in both {seen[root.name]} and "
-                    f"{root.repo} — service ids must be unique across a system, so one of them "
-                    f"needs renaming before it can be adopted")
-            seen[root.name] = root.repo
+            sid = slug(root.name)
+            if sid in seen:
+                first_name, first_repo = seen[sid]
+                raise _collision(first_name, first_repo, root.name, root.repo)
+            seen[sid] = (root.name, root.repo)
             merged.services.append(root)
         merged.libraries.extend(one.libraries)
         merged.gaps.extend(one.gaps)
