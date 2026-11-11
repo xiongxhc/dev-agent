@@ -6,6 +6,7 @@ work still to be done.
 """
 
 import json
+import re
 
 import pytest
 
@@ -408,11 +409,16 @@ def test_every_service_and_library_name_is_one_safe_path_component(tmp_path):
     _node_app(repo, "dash", "..")
     _node_app(repo, "scoped", "@acme/scoped")
     _node_app(repo, "dotted", ".")
+    _node_app(repo, "colon", "a:b")
+    _node_app(repo, "dash", "-rf")
+    _node_app(repo, "spaced", "my app")
+    _node_app(repo, "dots", "...")
     s = survey_repo(repo)
     names = [x.name for x in s.services + s.libraries]
-    assert len(names) >= 6
+    assert len(names) >= 10
     for name in names:
-        assert name and "/" not in name and "\\" not in name and name not in (".", ".."), name
+        assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name), name
+        assert name.strip(".") and name not in (".", ".."), name
 
 
 def test_a_module_java_version_overrides_the_parent(tmp_path):
@@ -451,3 +457,33 @@ def test_the_same_id_across_repos_is_refused_even_when_the_names_differ(tmp_path
         _node_app(tmp_path, d, name)
     with pytest.raises(ValueError, match="my_app.*my-app.*id 'my-app'"):
         survey_repos([tmp_path / "one", tmp_path / "two"])
+
+
+@pytest.mark.parametrize("package_name,expected", [
+    ("a:b", "a-b"), ("-rf", "rf"), ("my app", "my-app"), ("~tmp", "tmp"),
+    ("@acme/web", "acme-web"), ("v1.2_x", "v1.2_x")])
+def test_a_package_name_is_sanitised_to_a_container_safe_name(tmp_path, package_name, expected):
+    """The name becomes a mount path and a container name, so `:`, spaces and a leading `-`
+    cannot be kept."""
+    _node_app(tmp_path, "dir", package_name)
+    assert [x.name for x in survey_repo(tmp_path).services] == [expected]
+
+
+@pytest.mark.parametrize("package_name", ["...", "   ", "\x00", ":::"])
+def test_a_package_name_with_nothing_usable_gets_the_directory_name(tmp_path, package_name):
+    _node_app(tmp_path, "dir", package_name)
+    assert [x.name for x in survey_repo(tmp_path).services] == ["dir"]
+
+
+def test_a_directory_name_is_sanitised_by_the_same_rule(tmp_path):
+    _node_app(tmp_path, "my app", "...")
+    assert [x.name for x in survey_repo(tmp_path).services] == ["my-app"]
+
+
+def test_a_module_java_property_that_does_not_resolve_falls_back_to_the_parent(tmp_path):
+    _write(tmp_path, "pom.xml", _pom("root", modules=["api"], packaging="pom", java="17"))
+    _write(tmp_path, "api/pom.xml", _pom("api", boot_plugin=True).replace(
+        "<build>", "<properties><maven.compiler.release>${java.version}"
+        "</maven.compiler.release></properties><build>"))
+    s = survey_repo(tmp_path)
+    assert s.services[0].stack == "maven-spring-boot-jdk17" and s.gaps == []

@@ -53,18 +53,21 @@ class ServiceRoot:
     repo: str = ""                # the repo this root came from; set when surveys are merged
 
 
-def _safe_component(candidate, fallback: str) -> str:
-    """`candidate` when it is one safe path component (non-empty, no separator, not `.` or `..`),
-    else `fallback`. Later stages use a name as a directory under the run dir."""
-    if (isinstance(candidate, str) and candidate and "/" not in candidate
-            and "\\" not in candidate and candidate not in (".", "..")):
-        return candidate
-    return fallback
+def _safe_name(text) -> str:
+    """`text` reduced to `[A-Za-z0-9][A-Za-z0-9._-]*`, or "" when nothing usable is left. A name
+    becomes a directory, a container name and half of a `docker -v host:container` mount, so a
+    `:`, a space or a leading `-` would change what those mean. Each disallowed character
+    becomes `-`; leading characters that are not alphanumeric (which also rules out `.`, `..`
+    and all-dot names) are dropped."""
+    if not isinstance(text, str):
+        return ""
+    return re.sub(r"^[^A-Za-z0-9]+", "", re.sub(r"[^A-Za-z0-9._-]", "-", text))
 
 
 def _root(name, fallback: str, **fields) -> ServiceRoot:
-    """The one place a ServiceRoot is built, so no name can skip the safe-component rule."""
-    return ServiceRoot(name=_safe_component(name, _safe_component(fallback, "app")), **fields)
+    """The one place a ServiceRoot is built, so no name can skip the naming rule: the name, else
+    the fallback (a directory name), else `service`, each reduced by `_safe_name`."""
+    return ServiceRoot(name=_safe_name(name) or _safe_name(fallback) or "service", **fields)
 
 
 @dataclass
@@ -232,7 +235,10 @@ def _survey_maven(repo: Path, survey: Survey, label: str = "") -> None:
         module_root = _pom(module_dir / "pom.xml")
         deployable, evidence = _is_boot_app(module_dir, module_root)
         # A module's own declaration outranks the parent's: it selects the recipe.
-        evidence["java_version"] = _java_version(module_root) or java
+        # (When the module's value does not resolve, the parent's is used; the raw text is kept
+        # only if neither resolves, so the gap can quote it.)
+        own = _java_version(module_root)
+        evidence["java_version"] = own if java_major(own) is not None else (java or own)
         last = os.path.basename(os.path.normpath(module.replace("\\", "/")))
         entry = _root(last, Path(os.path.normpath(module_dir)).name, path=module,
                       kind="maven-module", deployable=deployable, evidence=evidence,
@@ -421,11 +427,8 @@ def _record_mirror(survey, host: str) -> None:
     client opens a second CONNECT the allowlist has never heard of and the build fails naming the
     original URL. The built-in defaults already treat npmjs this way (`.npmjs.org`)."""
     candidates = [host]
-    # NOT for an IP: "192.0.2.31" would yield the suffix ".2.31", which matches any host ending
-    # in those labels — a hole, not a convenience.
-    # Digits and dots only. Written out, not matched: this decides whether a registrable-domain
-    # SUFFIX joins an egress allowlist, and "192.0.2.31" would contribute ".2.31" — which admits
-    # any host ending in those labels. A hole, not a convenience. A safety rule stays in code.
+    # An IP address (digits and dots only) gets no suffix: "192.0.2.31" would yield ".2.31",
+    # which matches any host ending in those labels and so widens the egress allowlist.
     is_ip = bool(host) and all(ch.isdigit() or ch == "." for ch in host)
     if not is_ip and host.count(".") >= 2:
         candidates.append("." + ".".join(host.split(".")[-2:]))
@@ -476,7 +479,8 @@ def survey_repo(repo_path, registry=None) -> Survey:
         _survey_maven(reactor, survey,
                       label="" if reactor == repo else f"{reactor.relative_to(repo)}: ")
 
-    # Node apps are scanned one level below each build root, the repo and any sub-reactor.
+    # A node app can sit one level below either build root, the repo or a sub-reactor. Both are
+    # scanned so a node service is found the same way whichever directory was adopted.
     for base in [repo] + [r for r in reactors if r != repo]:
         if (base / "package.json").is_file():
             _survey_node(base, repo, survey)
