@@ -45,7 +45,7 @@ class ServiceRoot:
     """One thing in the repo that might be a service."""
     name: str
     path: str                     # relative to the repo root; "." for the root itself
-    kind: str                     # maven-module | maven-parent | node-app
+    kind: str                     # maven-module | node-app | static-site
     deployable: bool              # a runnable service, as opposed to a library
     stack: str | None = None      # matched recipe name
     gap: str | None = None        # why nothing matched, when nothing did
@@ -330,6 +330,19 @@ def _survey_node(d: Path, repo: Path, survey: Survey) -> None:
         deployable=bool(build_scripts), evidence=evidence))
 
 
+# ---------------------------------------------------------------- static site
+
+def _survey_static_site(repo: Path, survey: Survey) -> None:
+    """A repo with no Maven or node service whose root holds an `index.html` is one static site.
+    Anything already found wins: an `index.html` beside a `package.json` is that app's entry
+    page, not a second service."""
+    if survey.services or survey.libraries or not (repo / "index.html").is_file():
+        return
+    survey.services.append(_root(repo.name, "", path=".", kind="static-site", deployable=True,
+                                 evidence={"entry": "index.html"}, repo=str(repo)))
+    survey.notes.append("static site detected at the repo root (index.html, no build manifest)")
+
+
 # ---------------------------------------------------------------- deployment evidence
 
 def _deployment_evidence(repo: Path, survey: Survey) -> None:
@@ -374,6 +387,9 @@ def match_recipes(survey: Survey, registry=None) -> None:
             else:
                 want = "a Maven recipe for an undeclared Java version"
                 tail = " — declare java.version in the POM"
+        elif svc.kind == "static-site":
+            svc.stack = "static-web" if "static-web" in registry else None
+            want, tail = "static-web", " — no registered recipe"
         else:
             fw = ev.get("framework") or "unknown"
             pm = ev.get("package_manager") or "unknown"
@@ -488,6 +504,7 @@ def survey_repo(repo_path, registry=None) -> Survey:
         for d in sorted(p for p in base.iterdir() if p.is_dir() and p.name not in _SKIP):
             if (d / "package.json").is_file():
                 _survey_node(d, repo, survey)
+    _survey_static_site(repo, survey)
     _deployment_evidence(repo, survey)
     match_recipes(survey, registry)
     for root in survey.services + survey.libraries:

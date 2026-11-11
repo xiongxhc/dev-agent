@@ -232,7 +232,7 @@ def test_a_recipe_matches_only_when_the_package_manager_matches_too(tmp_path):
 def test_a_plain_static_site_matches_the_static_recipe(tmp_path):
     _write(tmp_path, "index.html", "<h1/>")
     s = survey_repo(tmp_path)
-    assert s.services == [] or s.services[0].stack == "static-web"
+    assert [(x.kind, x.path, x.stack) for x in s.services] == [("static-site", ".", "static-web")]
 
 
 def test_deployment_and_ci_evidence_is_collected(tmp_path):
@@ -487,3 +487,36 @@ def test_a_module_java_property_that_does_not_resolve_falls_back_to_the_parent(t
         "</maven.compiler.release></properties><build>"))
     s = survey_repo(tmp_path)
     assert s.services[0].stack == "maven-spring-boot-jdk17" and s.gaps == []
+
+
+# ---------------------------------------------------------------- plain static site
+
+def test_a_plain_html_site_is_one_static_service(tmp_path):
+    site = tmp_path / "docs-site"
+    site.mkdir()
+    (site / "index.html").write_text("<!doctype html><title>x</title>")
+    (site / "style.css").write_text("body{}")
+    s = survey_repo(site)
+    assert [(r.name, r.path, r.kind, r.stack) for r in s.services] == [
+        ("docs-site", ".", "static-site", "static-web")]
+    assert s.services[0].deployable is True
+    assert s.services[0].evidence == {"entry": "index.html"}
+    assert s.gaps == []
+    assert sum("static site" in n for n in s.notes) == 1
+
+
+def test_a_static_site_without_the_recipe_is_a_gap(tmp_path):
+    (tmp_path / "index.html").write_text("<html>")
+    s = survey_repo(tmp_path, registry={})
+    assert s.services[0].stack is None and "static-web" in s.gaps[0]
+
+
+def test_index_html_beside_a_package_json_is_not_a_second_service(tmp_path):
+    (tmp_path / "index.html").write_text("<html>")
+    (tmp_path / "package.json").write_text('{"name": "web", "scripts": {"build": "vite build"}}')
+    assert [r.kind for r in survey_repo(tmp_path).services] == ["node-app"]
+
+
+def test_a_directory_with_no_index_html_has_no_services(tmp_path):
+    (tmp_path / "README.md").write_text("x")
+    assert survey_repo(tmp_path).services == []

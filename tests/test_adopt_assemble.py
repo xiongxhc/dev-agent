@@ -97,3 +97,18 @@ def test_an_unmatched_maven_module_needs_the_recipe_for_its_java_version(java_ve
     svc = ServiceRoot(name="api", path="api", kind="maven-module", deployable=True,
                       evidence={"java_version": java_version})
     assert needed_recipe(svc) == recipe
+
+
+def test_a_static_site_service_is_a_frontend_on_the_static_recipe():
+    survey = Survey(repo="/x", services=[
+        ServiceRoot(name="site", path=".", kind="static-site", deployable=True,
+                    stack="static-web", evidence={"entry": "index.html"})])
+    node = compose(survey, []).services[0]
+    assert (node.kind, node.stack) == ("frontend", "static-web")
+
+
+def test_an_unmatched_static_site_needs_the_static_recipe():
+    from devagent.adopt.assemble import needed_recipe
+
+    svc = ServiceRoot(name="site", path=".", kind="static-site", deployable=True)
+    assert needed_recipe(svc) == "static-web"

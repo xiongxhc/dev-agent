@@ -28,7 +28,7 @@ from ..schema import Contract, ServiceNode, SystemDesign
 from .survey import java_major, slug
 
 #: Survey `kind` -> the ArtifactSpec type the build machinery understands.
-_KIND = {"maven-module": "backend", "node-app": "frontend"}
+_KIND = {"maven-module": "backend", "node-app": "frontend", "static-site": "frontend"}
 
 
 def _node_kind(evidence: dict) -> str:
@@ -61,6 +61,8 @@ def needed_recipe(service) -> str:
     if service.stack:
         return service.stack
     ev = service.evidence or {}
+    if service.kind == "static-site":
+        return "static-web"
     if service.kind == "maven-module":
         major = java_major(ev.get("java_version"))
         return f"maven-spring-boot-jdk{major}" if major is not None else "maven-spring-boot"
