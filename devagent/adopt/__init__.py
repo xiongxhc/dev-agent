@@ -8,7 +8,13 @@ The source repo is never written to.
 """
 
 from .assemble import Fragment, GateFailure, compose, contract_id, needed_recipe
+from .lane import AdoptResult, adopt
+from .prove import PROVEN, UNMAPPABLE, UNPROVEN, Verdict, prove, prove_service
+from .report import write_report
 from .survey import ServiceRoot, Survey, survey_repo, survey_repos
 
 __all__ = ["Fragment", "GateFailure", "compose", "contract_id", "needed_recipe",
+           "AdoptResult", "adopt",
+           "PROVEN", "UNMAPPABLE", "UNPROVEN", "Verdict", "prove", "prove_service",
+           "write_report",
            "ServiceRoot", "Survey", "survey_repo", "survey_repos"]
