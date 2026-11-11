@@ -76,10 +76,9 @@ def ensure(image: str = DEFAULT_IMAGE, extra_hosts=()) -> tuple[str, str]:
 def _ensure_locked(image: str, allow: str) -> tuple[str, str]:
     """The body of `ensure`, under the host lock.
 
-    Everything here is an inspect-then-act on a resource shared by every run on the machine. Two
-    runs starting together would both see "no proxy" and both create one, and a run needing a
-    different allowlist could `docker rm -f` a proxy another run had just started. The lock removes
-    those races; the adoption and refusal rules below protect builds already attached."""
+    The lock serialises concurrent `ensure` calls, so two runs starting together cannot both see
+    "no proxy" and both create one. It does not cover the time after `ensure` returns: a proxy
+    already in use is protected by the adoption and refusal rules below, not by the lock."""
     if _run(["docker", "network", "inspect", NETWORK]).returncode != 0:
         _run(["docker", "network", "create", "--internal", NETWORK])
     running = _run(["docker", "inspect", "-f", "{{.State.Running}}", PROXY]).stdout.strip()
@@ -127,6 +126,8 @@ def _ensure_lock():
                                   "egress proxy", flush=True))
     try:
         lock.__enter__()
+    except TimeoutError:
+        raise                       # a held lock must stop us; running unlocked reopens the race
     except OSError:
         yield
         return

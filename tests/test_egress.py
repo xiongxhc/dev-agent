@@ -170,3 +170,19 @@ def test_an_unusable_lock_does_not_stop_ensure(monkeypatch):
     monkeypatch.setenv("DEVAGENT_RUNS_DIR", "/dev/null/runs")      # lock dir cannot be created
     assert egress.ensure()[0] == egress.NETWORK
     assert [c for c in calls if c[:2] == ["docker", "run"]]
+
+
+def test_a_lock_timeout_stops_ensure_without_touching_docker(monkeypatch):
+    calls = _fake_docker(monkeypatch, running="false")
+
+    class TimesOut:
+        def __enter__(self):
+            raise TimeoutError("waited 180s for the 'egress' lock")
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(egress.hostlock, "exclusive", lambda *a, **kw: TimesOut())
+    with pytest.raises(TimeoutError):
+        egress.ensure()
+    assert calls == []
