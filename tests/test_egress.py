@@ -1,10 +1,14 @@
 """Egress allowlist — the deny-by-default host matching (pure; no Docker/network)."""
 
+import tempfile
+import threading
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from devagent import egress
+from devagent import egress, hostlock
 from devagent.egress import allowlist, docker_flags, hosts_for_stacks
 from devagent.egress_proxy import DEFAULT_ALLOW, host_allowed
 
@@ -69,19 +73,24 @@ def test_allowlist_override_replaces_defaults_but_keeps_extras(monkeypatch):
 
 # --- ensure(): Docker faked by recording every argv --------------------------------------
 
+LOCK_ROOT = hostlock.lock_root
+
+
 @pytest.fixture(autouse=True)
-def _runs_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path))
+def _lock_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(hostlock, "lock_root", lambda: tmp_path / "locks")
 
 
-def _fake_docker(monkeypatch, *, running="false", label="", others=""):
+def _fake_docker(monkeypatch, *, running="false", label="", others="", run_rc=0):
     """Replace egress._run; return the list of recorded argvs."""
     calls = []
 
     def fake(args):
         calls.append(list(args))
         out, rc = "", 0
-        if args[:3] == ["docker", "network", "inspect"] and "-f" in args:
+        if args[:2] == ["docker", "run"]:
+            rc = run_rc
+        elif args[:3] == ["docker", "network", "inspect"] and "-f" in args:
             out = others
         elif args[:3] == ["docker", "network", "inspect"]:
             rc = 0
@@ -151,7 +160,7 @@ def test_ensure_runs_its_docker_calls_while_holding_the_lock(monkeypatch):
     events = []
 
     @contextmanager
-    def fake_exclusive(root, name, **kw):
+    def fake_exclusive(name, **kw):
         events.append(("enter", name))
         yield
         events.append(("exit", name))
@@ -167,7 +176,7 @@ def test_ensure_runs_its_docker_calls_while_holding_the_lock(monkeypatch):
 
 def test_an_unusable_lock_does_not_stop_ensure(monkeypatch):
     calls = _fake_docker(monkeypatch, running="false")
-    monkeypatch.setenv("DEVAGENT_RUNS_DIR", "/dev/null/runs")      # lock dir cannot be created
+    monkeypatch.setattr(hostlock, "lock_root", lambda: Path("/dev/null/locks"))  # cannot be created
     assert egress.ensure()[0] == egress.NETWORK
     assert [c for c in calls if c[:2] == ["docker", "run"]]
 
@@ -186,3 +195,87 @@ def test_a_lock_timeout_stops_ensure_without_touching_docker(monkeypatch):
     with pytest.raises(TimeoutError):
         egress.ensure()
     assert calls == []
+
+
+def _replaced_once(calls):
+    rm = [i for i, c in enumerate(calls) if c == ["docker", "rm", "-f", egress.PROXY]]
+    run = [i for i, c in enumerate(calls) if c[:2] == ["docker", "run"]]
+    return len(rm) == 1 and len(run) == 1 and rm[0] < run[0]
+
+
+def _untouched(calls):
+    return not [c for c in calls if c[:2] in (["docker", "run"], ["docker", "rm"])]
+
+
+def test_a_default_ensure_replaces_an_idle_proxy_whose_allowlist_is_wider(monkeypatch):
+    wider = allowlist(["repo1.maven.org", ".example.com"])
+    calls = _fake_docker(monkeypatch, running="true", label=wider, others=f"{egress.PROXY} ")
+    egress.ensure()
+    assert _replaced_once(calls)
+    run = next(c for c in calls if c[:2] == ["docker", "run"])
+    assert f"devagent.allow={allowlist()}" in run and f"devagent.allow={wider}" not in run
+
+
+def test_a_default_ensure_reuses_a_wider_proxy_while_another_build_uses_it(monkeypatch):
+    wider = allowlist(["repo1.maven.org"])
+    calls = _fake_docker(monkeypatch, running="true", label=wider,
+                         others=f"{egress.PROXY} some-build ")
+    assert egress.ensure() == (egress.NETWORK, f"http://{egress.PROXY}:{egress.PORT}")
+    assert _untouched(calls)
+
+
+def test_a_default_ensure_reuses_a_proxy_with_the_default_allowlist(monkeypatch):
+    calls = _fake_docker(monkeypatch, running="true", label=allowlist())
+    egress.ensure()
+    assert _untouched(calls)
+
+
+@pytest.mark.parametrize("label", ["", "<no value>"])
+def test_an_idle_proxy_with_no_allowlist_label_is_replaced_once(monkeypatch, label):
+    calls = _fake_docker(monkeypatch, running="true", label=label, others=f"{egress.PROXY} ")
+    egress.ensure()
+    assert _replaced_once(calls)
+
+
+@pytest.mark.parametrize("label", ["", "<no value>"])
+def test_a_proxy_with_no_allowlist_label_that_another_build_uses_is_refused(monkeypatch, label):
+    calls = _fake_docker(monkeypatch, running="true", label=label,
+                         others=f"{egress.PROXY} some-build ")
+    with pytest.raises(RuntimeError, match="different allowlist"):
+        egress.ensure()
+    assert _untouched(calls)
+
+
+def test_a_failure_inside_the_lock_releases_it(tmp_path, monkeypatch):
+    _fake_docker(monkeypatch, running="false", run_rc=1)
+    with pytest.raises(RuntimeError, match="failed to start"):
+        egress.ensure()
+    assert not (tmp_path / "locks" / "egress.lock").exists()
+    with hostlock.exclusive("egress", timeout_s=0.2, poll_s=0.05):
+        pass
+
+
+def test_runs_with_different_runs_dirs_contend_for_one_egress_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(hostlock, "lock_root", LOCK_ROOT)
+    order = []
+    entered = threading.Event()
+
+    def first():
+        with egress._ensure_lock():
+            entered.set()
+            time.sleep(0.4)
+            order.append("first out")
+
+    monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path / "runs-a"))
+    t = threading.Thread(target=first)
+    t.start()
+    assert entered.wait(2)
+    monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path / "runs-b"))
+    calls = _fake_docker(monkeypatch, running="false")
+    fake = egress._run
+    monkeypatch.setattr(egress, "_run", lambda a: (order.append("second docker"), fake(a))[1])
+    egress.ensure()
+    t.join()
+    assert calls and order[0] == "first out"

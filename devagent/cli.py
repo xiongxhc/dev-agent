@@ -222,7 +222,7 @@ def _adopt(args) -> int:
     failed gate or a repo with no services is not (exit 1); bad input, a bad mapping setup or a
     proxy that cannot start is 2. Refusals run cheapest first, before anything is created or
     the shared egress proxy is touched."""
-    from .adopt import adopt, survey_repos
+    from .adopt import adopt, prove, survey_repos
     from .adopt.lane import check_run_dir
 
     repos = [Path(r) for r in args.repo]
@@ -232,6 +232,13 @@ def _adopt(args) -> int:
             return 2
     cfg = Config.load()
     out = Path(args.out) if args.out else cfg.runs_dir / f"adopt-{_new_run_id()[4:]}"
+    building = False
+
+    def prover(*a, **kw):
+        nonlocal building
+        building = True
+        return prove(*a, **kw)
+
     try:
         check_run_dir(repos, out)
         if not args.skip_map:
@@ -263,9 +270,16 @@ def _adopt(args) -> int:
         map_fn = None
         if not args.skip_map:
             map_fn = mapper.make_mapper(network=network, proxy_url=proxy)
-        result = adopt(repos, out, map_fn=map_fn, network=network, proxy_url=proxy,
-                       title=args.title)
+        result = adopt(repos, out, map_fn=map_fn, prover=prover, network=network,
+                       proxy_url=proxy, title=args.title)
     except (ValueError, NotADirectoryError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except OSError as e:
+        # An unreadable repo or an unwritable run dir is bad input. Once the build stage has
+        # started, an OSError is a fault in that stage and keeps its traceback.
+        if building:
+            raise
         print(f"error: {e}", file=sys.stderr)
         return 2
 
@@ -368,7 +382,11 @@ def main(argv: list[str] | None = None) -> int:
     # still re-checks the pulled output in our egress-contained container.
     network = proxy = None
     if args.build and cfg.egress:
-        network, proxy = egress.ensure()
+        try:
+            network, proxy = egress.ensure()
+        except (RuntimeError, TimeoutError) as e:   # a proxy in use with other rules; a held lock
+            print(f"error: {e}", file=sys.stderr)
+            return 2
         ledger.append({"event": "egress", "network": network, "proxy": proxy})
     # The A/B seam: pick the build arm. Everything downstream (verify/acceptance/repair) is shared.
     executor = None

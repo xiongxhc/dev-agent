@@ -193,3 +193,28 @@ def test_adopt_reports_missing_docker_without_a_traceback(tmp_path, monkeypatch,
                  "--out", str(tmp_path / "out")]) == 2
     err = capsys.readouterr().err
     assert err.startswith("error: docker was not found") and "DEVAGENT_EGRESS=0" not in err
+
+
+def _denied(*a, **kw):
+    raise PermissionError(13, "Permission denied", "/repo/secret")
+
+
+@pytest.mark.parametrize("stage", ["survey_repo", "_copy_source"])
+def test_an_unreadable_repo_exits_2_with_one_line(tmp_path, monkeypatch, capsys, stage):
+    from devagent.adopt import lane
+    monkeypatch.setattr(lane, stage, _denied)
+    assert main(["adopt", str(_app(tmp_path / "web")), "--skip-map",
+                 "--out", str(tmp_path / "out")]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "Permission denied" in err
+    assert err.strip().count("\n") == 0
+
+
+def test_an_os_error_from_the_build_stage_is_not_reported_as_bad_input(tmp_path, monkeypatch):
+    import devagent.adopt as adopt_pkg
+
+    def build_breaks(*a, **kw):
+        raise OSError("the build stage broke")
+    monkeypatch.setattr(adopt_pkg, "prove", build_breaks)
+    with pytest.raises(OSError, match="the build stage broke"):
+        main(["adopt", str(_app(tmp_path / "web")), "--skip-map", "--out", str(tmp_path / "out")])

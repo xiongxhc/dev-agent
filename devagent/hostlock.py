@@ -4,28 +4,37 @@ One run on a laptop needs none of this. Several do: `egress.ensure()` is an insp
 SHARED proxy container. Two runs starting together both see "no proxy" and both create one, and a run
 needing a different allowlist can replace the proxy while another run is deciding the same thing.
 
-The primitive is a file in the runs root, because that is the one place every run on a host already
-agrees on, it survives a crash (a stale lock is detectable by age and by the pid inside it), and it
-needs no daemon.
+The primitive is a file under `lock_root()`, a directory fixed per user and host: it does not
+depend on DEVAGENT_RUNS_DIR or the working directory, so runs that write to different runs dirs
+still contend for the same lock. A file survives a crash (a stale lock is detectable by age and by
+the pid inside it) and needs no daemon.
 
-Deliberately NOT distributed. This coordinates runs on ONE host.
+Deliberately NOT distributed. This coordinates the runs of one user on ONE host.
 """
 
 import errno
 import json
 import os
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
-LOCK_DIR = ".locks"
 # How long before a lock is presumed abandoned. Generous: stealing a live lock is worse than waiting.
 STALE_AFTER_S = 3 * 3600
 
 
-def _dir(runs_root) -> Path:
-    d = Path(runs_root) / LOCK_DIR
-    d.mkdir(parents=True, exist_ok=True)
+def lock_root() -> Path:
+    """`<system temp dir>/devagent-<uid>/locks`: the same for every run of this user on this host,
+    whatever runs dir or working directory the run uses."""
+    return Path(tempfile.gettempdir()) / f"devagent-{os.getuid()}" / "locks"
+
+
+def _dir() -> Path:
+    """The lock directory, created private to its user: the system temp dir is shared."""
+    d = lock_root()
+    d.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    d.mkdir(mode=0o700, exist_ok=True)
     return d
 
 
@@ -51,8 +60,7 @@ def _stale(p: Path) -> bool:
 
 
 @contextmanager
-def exclusive(runs_root, name: str, *, timeout_s: float = 120.0, poll_s: float = 0.25,
-              on_wait=None):
+def exclusive(name: str, *, timeout_s: float = 120.0, poll_s: float = 0.25, on_wait=None):
     """Hold `name` exclusively for the duration of the block.
 
     O_EXCL creation is the primitive, atomic on every filesystem this runs on. A holder that crashed
@@ -62,7 +70,7 @@ def exclusive(runs_root, name: str, *, timeout_s: float = 120.0, poll_s: float =
     On timeout it RAISES. Silently proceeding without the lock would defeat the point, and silently
     waiting forever is how a queue turns into a hang.
     """
-    path = _dir(runs_root) / f"{name}.lock"
+    path = _dir() / f"{name}.lock"
     # The deadline is computed lazily, on the first failed attempt, so an uncontended acquire reads
     # no clock at all.
     deadline = None

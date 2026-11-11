@@ -9,9 +9,9 @@ recipe fits. There is no live boot or contract probing in this slice.
 
 `update-system` (M25) can only change systems dev-agent built, because it loads the prior
 gated design (`<run_dir>/design.json` and `services/`). An existing codebase has no such
-artifacts. Adopt closes that gap: given one or more existing repos, it produces the reviewed,
-build-proven design artifacts the update path already consumes, so
-`update-system <adopt-run-dir> <change.md>` needs no new plumbing.
+artifacts. Adopt produces them: given one or more existing repos, it writes a reviewed,
+build-proven design in the run-dir shape the update path loads. Running `update-system` on an
+adopt run dir is not supported yet (§7).
 
 ## 2. Shape
 
@@ -29,22 +29,26 @@ devagent adopt <repo-path>... [--out DIR] [--skip-map] [--title T]
   be read, a repo with no services (`survey_only`), and a failed design gate (`gate_failed`).
 - Several repos can be adopted as one system. A frontend that calls a backend in another repo
   cannot be wired if adopted alone, so the surveys are merged before assembly. Two services
-  with the same name are refused.
+  with the same id are refused; a service's id is its name in lower case with `_` read as `-`.
 - A service name is one path component matching `[A-Za-z0-9][A-Za-z0-9._-]*`. Symlinks in the
   source are copied as links and never followed.
 - Refusals come first and cost nothing: a path that is not a directory, an unusable run dir, and
   an unknown mapping arm or missing credential all exit before anything is created and before
   the shared egress proxy is touched.
-- Exit codes: 0 adopted, 1 gate failed or no services found, 2 bad input, a bad mapping setup,
-  or Docker missing or the egress proxy not starting while egress is on.
+- Exit codes: 0 adopted, 1 gate failed or no services found, 2 bad input (including a repo
+  that cannot be read or a run dir that cannot be written), a bad mapping setup, or, with egress
+  on, Docker missing or an egress proxy that cannot be started or shared.
 
 ## 3. Stages
 
 ### 3.1 Survey (deterministic, no model)
 
 A pure-Python repo walk. It detects service roots (Maven `pom.xml`, multi-module aware;
-`package.json` with build scripts). A repo whose root holds an `index.html`, and which has no
-Maven or node service and no library, is one static site. Each root is classified against the
+`package.json` with build scripts). Maven modules are read from `<modules>`; a module that is
+itself an aggregator is followed into its own modules, and a module listed only in a profile is
+noted and not adopted. A node package with no `build` or `build:*` script is not a service. A
+repo whose root holds an `index.html`, and which has no Maven or node service and no library, is
+one static site. Each root is classified against the
 recipe registry. The survey also records libraries, package mirrors the build must reach,
 and explicit **recipe gaps** ("service X needs a recipe for Y"). The gap list is the
 evidence for which recipes are still missing. Fully unit-testable against fixture trees.
@@ -52,9 +56,11 @@ evidence for which recipes are still missing. Fully unit-testable against fixtur
 ### 3.2 Map (agentic, per service)
 
 One contained session per service: sandbox container, repo mounted **read-only**, egress
-allowlist as for builds. The session can use only Read, Grep and Glob; every other tool is
-removed, a call not pre-approved is denied, and a hook denies any call whose target resolves
-outside the repo. The session reads the code and returns a
+allowlist as for builds. The session reads with Read, Grep and Glob, and three locks confine
+it: the documented built-in tools that do not read, and every MCP tool, are removed from the
+session; a call that would need approval and is not pre-approved is denied; and a hook rejects
+any other tool and any read whose target resolves outside the repo. The session reads the code
+and returns a
 description and the API contract the service provides. The host validates the answer with
 pydantic and re-asks on a validation error, capped at 2 retries. A fragment that does not
 validate is never repaired on the host.
@@ -94,7 +100,8 @@ Recipes are entries in the M11 recipe registry.
 - `node-vite-yarn`, `node-vite-npm`: Vite frontends by lockfile. A Vite app with a pnpm lockfile
   matches the existing `node-vite-react` recipe.
 - `static-web`: a site with a root `index.html`, no Maven or node service and no library.
-- Anything else is a recipe gap and the service is `unmappable`.
+- A node app with no lockfile is a recipe gap: no install can be frozen, so a rebuild would
+  prove nothing. Anything else is a recipe gap too, and the service is `unmappable`.
 - Datastore recipes are added only when a build needs one; booting is a later milestone.
 
 ## 5. Human review gate
@@ -116,7 +123,8 @@ or a live rebuild.
 
 - Live boot, contract probing or acceptance checks against adopted services.
 - Editing adopted code. The follow-on is `update-system` on the adopt run dir, which is not
-  supported for Maven services yet because the engine's rebuild step does not fill the
-  `{module}` placeholder.
+  supported yet for any service kind: the update architect is not shown the adopt recipes, the
+  rebuild step uses its default image and does not fill the `{module}` placeholder, and recipe
+  registry hosts are not allowlisted on that path.
 - Flutter/Dart and Python projects. The survey does not detect them as services.
 - Batch adoption of many unrelated systems in one run. Repos given to one run form one system.

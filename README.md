@@ -198,8 +198,11 @@ DEVAGENT_BUILD_MODEL=claude-haiku-4-5-20251001 python -m devagent.cli run --buil
 `adopt` points dev-agent at a repo it did not build. It runs four stages:
 
 1. **Survey.** A deterministic walk finds the service roots (Maven modules and node apps), the
-   libraries, and every service no recipe fits. A repo with an `index.html` at its root and no
-   Maven or node service and no library is one static site.
+   libraries, and every service no recipe fits. Maven modules are read from `<modules>`, and a
+   module that is itself an aggregator is followed into its own modules. A module listed only in
+   a profile is noted and not adopted. A node package with no `build` or `build:*` script is
+   not a service. A repo with an `index.html` at its root and no Maven or node service and no
+   library is one static site.
 2. **Map.** One contained model session per service reads the source and returns a description
    and the API contract the service provides. The repo is mounted read-only. The session can
    use only the Read, Grep and Glob tools, and a call whose target resolves outside the repo is
@@ -220,7 +223,9 @@ not empty is refused.
 and contracts the system consumes but does not provide. Review it before treating the adoption
 as a description of the system.
 
-Give several repos to adopt them as one system. Two services with the same name are refused.
+Give several repos to adopt them as one system. Two services with the same id are refused. A
+service's id is its name in lower case with `_` read as `-`, so `Api` and `api`, or `my_api` and
+`my-api`, collide.
 
 `--skip-map` leaves out the mapping stage. Services are described from survey evidence and
 marked NOT MAPPED. No tokens are spent and no source leaves the machine. Without it, mapping
@@ -230,8 +235,9 @@ anything is created. A session that fails on one service marks that service NOT 
 run continues.
 
 Exit codes: 0 adopted (some services may be unproven or unmappable), 1 gate failed or no
-services found, 2 bad input, a bad mapping setup, or Docker missing or the egress proxy not
-starting while egress is on.
+services found, 2 bad input (including a repo that cannot be read or a run dir that cannot be
+written), a bad mapping setup, or, with egress on, Docker missing or an egress proxy that cannot
+be started or shared.
 
 ### Feishu bot (the chat interface)
 
@@ -359,11 +365,14 @@ sandbox/build.sh recipes    # build external toolchain images from DEVAGENT_RECI
   and 25 (chosen from the Java version the POM declares; an undeclared, unresolvable or
   unsupported version is a recipe gap), Vite with yarn or npm (a Vite app with a pnpm lockfile
   uses the existing `node-vite-react` recipe), and a static site (root `index.html`, no Maven or
-  node service and no library). Everything else is reported as a recipe gap and the service is
-  `unmappable`.
-- **`update-system` on an adopted run dir is not supported for Maven services yet.** The
-  engine's rebuild step does not fill the `{module}` placeholder. It has not been exercised end
-  to end for any adopted repo.
+  node service and no library). Everything else, including a node app with no lockfile, is
+  reported as a recipe gap and the service is `unmappable`.
+- **`update-system` on an adopted run dir is not supported yet**, for any service kind: the
+  update architect is not shown the adopt recipes, the rebuild step uses its default image and
+  does not fill the `{module}` placeholder, and recipe registry hosts are not allowlisted on that
+  path.
+- **A plain `http://` package mirror cannot be reached with egress on.** The egress proxy
+  tunnels HTTPS only. The survey notes such a mirror and does not allowlist it.
 - **Symlinks are copied, not followed.** A link that points outside its copied directory dangles
   in the copy, so a build that depends on it is reported `unproven`.
 - **Mapping sends source code to the model API.** The session reads the whole repo and sends

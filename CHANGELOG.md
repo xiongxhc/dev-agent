@@ -342,6 +342,14 @@ designs live in [`docs/specs/`](docs/specs/). ✅ shipped · ◐ partial · ⬜ 
   - ◐ **prove** (`adopt/prove.py`): rebuild from the copied source with the service's recipe;
     verdict `proven`, `unproven` or `unmappable`. Recipes: `maven-spring-boot-jdk{8,11,17,21,25}`,
     `node-vite-yarn`, `node-vite-npm`, `static-web`.
-  - Unit-tested without Docker, network or tokens. Not yet run: a live mapping session, a live
-    rebuild, and `update-system` on an adopted run dir (not supported for Maven services; the rebuild step
-    does not fill the `{module}` placeholder).
+  - Unit-tested without Docker, network or tokens. Run against real Docker: a single-module
+    Spring Boot (Java 17) repo was adopted and rebuilt with egress off and with egress on, and a
+    plain static site was adopted and rebuilt with egress on. Not run: a mapping session against
+    a model, a multi-module reactor, a Vite app, and `update-system` on an adopted run dir.
+  - `update-system` on an adopted run dir is not supported yet, for any service kind: the update
+    architect is not shown the adopt recipes, the rebuild step uses its default image and does
+    not fill the `{module}` placeholder, and recipe registry hosts are not allowlisted on that
+    path.
+  - For existing users: `DEVAGENT_EGRESS_ALLOW` now reaches the proxy (it replaces the default
+    list, as documented), and the proxy is replaced when its allowlist differs and nothing else
+    is using it.

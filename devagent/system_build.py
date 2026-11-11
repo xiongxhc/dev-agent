@@ -14,8 +14,9 @@ from .schema import AcceptanceCheck, ArtifactSpec, ProjectScope
 from .tree import NodeResult, SUCCEEDED, FAILED, topo_order
 from . import recipes
 
-# egress.ensure() is an unlocked check-then-act on the shared devagent-proxy container;
-# serialize it across concurrent per-service build worker threads.
+# egress.ensure() takes a file lock shared by this user's runs on the host, but runs without it when
+# the lock directory cannot be created; this lock keeps one run's per-service build worker threads
+# serialised then too.
 _egress_lock = threading.Lock()
 
 

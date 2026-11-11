@@ -64,10 +64,17 @@ def ensure(image: str = DEFAULT_IMAGE, extra_hosts=()) -> tuple[str, str]:
     """Make sure the internal network + proxy exist and are running. Returns
     (network_name, proxy_url) for callers to attach build/verify containers to.
 
-    The proxy is long-lived and reused across runs, so the allowlist it was started with is
-    recorded as a label and compared here: a run that needs a different allowlist replaces the
-    proxy instead of silently inheriting the old one's rules, unless another container is
-    attached to it, in which case the call refuses rather than break that build."""
+    One proxy serves every build on the Docker host and is reused across runs, so the allowlist
+    it was started with is recorded as a label and compared here. A proxy with exactly this
+    caller's allowlist is reused. While nothing else is attached to the egress network, a proxy
+    with any other allowlist, wider ones included, is replaced with exactly this caller's, so a
+    wider list does not outlive the run that needed it. While another container is attached, a
+    proxy that already permits every host this caller needs is reused, and any other raises
+    RuntimeError rather than break that build.
+
+    Calls are serialised by a lock under `hostlock.lock_root()`, which is the same for every run
+    of this user on this host whatever its DEVAGENT_RUNS_DIR. A lock still held after its
+    timeout raises TimeoutError."""
     allow = allowlist(extra_hosts)
     with _ensure_lock():
         return _ensure_locked(image, allow)
@@ -78,20 +85,19 @@ def _ensure_locked(image: str, allow: str) -> tuple[str, str]:
 
     The lock serialises concurrent `ensure` calls, so two runs starting together cannot both see
     "no proxy" and both create one. It does not cover the time after `ensure` returns: a proxy
-    already in use is protected by the adoption and refusal rules below, not by the lock."""
+    already in use is protected by the reuse and refusal rules below, not by the lock."""
     if _run(["docker", "network", "inspect", NETWORK]).returncode != 0:
         _run(["docker", "network", "create", "--internal", NETWORK])
     running = _run(["docker", "inspect", "-f", "{{.State.Running}}", PROXY]).stdout.strip()
     current = _run(["docker", "inspect", "-f",
                     "{{index .Config.Labels \"devagent.allow\"}}", PROXY]).stdout.strip()
-    if running == "true" and current != allow and _allow_covers(current, allow):
-        # A running proxy whose allowlist is a SUPERSET of what this run needs is adopted rather
-        # than replaced: the hosts this run wants are already permitted, and another run may be
-        # depending on the container.
-        return NETWORK, f"http://{PROXY}:{PORT}"
     if running == "true" and current != allow and _network_busy():
-        # A genuinely different allowlist AND someone else is attached. Refusing beats stealing:
-        # the alternative is silently killing another run's build.
+        if _allow_covers(current, allow):
+            # Another build is using a proxy that already permits every host this run needs:
+            # share it. Replacing it would break that build.
+            return NETWORK, f"http://{PROXY}:{PORT}"
+        # A list that lacks hosts this run needs, AND someone else is attached. Refusing beats
+        # stealing: the alternative is silently killing another run's build.
         raise RuntimeError(
             "the shared egress proxy is running with a different allowlist and other containers are "
             "attached to its network, so replacing it would break another run mid-build. Wait for "
@@ -117,10 +123,11 @@ def _ensure_locked(image: str, allow: str) -> tuple[str, str]:
 
 @contextmanager
 def _ensure_lock():
-    """Serialise `ensure` across every run on this host. An unwritable runs dir must not stop a
-    build, so a lock that cannot be created is skipped (errors from the body still propagate)."""
-    root = os.getenv("DEVAGENT_RUNS_DIR") or "runs"
-    lock = hostlock.exclusive(root, "egress", timeout_s=180.0,
+    """Serialise `ensure` across the runs of this user on this host. A lock directory that cannot
+    be created must not stop a build, so the lock is then skipped. A lock still held after the
+    timeout raises TimeoutError to the caller, because running unlocked would reopen the race.
+    An error from the body propagates, and the lock is released."""
+    lock = hostlock.exclusive("egress", timeout_s=180.0,
                               on_wait=lambda n: print(
                                   "  -> waiting for another run to finish preparing the shared "
                                   "egress proxy", flush=True))

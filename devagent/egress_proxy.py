@@ -17,7 +17,8 @@ import threading
 
 # api.deepseek.com serves the deepseek build arm. The proxy is shared across arms, so this
 # widens every contained build's egress by one API host — the deny-by-default posture holds.
-# The proxy container is long-lived: a list change needs egress.teardown() to take effect.
+# The proxy container is long-lived: egress.ensure() starts a new one when the allowlist a run
+# needs differs from the running one's and no other container is attached.
 DEFAULT_ALLOW = ["api.anthropic.com", ".anthropic.com", "registry.npmjs.org", ".npmjs.org",
                  "api.deepseek.com"]
 PORT = 3128

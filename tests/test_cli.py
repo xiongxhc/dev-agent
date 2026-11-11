@@ -1,5 +1,7 @@
 """CLI wiring of the brain pipeline — no live tokens (the phases' LLM call is patched)."""
 
+import pytest
+
 import devagent.llm as llm
 
 from devagent import cli
@@ -187,3 +189,22 @@ def test_cli_build_flag_runs_contained_build_end_to_end(tmp_path, monkeypatch, c
     assert gates_ok["build"] is True and gates_ok["deploy"] is True
     assert (rd / "out" / "dist" / "index.html").is_file()
     assert (rd / "report.html").is_file()  # run report always written
+
+
+@pytest.mark.parametrize("exc", [
+    RuntimeError("the shared egress proxy is running with a different allowlist"),
+    TimeoutError("waited 180s for the 'egress' lock held by another run")])
+def test_run_reports_an_egress_proxy_it_cannot_use_without_a_traceback(tmp_path, monkeypatch,
+                                                                       capsys, exc):
+    from devagent import egress
+    monkeypatch.setenv("DEVAGENT_RUNS_DIR", str(tmp_path))
+    monkeypatch.setenv("DEVAGENT_EGRESS", "1")
+
+    def boom(*a, **kw):
+        raise exc
+    monkeypatch.setattr(egress, "ensure", boom)
+    prd = tmp_path / "prd.md"
+    prd.write_text("a health API")
+    assert cli.main(["run", "--build", str(prd)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith(f"error: {exc}") and err.strip().count("\n") == 0
